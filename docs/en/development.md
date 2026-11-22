@@ -116,6 +116,40 @@ Maintain matching Markdown filenames under `docs/en/` and `docs/ru/`. Navigation
 
 Demo mode replaces imports of the API module with `web/src/demo/api.ts` through a Vite alias. Its `satisfies` contract catches differences from the normal API. Add behavior tests when extending the adapter; do not add backend networking to simulate a feature.
 
+## KeeneticOS WebUI prototype
+
+The loopback fixtures in `test/keenetic-webui/` add a native KeenProxy route to
+a verified KN-3812 Angular bundle in memory. They exercise the stock sidebar,
+sign-in flow, role checks, and unsaved-draft dialog with synthetic HTTP and RCI
+responses. Serving a production page through the router's management address
+requires a separate ingress and API authorization design.
+
+Use Python 3.10 or later and a Chromium headless shell for the behavioral suite.
+Supply your own supported WebUI bundle and the pinned
+[Zone.js 0.15.1 browser file](https://cdn.jsdelivr.net/npm/zone.js@0.15.1/bundles/zone.umd.min.js).
+The runner checks both file hashes. Add `--baseline` for the unmodified menu
+control.
+
+```sh
+python3 -B test/keenetic-webui/full_bootstrap.py \
+  --bundle /path/to/main.js \
+  --zone-js /path/to/zone.umd.min.js \
+  --browser /path/to/chrome-headless-shell
+```
+
+For Orca screenshots, install `PySquashfsImage==0.9.0` in an isolated Python
+environment and use the KN-3812 stable 5.1.10 image from the
+[official firmware archive](https://osvault.keenetic.net/KN-3812/5.01/).
+The fixture checks the firmware and WebUI hashes and prints stock, administrator,
+and read-only URLs. Open the stock and administrator URLs at the same viewport
+and theme before comparing the OPKG menu. The archive supplies the matching
+styles, icons, and fonts.
+
+```sh
+python3 -B test/keenetic-webui/orca_fixture.py \
+  --firmware /path/to/KN-3812_stable_5.1.10_5.01.C.10.0-0.bin
+```
+
 ## GitHub Pages
 
 The **Documentation** workflow builds and checks both outputs on relevant PRs and pushes. It uploads only `site/`, containing generated documentation and the demo. Internal reports, local memories, application source maps, credentials, and Go runtime state are not part of that directory.
