@@ -131,6 +131,16 @@ To move an Ordo Systems installation to LokiVPN, turn off automatic installation
 
 The protected installer blocks forwarded traffic before stopping the old service. The router remains reachable from the LAN. Forwarding resumes once interception is active in the new release or in the restored release after a failed update. If neither restores interception, forwarding stays blocked. From the LAN, rerun the bootstrap with a working release and configuration to restore access. If IPv6 forwarding is enabled, the installer also needs working `ip6tables`. On OpenWrt, disable software and hardware flow offloading and reload the firewall before updating. The guard covers traffic that passes through the router's Netfilter forwarding chains.
 
+On KeeneticOS with IPv6 forwarding, the updater needs the Netfilter `comment` match for its temporary forwarding rule. If `ip6tables` reports `No chain/target/match by that name`, check that `ip6tables -t filter -S FORWARD` succeeds and look for `comment` in `/proc/net/ip6_tables_matches`. If the match is absent, load the module supplied by the running firmware from the Entware root shell.
+
+```sh
+module="/lib/modules/$(uname -r)/xt_comment.ko"
+test -r "$module" && insmod "$module"
+grep -Fx comment /proc/net/ip6_tables_matches
+```
+
+Rerun the bootstrap once the match is listed. Check for it again after a router reboot.
+
 If the service starts in `management-only` mode, for example because TPROXY is unavailable, the panel can be reachable while the installer still considers interception unavailable. If the restored release also starts in this mode, fix and apply the interception settings from the LAN and then rerun the protected bootstrap with the working release. Applying the settings alone does not remove a guard left by the installer.
 
 **Roll back** reinstalls the previous published version and switches off automatic installation. It needs access to GitHub and keeps the existing configuration and token. The installer rejects an incompatible configuration before restarting the service. Rolling back to a version released before panel updates also restores that version's earlier panel. Use the command-line installer to upgrade again.
