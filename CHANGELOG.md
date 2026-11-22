@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.10.0
+
+- Add native Xray subscriptions with provider metadata, refresh, and HTTPS node checks.
+- Add subscription failover and balancing by site, by session, and round robin.
+- Add local fixtures for the experimental KeeneticOS WebUI route and Orca visual checks.
+- Build LokiVPN releases from verified tags in GitHub Actions and use the LokiVPN release channel for installation and updates.
 - Record sanitized iptables-restore failure locations in diagnostic archives, distinguishing a rejected Apply from a failed rollback.
 - Check TPROXY readiness before startup and Apply, explain unavailable mode in Network settings, and keep the panel available for recovery without switching modes automatically.
 - Allow LAN DNS forwarders to bypass UDP/TCP port 53 interception by source IPv4 address without changing interception for other clients or ports.

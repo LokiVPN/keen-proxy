@@ -33,7 +33,7 @@ func TestScheduledInstallRefreshesReleaseAndPersistsAttempt(t *testing.T) {
 	var checks, starts int
 	m.client = &http.Client{Transport: releaseTransport(func(r *http.Request) (*http.Response, error) {
 		checks++
-		if r.URL.String() != latestReleaseURL {
+		if r.URL.String() != "https://api.github.com/repos/LokiVPN/keen-proxy/releases/latest" {
 			t.Fatalf("unexpected release source: %s", r.URL)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(
@@ -218,7 +218,7 @@ func TestEntwareStatusStillAdvertisesRecordedRollback(t *testing.T) {
 }
 
 func TestNativeRollbackNotAdvertisedWithoutProcdAsset(t *testing.T) {
-	const previousURL = "https://api.github.com/repos/ordo-systems/keen-proxy/releases/tags/v0.3.0"
+	const previousURL = "https://api.github.com/repos/LokiVPN/keen-proxy/releases/tags/v0.3.0"
 	latest := releaseAssetBody("v0.5.0", "keenproxy-linux-arm64", "SHA256SUMS", "keenproxy.openwrt")
 	check := func(t *testing.T, previous string, previousStatus int) Status {
 		t.Helper()

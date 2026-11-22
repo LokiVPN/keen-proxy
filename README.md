@@ -2,6 +2,8 @@
 
 # KeenProxy
 
+LokiVPN publishes KeenProxy source on `master` and checksummed binaries in GitHub Releases. The original project and hosted demo are maintained by Ordo Systems. [LokiVPN releases](https://github.com/LokiVPN/keen-proxy/releases) · [Ordo Systems upstream](https://github.com/ordo-systems/keen-proxy)
+
 Selective traffic routing for Keenetic and Netcraze routers running Entware, with an embedded [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) engine and a Vue web interface. This experimental branch pins lx.35 on the sing-box 1.14.4 base.
 
 KeenProxy lets you choose which devices, domains, IP ranges, and countries use a tunnel, connect directly, or are blocked. The web panel shows router load and lets you install, schedule, or roll back releases on managed Entware and native OpenWrt installations. Router compatibility and protocol support depend on the firmware, kernel modules, and build tags. The project is experimental.
@@ -12,8 +14,10 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 
 ## Documentation and live demo
 
-- [English documentation](https://ordo-systems.github.io/keen-proxy/) · [Russian documentation](https://ordo-systems.github.io/keen-proxy/ru/)
-- [Interactive browser demo](https://ordo-systems.github.io/keen-proxy/demo/) with live simulated traffic, CPU and memory, and a simulated update and rollback flow. Changes reset on reload.
+- Install and configure the LokiVPN build. [English guide](docs/en/getting-started.md) · [Russian guide](docs/ru/getting-started.md)
+- Configure subscriptions and routing. [English user guide](docs/en/user-guide.md) · [Russian user guide](docs/ru/user-guide.md)
+- Run the experimental KeeneticOS integration in local fixtures. [WebUI prototype](docs/en/development.md#keeneticos-webui-prototype)
+- Try the Ordo Systems demo with synthetic traffic, router load, and update and rollback flows. [Upstream demo](https://ordo-systems.github.io/keen-proxy/demo/)
 
 ## What works today
 
@@ -22,6 +26,7 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 - Domain detection from TLS SNI or HTTP Host, with a bounded IPv4 DNS-answer cache as a fallback when the connection has no readable hostname.
 - WireGuard, AmneziaWG 2/3 single-peer `.conf` profiles, supported sing-box connection links, raw sing-box outbounds/endpoints, and embedded TrustTunnel.
 - Connection failover with recovery hysteresis and explicit direct fallback where configured.
+- Xray subscriptions with refresh, HTTPS node checks, failover, and balancing by site, by session, or round robin.
 - A UDP/TCP DNS frontend, public resolver presets, DoH/DoT, selectable DNS routing, and DNS-only blocklists.
 - Community domain presets with preview and managed updates that preserve manual additions and exclusions.
 - YAML configuration, a shared draft/Apply workflow, import/export, and a previous-configuration backup.
@@ -46,7 +51,12 @@ Requirements:
 - Docker with privileged-container support and at least 2 engine CPUs, Python 3.12+, and repository history for the mandatory build-time memory gates and the network-namespace integration suite.
 - For a router: Entware or native OpenWrt/procd, supported Linux kernel facilities, and compatible iptables tools.
 
-From the repository root:
+Clone the LokiVPN source.
+
+```sh
+git clone --branch master https://github.com/LokiVPN/keen-proxy.git
+cd keen-proxy
+```
 
 Download the pinned Go modules; no Git submodules are required:
 
@@ -107,17 +117,17 @@ On a prepared Entware router, install `curl` and a CA bundle if needed. Run thes
 
 ```sh
 opkg update && opkg install curl ca-bundle ca-certificates
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
-The bootstrap reads `version.txt` from `main`, selects the matching full/lite asset for one of the six release architectures, and verifies release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. The first start enables LAN DNS interception even with an empty routing policy. Stop any competing interceptor first.
+The bootstrap reads `version.txt` from `master`, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. The first start enables LAN DNS interception even with an empty routing policy. Stop any competing interceptor first.
 
 After successful installation or command-line update, the bootstrap prints the panel URL when available. Run `keenproxy --url` to display it again and `keenproxy --key` to print the current login token from the configured token file. These commands do not start the service or generate a token; use `--config /path/to/config.yaml` for a non-default configuration. Keep token output private. See [panel access](docs/en/user-guide.md#access-the-panel).
 
 Run the same command again to update. Existing configuration and tokens are preserved. Select a specific published release with `--version` or choose the smaller build with `--lite`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z --lite
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z --lite
 ```
 
 Replace `vX.Y.Z` with a real release tag. The release must contain the binary, `install.sh`, `S99keenproxy`, and `SHA256SUMS`. If assets are still publishing, retry when they are available. Check or stop the service with `/opt/etc/init.d/S99keenproxy status` or `/opt/etc/init.d/S99keenproxy stop`.
@@ -125,7 +135,7 @@ Replace `vX.Y.Z` with a real release tag. The release must contain the binary, `
 For **native OpenWrt without Entware**, prepare the system dependencies and run the bootstrap with `/bin/sh`; see the [native installation guide](docs/en/getting-started.md#native-openwrt-installation). It installs `/usr/bin/keenproxy`, enables `/etc/init.d/keenproxy` under procd, and supports panel updates on all six release architectures. Native releases must also contain the checksummed `keenproxy.openwrt` service asset. A release predating that asset cannot be installed or selected as a native rollback target.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
 ```
 
 Use `keenproxy --key -config /etc/keenproxy/config.yaml` and `keenproxy --url -config /etc/keenproxy/config.yaml` for native configuration; the standalone CLI's default configuration path remains the Entware path. Service commands are `/etc/init.d/keenproxy status`, `start`, `stop`, and `restart`. To uninstall, rerun the native command with `/bin/sh -s -- --uninstall`; settings, tokens, and updater preferences are retained. Existing managed Entware installations on OpenWrt are not automatically migrated.
@@ -133,7 +143,7 @@ Use `keenproxy --key -config /etc/keenproxy/config.yaml` and `keenproxy --url -c
 To remove an installation managed by the bootstrap:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
 ```
 
 This stops KeenProxy and removes its binary and Entware init script. It keeps the configuration, API token, logs, rule sets, and any previously installed external clients. Reinstall with the regular install command to reuse the saved settings.

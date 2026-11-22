@@ -2,6 +2,28 @@
 
 This guide is for maintainers preparing an initial public repository or a later source/binary release. It does not imply that a release has been published or that every router is supported.
 
+## Build a LokiVPN release
+
+Prepare the version in `version.txt`, the Release Please manifest, the demo
+version, and the changelog. Merge the reviewed source into `master`. Tag that
+commit, push the tag, create a draft GitHub Release for it, and dispatch
+**Release** with both the workflow ref and the `tag` input set to the same tag.
+
+```sh
+gh workflow run release.yml --repo LokiVPN/keen-proxy --ref vX.Y.Z -f tag=vX.Y.Z
+```
+
+The workflow runs CI on the tagged source and then runs both memory gates in
+the asset job before the full and lite builds. Verify the finished run and the
+complete checksummed assets before publishing the draft as latest. The bootstrap
+reads the version from `master`. The panel fetches published releases from
+LokiVPN.
+
+## Upstream Release Please process
+
+The following `main` branch procedure describes the Ordo Systems release
+automation.
+
 ## Version and release pull request
 
 Follow the versioning and Conventional Commit rules in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-and-pull-request-titles). The selected workflow uses [Release Please](https://github.com/googleapis/release-please) to propose releases, with a maintainer reviewing each release PR.
@@ -28,7 +50,7 @@ Use the Git tag as the release identity and derive build versions from it; any t
 - The main-branch `tools/bootstrap.sh` reads `version.txt` unless the user supplies `--version`. It needs the selected release's checksum file, binary, and platform-specific installer assets before touching a running service. Entware requires `install.sh` and `S99keenproxy`; native OpenWrt requires `keenproxy.openwrt`. Missing native assets must not prevent Entware upgrades to existing releases. Validate these assets on the published release before advertising the installation command.
 - If asset publication fails after release creation, manually run the Release workflow from `main` with its existing tag in the `tag` input. Packaging includes `keenproxy.openwrt` only when that controller exists in the checked-out tag, including its checksum and upload entry; retries of older Entware-only tags must not require it. Existing assets must be byte-identical before missing ones are uploaded. A different rebuild fails rather than replacing files; investigate toolchain/dependency differences and publish a new version when needed. Running without a tag retries Release Please.
 - Historical recovery is a separate, explicit contract only for a tag whose commit is an ancestor of, or equal to, the fixed pre-AWG boundary `9d398fb3754036cbe35df1cf07098164ff62a9d5` (including `v0.8.0`). Current workflow CI remains a prerequisite. The tagged `version.txt` must match the requested tag before toolchain setup or expensive work. The workflow leaves tagged source unchanged and uses its original Makefile and protocol flags for Go tests, vet, network integration, frontend tests, and full/lite router cross-builds with the requested release identity. A visible notice and `.agents-work/release-legacy/<run>-<attempt>/` manifest, command log, and exit code distinguish this evidence from memory reports; the always-run evidence uploader retains it even on failure. Pre-AWG source cannot execute AWG tests: this recovery is not AWG stress or memory-comparison certification. Every commit outside that ancestry boundary must pass both memory gates; a missing target fails and never selects historical recovery. Existing-asset byte checks and publication order are unchanged.
-- Configure branch protection or a ruleset separately so merge is gated by **Tests and builds**, **Network integration**, **Memory regression**, **AWG stress (320 MiB)**, and **Router builds**. A read-only ruleset inspection found that `main` currently requires only the first two. The former combined check **Memory regression and builds** was not enforced. Preserve those two and add the three new names, each through the GitHub Actions integration (`15368`). Workflow files alone do not enforce merge requirements, and this change does not modify repository rules. Until that administrative update, GitHub will not block merges on the three new names. Release publication is gated by the checks workflow, which waits for every CI job, and by both memory gates in the asset job before the public router builds.
+- Keep repository protection rules separate from the workflow. Protect the release branch with the **Tests and builds**, **Network integration**, **Memory regression**, **AWG stress (320 MiB)**, and **Router builds** checks. Release publication waits for the CI checks workflow and the two memory gates in the asset job.
 
 ## Review the material being published
 

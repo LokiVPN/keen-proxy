@@ -218,7 +218,7 @@ class SecretScanTest(unittest.TestCase):
         untouched = self.real_scan(repo, 'history')
         self.assertEqual(untouched.returncode, 0, untouched.stdout + untouched.stderr)
 
-    def test_ci_runs_a_branch_scan_and_a_main_history_scan(self):
+    def test_ci_scans_pull_requests_and_default_branch_or_tag_history(self):
         workflow = WORKFLOW.read_text()
         self.assertNotIn('uses: gitleaks/gitleaks-action', workflow)
         self.assertNotIn('GITLEAKS_LICENSE', workflow)
@@ -228,7 +228,8 @@ class SecretScanTest(unittest.TestCase):
         self.assertIn('tools/scan-secrets.sh range', branch)
         self.assertIn('fetch-depth: 0', branch)
         self.assertIn('persist-credentials: false', branch)
-        self.assertIn("github.ref == 'refs/heads/main'", history)
+        self.assertIn("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)", history)
+        self.assertIn("github.ref_type == 'tag'", history)
         self.assertIn('tools/scan-secrets.sh history', history)
         self.assertIn('fetch-depth: 0', history)
         self.assertIn('persist-credentials: false', history)

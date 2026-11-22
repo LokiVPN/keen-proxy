@@ -53,8 +53,8 @@ else
     PATH="$prefix/bin:$prefix/sbin:$PATH"
 fi
 export PATH
-main=https://raw.githubusercontent.com/ordo-systems/keen-proxy/main
-releases=https://github.com/ordo-systems/keen-proxy/releases/download
+source_base=https://raw.githubusercontent.com/LokiVPN/keen-proxy/master
+releases=https://github.com/LokiVPN/keen-proxy/releases/download
 version=
 expected_current=
 variant=full
@@ -498,7 +498,7 @@ if [ -f "$prefix/etc/ssl/certs/ca-certificates.crt" ]; then
     export CURL_CA_BUNDLE="$prefix/etc/ssl/certs/ca-certificates.crt"
 fi
 if [ -z "$version" ]; then
-    fetch "$main/version.txt" "$work/version.txt"
+    fetch "$source_base/version.txt" "$work/version.txt"
     version=$(cat "$work/version.txt")
 fi
 tag="v${version#v}"

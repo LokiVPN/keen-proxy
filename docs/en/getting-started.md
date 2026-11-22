@@ -1,5 +1,7 @@
 # Getting started
 
+The bootstrap installs the LokiVPN release for your router and checks each downloaded file against the release manifest. Use the GitHub source build instructions to build the `master` branch. [LokiVPN releases](https://github.com/LokiVPN/keen-proxy/releases) · [Source build](https://github.com/LokiVPN/keen-proxy#build-and-try-the-interface)
+
 ## Experimental OpenWrt support
 
 KeenProxy requires **at least 256 MiB of total RAM** on OpenWrt and Keenetic/Netcraze routers, plus enough storage for the binary and its data. Releases provide full and lite Linux binaries for x86-64 (`amd64`, baseline v1), 32-bit x86 (`386`, requires SSE2), ARM32 (ARMv5 or later, soft float, suffix `armv5`), ARM64 (`arm64`), little-endian MIPS (`mipsle`, soft float), and big-endian MIPS (`mipsbe`, soft float).
@@ -28,7 +30,7 @@ test -x /usr/sbin/iptables-restore
 Then run as root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
 ```
 
 The bootstrap installs `/usr/bin/keenproxy`, enables `/etc/init.d/keenproxy` for boot through procd, and starts the service. It verifies checksums and validates the configuration before replacing a running version. A failed startup triggers restoration of the previous files and service. Full and lite builds both embed TrustTunnel; no external helper is needed.
@@ -100,7 +102,7 @@ opkg update && opkg install curl ca-bundle ca-certificates
 Stop competing traffic or DNS interception services before installation. KeenProxy begins intercepting LAN DNS when the daemon starts, including with the starter configuration. Run the bootstrap from `main`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
 The installer reads `version.txt` from `main`, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. Display the current token with `keenproxy --key` in the router's Entware shell; the installer never prints it automatically. See [panel access](user-guide.md#access-the-panel).
@@ -112,10 +114,10 @@ Run the same command to update. Your configuration and token are preserved. The 
 To choose a release, replace `vX.Y.Z` with a published tag. The optional `--lite` flag selects the smaller build without QUIC/HTTP/3. `--without-trusttunnel` remains accepted for existing updaters and scripts, but no longer changes the payload: TrustTunnel is embedded. `--trusttunnel-only` is no longer accepted.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z
 ```
 
-The tag must have installer assets and checksums attached. If publication is still in progress, wait for the assets and rerun the command. Service commands are `status`, `start`, `stop`, and `restart` on `/opt/etc/init.d/S99keenproxy`. See the root README for manual installation. [Installation reference](https://github.com/ordo-systems/keen-proxy#configuration-and-router-installation)
+The tag must have installer assets and checksums attached. If publication is still in progress, wait for the assets and rerun the command. Service commands are `status`, `start`, `stop`, and `restart` on `/opt/etc/init.d/S99keenproxy`. See the root README for manual installation. [Installation reference](https://github.com/LokiVPN/keen-proxy#configuration-and-router-installation)
 
 On Entware, the service tries to raise the daemon's open-file limit to at least 8192 at startup, keeping any higher limits. If the system does not allow the increase, the service warns and still starts. To confirm the effective limit, check `Max open files` in `/proc/<PID>/limits` for the KeenProxy process.
 
@@ -125,7 +127,7 @@ On a managed Entware or native OpenWrt installation, **Settings → Updates** sh
 
 Automatic installation is off by default. The panel still checks for releases. Enable automatic installation and save a time to install available releases during that minute in the router's local time, once per day while the service is running. Installation briefly restarts KeenProxy.
 
-For a protected upgrade from 0.9.2 or earlier to 0.9.3, run the current command-line bootstrap over SSH with `--version v0.9.3` (and `--lite` if installed). Those versions embed their own installer in the panel and in scheduled updates, so turn off automatic installation before this first upgrade.
+To move an Ordo Systems installation to LokiVPN, turn off automatic installation and save the current binary and configuration privately. Run the LokiVPN bootstrap over SSH with `--version v0.10.0` and add `--lite` for an existing lite install. Subsequent panel updates use the LokiVPN release channel. Keep the matching configuration and upstream package for a rollback across release channels.
 
 The protected installer blocks forwarded traffic before stopping the old service. The router remains reachable from the LAN. Forwarding resumes once interception is active in the new release or in the restored release after a failed update. If neither restores interception, forwarding stays blocked. From the LAN, rerun the bootstrap with a working release and configuration to restore access. If IPv6 forwarding is enabled, the installer also needs working `ip6tables`. On OpenWrt, disable software and hardware flow offloading and reload the firewall before updating. The guard covers traffic that passes through the router's Netfilter forwarding chains.
 
@@ -146,7 +148,7 @@ Back up the current configuration and keep the old binary before updating. Read 
 Run from the Entware root shell:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
 ```
 
 The command stops the managed service and removes `/opt/bin/keenproxy` and `/opt/etc/init.d/S99keenproxy`. It preserves `/opt/etc/keenproxy/` (including configuration and token), `/opt/var/lib/keenproxy/` (logs and derived state), and any previously installed external TrustTunnel client. KeenProxy no longer uses that executable. Run the regular installer again to reuse your settings.

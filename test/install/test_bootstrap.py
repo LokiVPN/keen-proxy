@@ -38,7 +38,7 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\\n' "$url" >> "$REQUESTS"
 case "$url" in
-    */main/version.txt) path=version.txt ;;
+    */main/version.txt|*/master/version.txt) path=version.txt ;;
     */releases/download/*) path=${url#*/releases/download/} ;;
     *) exit 22 ;;
 esac
@@ -294,6 +294,10 @@ done
         self.assert_release('v1.2.3')
         self.assertTrue((self.prefix / 'running').exists())
         self.assert_url_queries(1)
+        requests = self.requests.read_text().splitlines()
+        self.assertIn('https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/version.txt', requests)
+        self.assertIn('https://github.com/LokiVPN/keen-proxy/releases/download/v1.2.3/keenproxy-linux-arm64',
+                      requests)
         self.config.write_text('schema_version: 1\n# user setting\n')
         token = self.config.with_name('token')
         token.write_text('test fixture\n')
@@ -369,7 +373,7 @@ done
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.binary.read_bytes(), release.read_bytes())
         self.assert_release('v0.9.0', variant='lite')
-        self.assertNotIn('/main/version.txt', self.requests.read_text())
+        self.assertNotIn('/version.txt', self.requests.read_text())
 
     def test_bad_checksum_keeps_running_release(self):
         first = self.release('v1.2.3')

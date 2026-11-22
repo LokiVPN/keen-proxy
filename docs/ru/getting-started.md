@@ -1,5 +1,7 @@
 # Начало работы
 
+Bootstrap устанавливает релиз LokiVPN для вашей архитектуры и сверяет загруженные файлы с контрольными суммами релиза. Для сборки ветки `master` используйте команды из README. [Релизы LokiVPN](https://github.com/LokiVPN/keen-proxy/releases) · [Сборка из исходников](https://github.com/LokiVPN/keen-proxy#build-and-try-the-interface)
+
 ## Экспериментальная поддержка OpenWrt { #experimental-openwrt-support }
 
 KeenProxy требует **не менее 256 МиБ общей оперативной памяти** на роутерах OpenWrt и Keenetic/Netcraze, а также достаточного места для бинарника и его данных. В релизах доступны обычные сборки и lite для Linux на x86-64 (`amd64`, базовый уровень v1), 32-битной x86 (`386`, требуется SSE2), ARM32 (ARMv5 и новее, soft float, суффикс `armv5`), ARM64 (`arm64`), MIPS little-endian (`mipsle`, soft float) и MIPS big-endian (`mipsbe`, soft float).
@@ -28,7 +30,7 @@ test -x /usr/sbin/iptables-restore
 Затем выполните от имени root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
 ```
 
 Установщик размещает `/usr/bin/keenproxy`, включает автозапуск `/etc/init.d/keenproxy` через procd и запускает службу. Контрольные суммы и конфигурация проверяются до замены работающей версии. При ошибке запуска восстанавливаются предыдущие файлы и служба. В обе сборки, full и lite, встроен TrustTunnel; внешний клиент не нужен.
@@ -100,7 +102,7 @@ opkg update && opkg install curl ca-bundle ca-certificates
 Перед установкой остановите другие службы, которые перехватывают трафик или DNS. При запуске KeenProxy начинает перехватывать DNS локальной сети даже с начальной конфигурацией. Запустите скрипт из `main`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
 Установщик читает `version.txt` из `main`, определяет архитектуру и сверяет файлы релиза с `SHA256SUMS`. Он устанавливает недостающие утилиты `iptables` из Entware, создаёт начальную конфигурацию при её отсутствии и регистрирует и запускает `S99keenproxy` через механизм служб Entware. TrustTunnel работает внутри sing-box-lx, отдельный клиент не устанавливается. После установки и обновления из командной строки скрипт выводит URL панели, если установленная сборка может его определить. Чтобы получить текущий токен, выполните `keenproxy --key` в оболочке Entware на роутере; установщик не печатает токен автоматически. См. [доступ к панели](user-guide.md#access-the-panel).
@@ -112,10 +114,10 @@ curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/
 Чтобы выбрать версию, замените `vX.Y.Z` на опубликованный тег. Флаг `--lite` выбирает облегчённую сборку без QUIC/HTTP/3. `--without-trusttunnel` принимается для существующих обновляторов и скриптов, но больше не меняет состав установки: TrustTunnel встроен. `--trusttunnel-only` больше не принимается.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z
 ```
 
-Дождитесь появления файлов установщика и контрольных сумм в релизе. Если они ещё публикуются, повторите команду позже. Для управления службой используйте `/opt/etc/init.d/S99keenproxy` с командой `status`, `start`, `stop` или `restart`. Инструкции для ручной установки есть в корневом README. [Справка по установке](https://github.com/ordo-systems/keen-proxy#configuration-and-router-installation)
+Дождитесь появления файлов установщика и контрольных сумм в релизе. Если они ещё публикуются, повторите команду позже. Для управления службой используйте `/opt/etc/init.d/S99keenproxy` с командой `status`, `start`, `stop` или `restart`. Инструкции для ручной установки есть в корневом README. [Справка по установке](https://github.com/LokiVPN/keen-proxy#configuration-and-router-installation)
 
 В Entware при запуске служба пытается поднять лимит открытых файлов процесса до 8192, не снижая более высокие лимиты. Если система не разрешает повышение, служба выдаёт предупреждение и всё равно запускается. Фактический лимит указан в строке `Max open files` файла `/proc/<PID>/limits` процесса KeenProxy.
 
@@ -125,7 +127,7 @@ curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/
 
 Автоустановка по умолчанию выключена. Панель продолжает проверять наличие релизов. Чтобы устанавливать их автоматически, включите автообновление и сохраните время. Служба установит доступный релиз в указанную минуту по часам роутера, один раз в день при условии, что KeenProxy в это время работает. Во время установки служба ненадолго перезапускается.
 
-Для защищённого перехода с версии 0.9.2 или более ранней на 0.9.3 запустите актуальный bootstrap по SSH с параметром `--version v0.9.3` (и `--lite`, если установлен этот вариант). В старых версиях в панель и автообновление встроен свой установщик, поэтому перед первым переходом отключите автоустановку.
+Перед переходом с Ordo Systems на LokiVPN отключите автоустановку и сохраните локальные копии текущего бинарника и конфигурации. Запустите bootstrap LokiVPN по SSH с параметром `--version v0.10.0` и добавьте `--lite` для уже установленного облегчённого варианта. Следующие обновления из панели будут использовать релизы LokiVPN. Для отката между репозиториями сохраните пакет исходного релиза и соответствующую ему конфигурацию.
 
 Установщик блокирует транзитный трафик до остановки старой службы. Сам роутер остаётся доступен из локальной сети. Блокировка снимается, когда перехват заработает в новой версии или в восстановленной после ошибки обновления. Если перехват не восстановится, блокировка останется. Чтобы вернуть доступ, запустите bootstrap из локальной сети с рабочим релизом и конфигурацией. Если включена маршрутизация IPv6, нужен рабочий `ip6tables`. На OpenWrt перед обновлением отключите программное и аппаратное ускорение потоков и перезагрузите firewall. Блокировка действует на трафик, проходящий через цепочки маршрутизации Netfilter на роутере.
 
@@ -146,7 +148,7 @@ curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/
 Выполните в оболочке Entware от имени root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ordo-systems/keen-proxy/main/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
 ```
 
 Команда остановит службу KeenProxy, созданную установщиком, и удалит `/opt/bin/keenproxy` и `/opt/etc/init.d/S99keenproxy`. Настройки и токен в `/opt/etc/keenproxy/`, журналы и рабочие данные в `/opt/var/lib/keenproxy/` и ранее установленный внешний клиент TrustTunnel сохранятся. KeenProxy больше не использует этот исполняемый файл. При повторной установке KeenProxy подхватит сохранённые настройки.

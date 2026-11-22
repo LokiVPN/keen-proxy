@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	latestReleaseURL = "https://api.github.com/repos/ordo-systems/keen-proxy/releases/latest"
-	releaseTagURL    = "https://api.github.com/repos/ordo-systems/keen-proxy/releases/tags/"
+	latestReleaseURL = "https://api.github.com/repos/LokiVPN/keen-proxy/releases/latest"
+	releaseTagURL    = "https://api.github.com/repos/LokiVPN/keen-proxy/releases/tags/"
 )
 
 var stable = regexp.MustCompile(`^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$`)

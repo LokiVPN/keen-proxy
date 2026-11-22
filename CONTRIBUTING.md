@@ -2,6 +2,8 @@
 
 KeenProxy welcomes contributors from around the world. Useful contributions include router compatibility reports, reproducible routing tests, protocol integration, accessibility, translations, and clearer documentation.
 
+Use `master` as the base for LokiVPN changes. [LokiVPN repository](https://github.com/LokiVPN/keen-proxy)
+
 ## Start with a reproducible case
 
 Describe the expected behavior, actual behavior, commit/build tags, router architecture, firmware, and relevant kernel capabilities. Include a minimal synthetic configuration and the exact command or UI action that triggers the issue. Keep one issue or change focused on one problem.

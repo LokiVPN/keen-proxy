@@ -2,6 +2,7 @@
 
 ## Workspace and publication
 
+- Use `master` as the integration branch in `LokiVPN/keen-proxy`. Build published router assets through the tagged Release workflow. [Release guide](RELEASING.md)
 - Name Git branches by the type of work using `<type>/<short-description>`, with prefixes such as `feature/`, `fix/`, `docs/`, `refactor/`, or `chore/`. Do not use agent, model, or tool names as branch prefixes, including `codex/` and `claude/`.
 - Create all Git worktrees under the main checkout's `.agents-worktree/<task>/` directory, regardless of the agent host. Do not use `.claude/worktrees/`, `.codex/worktrees/`, temporary directories, or sibling directories. When already inside a linked worktree, use the main checkout's directory rather than nesting another worktree.
 - Keep `/.agents-worktree/` in the root `.gitignore`. Never force-add this directory or its contents.

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to retry missing assets (empty runs Release Please)
+        description: Existing release tag (use the same tag as the workflow ref for LokiVPN)
         required: false
         type: string
 
@@ -23,7 +23,7 @@ jobs:
 
   version:
     needs: checks
-    if: github.ref == 'refs/heads/main'
+    if: github.repository != 'LokiVPN/keen-proxy' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
@@ -53,21 +53,28 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   assets:
-    needs: version
-    if: needs.version.outputs.tag != ''
+    needs: [checks, version]
+    if: >-
+      ${{ !cancelled() && needs.checks.result == 'success' &&
+          (needs.version.outputs.tag != '' ||
+           (github.repository == 'LokiVPN/keen-proxy' && github.event_name == 'workflow_dispatch' && inputs.tag != '')) }}
     runs-on: ubuntu-24.04
     # Covers separate stress and comparison steps, cross-builds, and packaging.
     timeout-minutes: 60
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+      RELEASE_TAG: ${{ inputs.tag || needs.version.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - name: Validate tag and existing release
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          if [[ "$GH_REPO" == LokiVPN/keen-proxy && "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+            echo "Dispatch Release from the requested tag so CI checks the tagged source." >&2
+            exit 1
+          fi
           gh release view "$RELEASE_TAG" --repo "$GH_REPO"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -78,6 +85,9 @@ jobs:
         id: contract
         run: |
           test "$(cat version.txt)" = "${RELEASE_TAG#v}"
+          if [[ "$GH_REPO" == LokiVPN/keen-proxy ]]; then
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "$GITHUB_SHA^{commit}")"
+          fi
           baseline=9d398fb3754036cbe35df1cf07098164ff62a9d5
           # Only immutable pre-AWG history qualifies; missing gates never select recovery.
           git cat-file -e "$baseline^{commit}"
@@ -214,6 +224,8 @@ jobs:
             go version
             node --version
             npm --version
+            # Make expands its own variables in the tag report.
+            # shellcheck disable=SC2016
             make -s --eval='print-tags:;@echo Full tags: $(TAGS),ui; echo Lite tags: $(LITE_TAGS)' print-tags
             go list -m all
           } > dist/BUILD_INFO.txt
@@ -233,11 +245,11 @@ jobs:
             assets+=(dist/keenproxy.openwrt)
           fi
           existing=$(mktemp -d)
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$existing/names"
+          gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json assets --jq '.assets[].name' > "$existing/names"
           for asset in "${assets[@]}"; do
             name=$(basename "$asset")
             if grep -Fxq "$name" "$existing/names"; then
-              gh release download "$RELEASE_TAG" --pattern "$name" --dir "$existing"
+              gh release download "$RELEASE_TAG" --repo "$GH_REPO" --pattern "$name" --dir "$existing"
               cmp "$asset" "$existing/$name"
             fi
           done

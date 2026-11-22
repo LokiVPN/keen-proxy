@@ -1,5 +1,6 @@
 """Execute release packaging against old and native-capable source fixtures."""
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +20,19 @@ def release_step(name):
     while end < len(lines) and (lines[end].startswith('          ') or not lines[end]):
         end += 1
     return textwrap.dedent('\n'.join(lines[start:end]))
+
+
+class ReleaseDispatchTest(unittest.TestCase):
+    def test_lokivpn_release_requires_the_requested_tag_as_dispatch_ref(self):
+        script = 'set -eu\ngh() { test "$2" = view; }\n' + release_step('Validate tag and existing release')
+        for ref, expected in (('refs/tags/v0.10.0', True), ('refs/heads/master', False),
+                              ('refs/tags/v0.9.2', False)):
+            with self.subTest(ref=ref):
+                env = dict(os.environ, GH_REPO='LokiVPN/keen-proxy',
+                           RELEASE_TAG='v0.10.0', GITHUB_REF=ref)
+                result = subprocess.run(['bash', '-c', script], env=env,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'release packaging requires GNU tar')
