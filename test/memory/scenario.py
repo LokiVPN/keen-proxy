@@ -447,6 +447,9 @@ class Fixture:
                     ["ip", "route", "show", "table", "all"],
                     ["ip", "rule", "show"],
                     ["ss", "-tunap"],
+                    ["ss", "-tinm"],
+                    ["nstat", "-az"],
+                    ["ip", "-s", "link"],
                     ["cat", "/proc/net/udp"],
                     ["cat", "/proc/net/udp6"])
         for namespace in (self.router, self.client, self.wan):
@@ -477,14 +480,26 @@ def echo_server(active_path):
     class TCP(socketserver.BaseRequestHandler):
         def handle(self):
             update(1)
+            received = 0
+            echoed = 0
+            operation = "read"
             try:
                 self.request.settimeout(5)
                 while True:
+                    operation = "read"
                     data = self.request.recv(65536)
                     if not data:
+                        print(f"{time.monotonic():.6f} echo EOF {self.client_address} "
+                              f"received={received} echoed={echoed}", file=sys.stderr, flush=True)
                         return
+                    received += len(data)
+                    operation = "write"
                     self.request.sendall(data)
-            except OSError:
+                    echoed += len(data)
+            except OSError as exc:
+                print(f"{time.monotonic():.6f} echo {operation} {self.client_address} "
+                      f"received={received} echoed={echoed} {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
                 return
             finally:
                 update(-1)

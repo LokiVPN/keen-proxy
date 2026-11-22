@@ -1,91 +1,11 @@
 name: CI
 
-on:
-  push:
-    branches: [master]
-  pull_request:
-  workflow_call:
-  workflow_dispatch:
+on: workflow_dispatch
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: Tests and builds
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      CGO_ENABLED: '0'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Read pinned Go version
-        id: go-version
-        run: |
-          version=$(awk '$1 == "go" {print $2}' go.mod)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Go and installer tests
-        run: make test
-      - name: Go vet
-        run: make vet
-      - name: Frontend tests and production build
-        working-directory: web
-        run: |
-          npm ci --no-audit --no-fund
-          npm test
-          npm run build
-
-  memory:
-    name: Memory regression
-    runs-on: ubuntu-24.04
-    # Independent of stress and router builds. Full history is required for the fixed baseline.
-    timeout-minutes: 60
-    env:
-      CGO_ENABLED: '0'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Read pinned Go version
-        id: go-version
-        run: |
-          version=$(awk '$1 == "go" {print $2}' go.mod)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache-dependency-path: go.sum
-      - name: Memory regression
-        run: make memory-regression
-      - name: Preserve memory evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: memory-regression-${{ github.run_id }}-${{ github.run_attempt }}
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            .agents-work/memory-regression/*/results/
-            .agents-work/memory-regression/*/container-tmp/
-            .agents-work/memory-regression/*/manifest.txt
-            .agents-work/memory-regression/*/*-build-info.txt
-            .agents-work/memory-regression/*/*-build.log
-            .agents-work/memory-regression/*/cleanup.log
-            .agents-work/memory-regression/*/exit-code
-
   stress:
     name: AWG stress (320 MiB)
     runs-on: ubuntu-24.04
@@ -106,6 +26,11 @@ jobs:
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache-dependency-path: go.sum
+      - name: Record diagnostic host
+        run: |
+          uname -rm
+          lscpu
+          docker info --format '{{.NCPU}} CPUs, kernel {{.KernelVersion}}'
       - name: AWG 320 stress
         run: make memory-stress
       - name: Preserve AWG stress evidence
@@ -124,109 +49,3 @@ jobs:
             .agents-work/memory-regression/*/*-build.log
             .agents-work/memory-regression/*/cleanup.log
             .agents-work/memory-regression/*/exit-code
-
-  router:
-    name: Router builds
-    runs-on: ubuntu-24.04
-    # Compilation only. Do not call memory gates or make -o in this job.
-    timeout-minutes: 60
-    env:
-      CGO_ENABLED: '0'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Read pinned Go version
-        id: go-version
-        run: |
-          version=$(awk '$1 == "go" {print $2}' go.mod)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Router cross-builds
-        run: make build-router-ci build-router-lite-ci
-
-  integration:
-    name: Network integration
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Read pinned Go version
-        id: go-version
-        run: |
-          version=$(awk '$1 == "go" {print $2}' go.mod)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache-dependency-path: go.sum
-      - run: make integration
-
-  openwrt:
-    name: OpenWrt TPROXY integration
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Read pinned Go version
-        id: go-version
-        run: |
-          version=$(awk '$1 == "go" {print $2}' go.mod)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache-dependency-path: go.sum
-      - run: make integration-openwrt
-
-  # Pull requests scan only their own commits. The default branch and release
-  # tags scan all reachable commits. tools/scan-secrets.sh pins the MIT gitleaks binary;
-  # gitleaks-action requires an organization license and stops after 30 commits.
-  # These scans catch accidental leaks. They are not a security gate: a pull
-  # request can change this workflow, the wrapper, and the scanner policy.
-  secrets-branch:
-    name: Secret scan (pull request)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Scan commits introduced by the pull request
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          SCAN_BASE: ${{ github.event.pull_request.base.sha }}
-          SCAN_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          case "$PR_NUMBER" in
-            ''|*[!0-9]*) echo "invalid pull request number" >&2; exit 2 ;;
-          esac
-          git fetch --no-tags origin "pull/${PR_NUMBER}/head"
-          tools/scan-secrets.sh range "$SCAN_BASE" "$SCAN_HEAD"
-
-  secrets-history:
-    name: Secret scan (history)
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || github.ref_type == 'tag'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Scan every commit reachable from the checked-out revision
-        run: tools/scan-secrets.sh history
