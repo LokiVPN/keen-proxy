@@ -1,5 +1,5 @@
 import type { Connection, DiagnosticReport, Catalog, FeatureStatus, DNSCheck, Config, GeoLookup, GeoStatus, Device, DomainStatus, Session, HostStat, JournalKind, JournalPage, LinkPreview, StatsSnapshot, Status } from './types'
-import type { TProxyReadiness, UpdatePreferences, UpdateSelection, UpdateStatus } from './types'
+import type { SubscriptionSource, SubscriptionStatus, TProxyReadiness, UpdatePreferences, UpdateSelection, UpdateStatus } from './types'
 import type { ResourceExport, ResourceFormat, ResourceList, ResourcePreview } from './resourceExchange'
 import { ApiError } from './apiError.ts'
 
@@ -87,6 +87,13 @@ export const api = {
   config: () => request<Config>('GET', '/api/config'),
   saveConfig: (cfg: Config) => request<Config>('PUT', '/api/config', cfg),
   validateConfig: (cfg: Config) => request<{ ok: boolean }>('POST', '/api/config/validate', cfg),
+  subscriptionsAvailable: true,
+  previewSubscription: (source: SubscriptionSource) => request<SubscriptionStatus>('POST', '/api/subscriptions/preview', source),
+  subscriptionStatus: () => request<SubscriptionStatus[]>('GET', '/api/subscriptions/status'),
+  refreshSubscription: (id: string) => request<{ ok: boolean }>('POST', `/api/subscriptions/${encodeURIComponent(id)}/refresh`),
+  checkSubscription: (id: string, nodeId?: string) => request<{ ok: boolean }>(
+    'POST', `/api/subscriptions/${encodeURIComponent(id)}/check`, nodeId === undefined ? {} : { node_id: nodeId },
+  ),
   devices: () => request<Device[]>('GET', '/api/devices'),
   parseLink: (link: string) => request<LinkPreview>('POST', '/api/links/parse', { link }),
   importAmnezia: (uri: string) => request<{ profiles: Connection[] }>('POST', '/api/amnezia/import', { uri }),

@@ -28,6 +28,9 @@ func Masker(cfg *model.Config, extra ...string) func(string) string {
 		for _, source := range cfg.Filters.Sources {
 			secrets = append(secrets, linkSecrets(source.URL)...)
 		}
+		for _, source := range cfg.Subscriptions {
+			secrets = append(secrets, source.URL)
+		}
 		for _, cn := range cfg.Connections {
 			if wg := cn.WireGuard; wg != nil {
 				secrets = append(secrets, wg.PrivateKey, wg.Peer.PresharedKey)

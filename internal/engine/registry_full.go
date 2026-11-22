@@ -31,8 +31,10 @@ func Context(ctx context.Context) context.Context {
 	redirect.RegisterTProxy(in)
 	direct.RegisterInbound(in)
 
+	out := include.OutboundRegistry()
+	registerSubscriptionBalance(out)
 	return box.Context(ctx, in,
-		include.OutboundRegistry(),
+		out,
 		include.EndpointRegistry(),
 		include.DNSTransportRegistry(),
 		service.NewRegistry(),

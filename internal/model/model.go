@@ -16,6 +16,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/awg"
 	"github.com/ordo-systems/keen-proxy/internal/links"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 // Built-in route targets may be used instead of a connection ID.
@@ -46,19 +47,20 @@ const (
 
 // Config is the persisted schema shared by the compiler, daemon, and API.
 type Config struct {
-	SchemaVersion int          `yaml:"schema_version" json:"schema_version"`
-	System        System       `yaml:"system,omitempty" json:"system,omitempty"`
-	Filters       Filters      `yaml:"filters,omitempty" json:"filters"`
-	API           API          `yaml:"api" json:"api"`
-	LAN           LAN          `yaml:"lan" json:"lan"`
-	DNS           DNS          `yaml:"dns" json:"dns"`
-	Intercept     Intercept    `yaml:"intercept" json:"intercept"`
-	GeoIP         GeoIP        `yaml:"geoip" json:"geoip"`
-	Failover      Failover     `yaml:"failover" json:"failover"`
-	Connections   []Connection `yaml:"connections" json:"connections"`
-	Groups        []Group      `yaml:"groups" json:"groups"`
-	Networks      []Network    `yaml:"networks" json:"networks"`
-	Clients       []Client     `yaml:"clients" json:"clients"`
+	SchemaVersion int                   `yaml:"schema_version" json:"schema_version"`
+	System        System                `yaml:"system,omitempty" json:"system,omitempty"`
+	Filters       Filters               `yaml:"filters,omitempty" json:"filters"`
+	API           API                   `yaml:"api" json:"api"`
+	LAN           LAN                   `yaml:"lan" json:"lan"`
+	DNS           DNS                   `yaml:"dns" json:"dns"`
+	Intercept     Intercept             `yaml:"intercept" json:"intercept"`
+	GeoIP         GeoIP                 `yaml:"geoip" json:"geoip"`
+	Failover      Failover              `yaml:"failover" json:"failover"`
+	Connections   []Connection          `yaml:"connections" json:"connections"`
+	Subscriptions []subscription.Source `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
+	Groups        []Group               `yaml:"groups" json:"groups"`
+	Networks      []Network             `yaml:"networks" json:"networks"`
+	Clients       []Client              `yaml:"clients" json:"clients"`
 
 	LocalPresets []LocalPreset `yaml:"local_presets,omitempty" json:"local_presets,omitempty"`
 }
@@ -464,12 +466,15 @@ func (c *Config) Validate() error {
 	}
 
 	conns := map[string]bool{}
+	c.validateSubscriptions(add)
 	for i, cn := range c.Connections {
 		switch {
 		case cn.ID == "":
 			add("connections[%d]: empty id", i)
 		case cn.ID == TargetDirect || cn.ID == TargetBlock:
 			add("connections[%d]: id %q is reserved", i, cn.ID)
+		case c.HasManagedTarget(cn.ID):
+			add("connections[%d]: id %q conflicts with a subscription target", i, cn.ID)
 		case conns[cn.ID]:
 			add("connections[%d]: duplicate id %q", i, cn.ID)
 		}
@@ -504,7 +509,7 @@ func (c *Config) Validate() error {
 		if t == "" && allowEmpty {
 			return
 		}
-		if t != TargetDirect && t != TargetBlock && !conns[t] {
+		if t != TargetDirect && t != TargetBlock && !conns[t] && !c.HasManagedTarget(t) {
 			add("%s: unknown target %q", where, t)
 		}
 	}

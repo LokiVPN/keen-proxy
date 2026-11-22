@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -41,7 +42,21 @@ func actorOf(ctx context.Context) Actor {
 func (d *Daemon) Journal(k journal.Kind) *journal.Journal { return d.journals[k] }
 
 // Mask returns a function that redacts current configuration secrets from log exports.
-func (d *Daemon) Mask() func(string) string { return journal.Masker(d.Config()) }
+func (d *Daemon) Mask() func(string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cfg == nil {
+		return journal.Masker(nil)
+	}
+	cfg := *d.cfg
+	cfg.Connections = slices.Clone(cfg.Connections)
+	for _, state := range d.subscriptions.states {
+		for _, node := range state.snapshot.Nodes {
+			cfg.Connections = append(cfg.Connections, model.Connection{Type: model.ConnLink, Link: node.Link})
+		}
+	}
+	return journal.Masker(&cfg)
+}
 
 // audit records an operation result with the initiating actor and target.
 func (d *Daemon) audit(who, action, target, result, details string) {
@@ -114,6 +129,7 @@ func configChanges(prev, cfg *model.Config) string {
 		}
 	}
 	count("connections", len(prev.Connections), len(cfg.Connections), reflect.DeepEqual(prev.Connections, cfg.Connections))
+	count("subscriptions", len(prev.Subscriptions), len(cfg.Subscriptions), slices.Equal(prev.Subscriptions, cfg.Subscriptions))
 	count("groups", len(prev.Groups), len(cfg.Groups), reflect.DeepEqual(prev.Groups, cfg.Groups))
 	count("networks", len(prev.Networks), len(cfg.Networks), reflect.DeepEqual(prev.Networks, cfg.Networks))
 	count("devices", len(prev.Clients), len(cfg.Clients), reflect.DeepEqual(prev.Clients, cfg.Clients))

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 
+	"github.com/ordo-systems/keen-proxy/internal/model"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
@@ -24,6 +26,8 @@ type Engine struct {
 	cancel  context.CancelFunc
 	box     *box.Box
 	current []byte
+
+	subscriptionSessions map[string]*subscriptionBalanceSessions
 }
 
 // Apply starts sing-box or restarts it when configuration changes. It reports
@@ -51,8 +55,15 @@ func (e *Engine) Apply(config []byte) (bool, error) {
 		cancel()
 		return false, fmt.Errorf("create sing-box: %w", err)
 	}
-	if e.Tracker != nil {
-		instance.Router().AppendTracker(e.Tracker)
+	tracker := e.Tracker
+	for _, outbound := range instance.Outbound().Outbounds() {
+		if _, ok := outbound.(*subscriptionBalance); ok {
+			tracker = subscriptionBalanceTracker{next: tracker}
+			break
+		}
+	}
+	if tracker != nil {
+		instance.Router().AppendTracker(tracker)
 	}
 	// Close the old instance first because both instances bind the same ports.
 	e.closeLocked()
@@ -62,6 +73,12 @@ func (e *Engine) Apply(config []byte) (bool, error) {
 		return false, fmt.Errorf("start sing-box: %w", err)
 	}
 	e.ctx, e.cancel, e.box, e.current = ctx, cancel, instance, config
+	for tag := range e.subscriptionSessions {
+		outbound, _ := instance.Outbound().Outbound(tag)
+		if _, active := outbound.(*subscriptionBalance); !active {
+			delete(e.subscriptionSessions, tag)
+		}
+	}
 	return true, nil
 }
 
@@ -104,4 +121,50 @@ func (e *Engine) Select(group, tag string) bool {
 	}
 	s, ok := o.(interface{ SelectOutbound(string) bool })
 	return ok && s.SelectOutbound(tag)
+}
+
+// UpdateSubscriptionBalance replaces the eligible set for an applied balance.
+// A changed source identity discards any retained sessions for that target.
+func (e *Engine) UpdateSubscriptionBalance(tag, sourceKey string, healthy []string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.box == nil {
+		return false
+	}
+	outbound, ok := e.box.Outbound().Outbound(tag)
+	balance, isBalance := outbound.(*subscriptionBalance)
+	if !ok || !isBalance {
+		return false
+	}
+	var sessions *subscriptionBalanceSessions
+	if balance.strategy == model.SubscriptionStickySession {
+		sessions = e.subscriptionSessions[tag]
+		if sessions == nil || sessions.sourceKey != sourceKey {
+			sessions = &subscriptionBalanceSessions{sourceKey: sourceKey}
+			if e.subscriptionSessions == nil {
+				e.subscriptionSessions = make(map[string]*subscriptionBalanceSessions)
+			}
+			e.subscriptionSessions[tag] = sessions
+		}
+	}
+	balance.updatePool(healthy, sessions)
+	return true
+}
+
+// SubscriptionBalanceCheckpoint captures active source session mappings for a
+// configuration transaction. Call the returned function before reconciling
+// the previous configuration after a rejected change.
+func (e *Engine) SubscriptionBalanceCheckpoint() func() {
+	e.mu.Lock()
+	retained := maps.Clone(e.subscriptionSessions)
+	for tag, sessions := range retained {
+		retained[tag] = sessions.snapshot()
+	}
+	e.mu.Unlock()
+
+	return func() {
+		e.mu.Lock()
+		e.subscriptionSessions = maps.Clone(retained)
+		e.mu.Unlock()
+	}
 }

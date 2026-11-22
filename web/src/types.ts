@@ -41,6 +41,55 @@ export interface Connection {
   fallback?: string
 }
 
+// Saved source settings. The URL can include a private subscription token.
+export interface SubscriptionSource {
+  id: string
+  url: string
+  send_hwid?: boolean
+}
+
+export type SubscriptionState =
+  | 'pending' | 'ready' | 'network_error' | 'hwid_limit' | 'hwid_required'
+  | 'empty' | 'unsupported' | 'invalid' | 'http_error' | 'activation_error'
+
+export interface SubscriptionMetadata {
+  title?: string
+  announce?: string
+  update_interval_hours?: number
+  support_url?: string
+  profile_url?: string
+  usage?: { upload?: number; download?: number; total?: number; expire?: number }
+}
+
+// The latest completed HTTPS check can remain visible while another is pending.
+export interface SubscriptionNodeStatus {
+  id: string
+  name: string
+  health?: 'available' | 'unavailable' | 'unknown'
+  checking?: boolean
+  checked_at?: string
+  latency_ms?: number
+  check_error?: string
+}
+
+// Router-owned status and preview results contain display data and opaque node IDs.
+export interface SubscriptionStatus {
+  id: string
+  state: SubscriptionState
+  metadata?: SubscriptionMetadata
+  nodes?: SubscriptionNodeStatus[]
+  skipped?: number
+  error?: string
+  last_attempt?: string
+  last_success?: string
+  active_node?: string
+  last_switch?: string
+  switch_reason?: 'initial' | 'failure' | 'removed'
+  unavailable?: boolean
+  balance_eligible?: number
+  check_progress?: { total: number; completed: number }
+}
+
 // Route group containing explicit domain/address entries or country selectors.
 export interface Group {
  disabled?: boolean
@@ -97,6 +146,7 @@ export interface Config {
   geoip: GeoIPConfig
   failover?: { url: string; interval: number; down_after: number; up_after: number }
   connections: Connection[] | null
+  subscriptions?: SubscriptionSource[]
   groups: Group[] | null
   local_presets?: LocalPreset[]
   networks: Network[] | null

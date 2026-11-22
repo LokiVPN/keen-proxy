@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/bufio"
@@ -22,6 +23,9 @@ const (
 	SampleInterval = 2 * time.Second
 	seriesLen      = 900  // 30 minutes at two-second intervals.
 	MaxHosts       = 3000 // Per outbound; evict the oldest hosts first.
+
+	// A whole managed subscription can have hundreds of concrete outbounds.
+	maxSubscriptionNodeHosts = 32
 )
 
 // Point is one timestamped traffic-history sample.
@@ -78,6 +82,8 @@ type hostStat struct {
 // outbound combines atomic byte totals with lock-protected history and host indexes.
 type outbound struct {
 	tag              string
+	subscriptionNode bool
+	active           int
 	down, up         atomic.Int64 // Cumulative bytes.
 	lastDown, lastUp int64
 	series           []Point
@@ -91,10 +97,11 @@ type Tracker struct {
 	// rule matched). Set it before starting the engine.
 	OnRoute func(m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound)
 
-	mu     sync.Mutex
-	outs   map[string]*outbound
-	active map[*conn]struct{}
-	sys    systemSampler
+	mu                sync.Mutex
+	outs              map[string]*outbound
+	active            map[*conn]struct{}
+	subscriptionNodes map[string]struct{} // nil before the first applied catalog
+	sys               systemSampler
 }
 
 // NewTracker creates daemon-lifetime counters without starting the sampler.
@@ -102,10 +109,40 @@ func NewTracker() *Tracker {
 	return &Tracker{outs: map[string]*outbound{}, active: map[*conn]struct{}{}}
 }
 
+// RetainSubscriptionNodes replaces the applied catalog of concrete node tags.
+// Removed nodes keep their counters until the last active flow closes.
+func (t *Tracker) RetainSubscriptionNodes(tags []string) {
+	retained := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		retained[tag] = struct{}{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.subscriptionNodes = retained
+	for tag, outbound := range t.outs {
+		if outbound.active == 0 && t.retiredSubscriptionNodeLocked(outbound) {
+			delete(t.outs, tag)
+		}
+	}
+}
+
+func (t *Tracker) retiredSubscriptionNodeLocked(o *outbound) bool {
+	if !o.subscriptionNode || t.subscriptionNodes == nil {
+		return false
+	}
+	_, retained := t.subscriptionNodes[o.tag]
+	return !retained
+}
+
 func (t *Tracker) outboundLocked(tag string) *outbound {
 	o := t.outs[tag]
 	if o == nil {
-		o = &outbound{tag: tag, hosts: map[string]*hostStat{}}
+		_, node, managed := model.ParseManagedTarget(tag)
+		o = &outbound{
+			tag:              tag,
+			subscriptionNode: managed && node != "auto" && !model.IsSubscriptionBalance(node),
+			hosts:            map[string]*hostStat{},
+		}
 		t.outs[tag] = o
 	}
 	return o
@@ -151,7 +188,11 @@ func (t *Tracker) open(m adapter.InboundContext, out adapter.Outbound) *conn {
 	o := t.outboundLocked(tag)
 	h := o.hosts[name]
 	if h == nil {
-		if len(o.hosts) >= MaxHosts {
+		limit := MaxHosts
+		if o.subscriptionNode {
+			limit = maxSubscriptionNodeHosts
+		}
+		if len(o.hosts) >= limit {
 			evictOldest(o.hosts)
 		}
 		h = &hostStat{}
@@ -161,6 +202,7 @@ func (t *Tracker) open(m adapter.InboundContext, out adapter.Outbound) *conn {
 	h.lastSeen.Store(time.Now().UnixMilli())
 	c := &conn{out: o, host: h, hostName: name}
 	t.active[c] = struct{}{}
+	o.active++
 	return c
 }
 
@@ -178,6 +220,10 @@ func evictOldest(hosts map[string]*hostStat) {
 func (t *Tracker) close(c *conn) {
 	t.mu.Lock()
 	delete(t.active, c)
+	c.out.active--
+	if c.out.active == 0 && t.retiredSubscriptionNodeLocked(c.out) {
+		delete(t.outs, c.out.tag)
+	}
 	t.mu.Unlock()
 }
 
@@ -298,13 +344,9 @@ func (t *Tracker) sample(now time.Time) {
 func (t *Tracker) Snapshot(withSeries bool) Snapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	active := map[*outbound]int{}
-	for c := range t.active {
-		active[c.out]++
-	}
 	snap := Snapshot{System: t.sys.last}
 	for _, o := range t.outs {
-		out := Outbound{Tag: o.tag, Active: active[o], DownTotal: o.down.Load(), UpTotal: o.up.Load()}
+		out := Outbound{Tag: o.tag, Active: o.active, DownTotal: o.down.Load(), UpTotal: o.up.Load()}
 		for _, p := range o.series {
 			out.PeakDown = max(out.PeakDown, p.Down)
 			out.PeakUniq = max(out.PeakUniq, p.Unique)

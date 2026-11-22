@@ -37,6 +37,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/netfilter"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 // Options supplies local paths, runtime dependencies, and watchdog settings.
@@ -95,6 +96,8 @@ type Daemon struct {
 	restored     int // number of watchdog firewall restorations
 	stats        *stats.Tracker
 	geo          geoState
+
+	subscriptions subscriptionRuntime
 
 	neighborUpdatePending bool // a failed compile may have written only some rule-sets
 
@@ -159,6 +162,7 @@ func New(opt Options) *Daemon {
 	d.filters = filterlist.New(filepath.Join(filepath.Dir(opt.RuleSetDir), "filters"), nil)
 	d.geoStore = geoip.NewStore(filepath.Join(filepath.Dir(opt.RuleSetDir), "geoip"))
 	d.geoWake = make(chan struct{}, 1)
+	d.subscriptions = newSubscriptionRuntime(opt.RuleSetDir)
 	d.firewallWake = make(chan struct{}, 1)
 	d.resetDomainGeneration()
 	d.stats.OnRoute = d.onRoute
@@ -200,6 +204,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if ctx.Err() == nil {
 		go d.runGeoUpdates(ctx)
 		go d.runFailover(ctx)
+		go d.runSubscriptions(ctx)
+		go d.runSubscriptionHealth(ctx)
 		go d.runDomains(ctx)
 		go d.runFilterUpdates(ctx)
 		go d.runDeviceNames(ctx)
@@ -230,6 +236,7 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 			return nil, err
 		}
 	}
+	d.loadSubscriptionSnapshotsLocked(ctx, cfg)
 	d.adoptLegacyGeo(cfg)
 	d.reloadGeoLocked(cfg)
 	d.neighbors = d.readNeighbors(cfg)
@@ -251,9 +258,15 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 		}
 		return d.startupBlocked, nil
 	}
+	before := maps.Clone(d.subscriptions.states)
 	if err := d.applyLocked(ctx, cfg); err != nil {
 		return nil, err
 	}
+	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
+	if err := d.saveChangedSubscriptionSnapshotsLocked(cfg, before); err != nil {
+		d.audit("system", "Subscription selection not saved", "subscriptions", "warn", err.Error())
+	}
+	d.auditSubscriptionSelectionsLocked(before)
 	d.log.Info("keenProxy started", "mode", cfg.Intercept.Mode, "sources", len(d.plan.Sources), "dns", d.dns.Addr())
 	d.audit("system", "Start keenProxy", "core", "ok",
 		fmt.Sprintf("interception %s, sources %d, DNS %s", cfg.Intercept.Mode, len(d.plan.Sources), d.dns.Addr()))
@@ -279,9 +292,7 @@ func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.applyConfigLocked(ctx, cfg, true)
+	return d.applyWithSubscriptions(ctx, cfg)
 }
 
 func applyActor(ctx context.Context) (by, from string) {
@@ -300,7 +311,7 @@ func (d *Daemon) applyAdmissionLocked(ctx context.Context) error {
 }
 
 // applyConfigLocked is shared by draft Apply and saved recovery.
-func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save bool) error {
+func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save bool, candidates map[subscription.Source]subscriptionAttempt) error {
 	if err := d.applyAdmissionLocked(ctx); err != nil {
 		return err
 	}
@@ -316,7 +327,21 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	changes := configChanges(prev, cfg)
 	activation := d.startupBlocked
 	neighbors := d.neighbors
-	if err := d.applyLocked(ctx, cfg); err != nil {
+	previousSubscriptions := d.subscriptions.states
+	previousHealth := d.health
+	if len(previousSubscriptions) > 0 || len(cfg.Subscriptions) > 0 {
+		previousHealth = maps.Clone(d.health)
+	}
+	restoreBalanceSessions := d.eng.SubscriptionBalanceCheckpoint()
+	d.subscriptions.states = d.subscriptionDraftLocked(cfg, candidates)
+	d.discardReplacedSubscriptionHealthLocked(previousSubscriptions)
+	err := d.applyLocked(ctx, cfg)
+	if err == nil {
+		err = d.saveChangedSubscriptionSnapshotsLocked(cfg, previousSubscriptions)
+	}
+	if err != nil {
+		restoreBalanceSessions()
+		d.subscriptions.states, d.health = previousSubscriptions, previousHealth
 		details := err.Error()
 		restore := journalRestoreFailure(err)
 		var rollbackRestore *journal.RestoreDiagnostic
@@ -334,6 +359,8 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 			} else {
 				details += "; previous configuration restored"
 			}
+		} else {
+			d.restoreInactiveLocked(nil)
 		}
 		entry := journal.Entry{Actor: by, Action: "Configuration apply failed", Target: "config", Result: "error", Details: details + from}
 		if restore != nil || rollbackRestore != nil {
@@ -348,6 +375,8 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 			err = d.persistConfig(cfg, true)
 		}
 		if err != nil {
+			restoreBalanceSessions()
+			d.subscriptions.states, d.health = previousSubscriptions, previousHealth
 			d.restoreInactiveLocked(prev)
 			d.neighbors = neighbors
 			d.audit(by, "Configuration apply failed", "config", "error", err.Error()+"; interception remains inactive"+from)
@@ -357,10 +386,27 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		d.live.Store(cfg)
 		d.startupBlocked = nil
 		close(activation)
-	} else if save {
+	}
+	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
+	if activation == nil && save {
 		if err := d.persistConfig(cfg, false); err != nil {
+			d.auditSubscriptionSelectionsLocked(previousSubscriptions)
+			wakeSubscriptionWorker(d.subscriptions.wake)
 			d.audit(by, "Configuration applied but not saved", "config", "warn", err.Error()+from)
 			return fmt.Errorf("configuration applied but not saved: %w", err)
+		}
+	}
+	if save {
+		d.retainSavedSubscriptionSnapshotsLocked(cfg)
+	}
+	d.auditSubscriptionSelectionsLocked(previousSubscriptions)
+	for source := range candidates {
+		delete(d.subscriptions.previews, source)
+	}
+	if len(cfg.Subscriptions) > 0 {
+		wakeSubscriptionWorker(d.subscriptions.wake)
+		if prev != nil && prev.Failover != cfg.Failover {
+			wakeSubscriptionWorker(d.subscriptions.probeWake)
 		}
 	}
 	action := "Apply configuration"
@@ -413,7 +459,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 	var mainTemp string
 	if mainChanged {
 		var err error
-		mainTemp, err = stageRecoveryFile(path, next)
+		mainTemp, err = stagePrivateFile(path, next, false)
 		if err != nil {
 			return fmt.Errorf("configuration was not saved: %w", err)
 		}
@@ -430,7 +476,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 	var rollbackTemp string
 	if previousChanged {
 		if mainChanged && !missing {
-			rollbackTemp, err = stageRecoveryFile(previousPath+".recovery", previous)
+			rollbackTemp, err = stagePrivateFile(previousPath+".recovery", previous, false)
 			if err != nil {
 				return fmt.Errorf("rollback snapshot was not saved: %w", err)
 			}
@@ -440,7 +486,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 				}
 			}()
 		}
-		previousTemp, err := stageRecoveryFile(previousPath, original)
+		previousTemp, err := stagePrivateFile(previousPath, original, false)
 		if err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
 		}
@@ -471,13 +517,16 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 	return nil
 }
 
-func stageRecoveryFile(path string, data []byte) (string, error) {
+func stagePrivateFile(path string, data []byte, syncData bool) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return "", err
 	}
-	_, writeErr := f.Write(data)
-	if err := errors.Join(writeErr, f.Close()); err != nil {
+	_, err = f.Write(data)
+	if err == nil && syncData {
+		err = f.Sync()
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
 		os.Remove(f.Name())
 		return "", err
 	}
@@ -514,13 +563,14 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	if err != nil {
 		return err
 	}
-	if restarted, err := d.eng.Apply(out.SingBox); err != nil {
+	restarted, err := d.applyCoreLocked(out)
+	if err != nil {
 		return err
-	} else if restarted && prev != nil && d.startupBlocked == nil {
+	}
+	if restarted && prev != nil && d.startupBlocked == nil {
 		d.coreRestarted = true
 		d.log.Info("sing-box core restarted with new configuration")
 	}
-	d.reselectLocked()
 	d.filters.Configure(cfg.Filters)
 
 	if d.dns == nil || prev == nil || dnsFrontendChanged(prev.DNS, cfg.DNS) || dnsGroupsChanged(prev.Groups, cfg.Groups) {
@@ -641,13 +691,19 @@ func (d *Daemon) restoreInactiveLocked(cfg *model.Config) {
 	d.stopInterceptionLocked()
 	debug.SetMemoryLimit(d.memoryActive)
 	d.plan = netfilter.Plan{}
-	if !reflect.DeepEqual(d.cfg.GeoIP, cfg.GeoIP) {
+	if cfg != nil && !reflect.DeepEqual(d.cfg.GeoIP, cfg.GeoIP) {
 		d.reloadGeoLocked(cfg)
 	}
 	d.cfg = cfg
 	d.chains, d.serverHosts = nil, nil
-	d.reselectLocked()
-	d.filters.Configure(cfg.Filters)
+	d.subscriptions.selectors, d.subscriptions.balances, d.subscriptions.members = nil, nil, nil
+	d.subscriptions.generation++
+	if cfg != nil {
+		d.reselectLocked()
+		d.filters.Configure(cfg.Filters)
+	} else {
+		d.live.Store(nil)
+	}
 	d.resetDomainGeneration()
 }
 
@@ -718,11 +774,10 @@ func (d *Daemon) watch(ctx context.Context) {
 		}
 		// Client addresses live in watched rule-set files, so sing-box can
 		// pick up changes without restarting.
-		if restarted, err := d.eng.Apply(out.SingBox); err != nil {
+		if restarted, err := d.applyCoreLocked(out); err != nil {
 			d.log.Error("restart sing-box", "err", err)
 		} else if restarted {
 			d.log.Warn("sing-box configuration changed after address updates, core restarted")
-			d.reselectLocked()
 		}
 		d.plan = out.Plan
 		if !d.planPending {
@@ -735,10 +790,30 @@ func (d *Daemon) watch(ctx context.Context) {
 	d.checkFirewall(ctx, "watchdog")
 }
 
+// applyCoreLocked activates compiled outbounds and restores runtime selections.
+func (d *Daemon) applyCoreLocked(out compile.Output) (bool, error) {
+	restarted, err := d.eng.Apply(out.SingBox)
+	if err != nil {
+		return false, err
+	}
+	if err := d.restoreSubscriptionSelectorsLocked(out, restarted, time.Now()); err != nil {
+		return restarted, err
+	}
+	d.reselectLocked()
+	return restarted, nil
+}
+
+func (d *Daemon) compileRuntimeLocked() (compile.Output, error) {
+	return compile.Compile(compile.Input{
+		Config: d.cfg, Neighbors: d.neighbors, RuleSetDir: d.opt.RuleSetDir,
+		Subscriptions: d.subscriptionCompileInputLocked(),
+	})
+}
+
 // compileLocked compiles configuration and writes local rule-sets while d.mu
 // is held. sing-box loads the files at startup and watches subsequent changes.
 func (d *Daemon) compileLocked() (compile.Output, error) {
-	out, err := compile.Compile(compile.Input{Config: d.cfg, Neighbors: d.neighbors, RuleSetDir: d.opt.RuleSetDir})
+	out, err := d.compileRuntimeLocked()
 	if err != nil {
 		return out, err
 	}

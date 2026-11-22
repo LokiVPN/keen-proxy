@@ -14,6 +14,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/netfilter"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 const (
@@ -29,6 +30,8 @@ type Input struct {
 	Neighbors map[string]netip.Addr
 	// RuleSetDir holds local rule-set files referenced by the generated configuration.
 	RuleSetDir string
+	// Subscriptions provides already validated node snapshots, keyed by source ID.
+	Subscriptions map[string][]subscription.Node
 }
 
 // Output contains the engine configuration and runtime artifacts to apply.
@@ -49,7 +52,13 @@ type Output struct {
 	ServerHosts map[string]string
 	// Failover describes chains the daemon probes and switches through selectors.
 	Failover []FailoverChain
-	Plan     netfilter.Plan
+	// SubscriptionSelectors retain provider priority for the daemon's selection policy.
+	SubscriptionSelectors []SubscriptionSelector
+	// SubscriptionBalances lists targets whose eligibility is supplied by the daemon.
+	SubscriptionBalances []SubscriptionBalance
+	// SubscriptionOutbounds identifies the managed nodes that exist in the engine.
+	SubscriptionOutbounds []string
+	Plan                  netfilter.Plan
 }
 
 // Client classes depend only on configured connections; address updates change
@@ -104,7 +113,12 @@ func Compile(in Input) (Output, error) {
 	}
 
 	chains, tags := failover(c)
-	sb, err := json.MarshalIndent(singBox(c, in.RuleSetDir, networks, conns, chains, tags), "", "  ")
+	managed, err := compileSubscriptions(in, tags)
+	if err != nil {
+		return Output{}, err
+	}
+	conns.outbounds = append(conns.outbounds, managed.outbounds...)
+	sb, err := json.MarshalIndent(singBox(c, in.RuleSetDir, networks, conns, chains, tags, managed), "", "  ")
 	if err != nil {
 		return Output{}, err
 	}
@@ -117,12 +131,15 @@ func Compile(in Input) (Output, error) {
 		sets[name] = raw
 	}
 	return Output{
-		SingBox:     sb,
-		RuleSets:    sets,
-		Countries:   geo.countries,
-		Categories:  geo.categories,
-		ServerHosts: conns.hosts,
-		Failover:    chains,
+		SingBox:               sb,
+		RuleSets:              sets,
+		Countries:             geo.countries,
+		Categories:            geo.categories,
+		ServerHosts:           conns.hosts,
+		Failover:              chains,
+		SubscriptionSelectors: managed.selectors,
+		SubscriptionBalances:  managed.balances,
+		SubscriptionOutbounds: managed.nodeTags,
 		Plan: netfilter.Plan{
 			BlockEncryptedDNS: c.DNS.BlockEncrypted,
 			DNSBypassSources:  dnsBypass,
@@ -233,7 +250,7 @@ func failover(c *model.Config) ([]FailoverChain, map[string]string) {
 }
 
 // singBox orders global blocks, client policies, and network policies after sniffing.
-func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOut, chains []FailoverChain, tags map[string]string) obj {
+func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOut, chains []FailoverChain, tags map[string]string, managed subscriptionRouting) obj {
 	inbounds := []obj{{"type": "redirect", "tag": tagTCPIn, "listen": "0.0.0.0", "listen_port": c.Intercept.TCPPort}}
 	sniffIn := []string{tagTCPIn}
 	if c.Intercept.Mode == model.InterceptTProxy {
@@ -272,7 +289,7 @@ func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOu
 	cfg := obj{
 		"log":       obj{"level": "warn", "timestamp": true},
 		"inbounds":  inbounds,
-		"outbounds": append(append([]obj{{"type": "direct", "tag": tagDirect}}, conns.outbounds...), selectors(chains)...),
+		"outbounds": append(append([]obj{{"type": "direct", "tag": tagDirect}}, conns.outbounds...), managedOutbounds(chains, managed)...),
 		"route":     route,
 	}
 	if len(conns.endpoints) > 0 {
@@ -281,11 +298,13 @@ func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOu
 	return cfg
 }
 
-// selectors emits one selector per chain. Switching closes existing connections
-// so applications reconnect through the newly selected outbound.
-func selectors(chains []FailoverChain) []obj {
+// managedOutbounds emits selectors and per-connection policies after their concrete nodes.
+func managedOutbounds(chains []FailoverChain, managed subscriptionRouting) []obj {
 	var out []obj
-	blockAdded := false
+	blockAdded := managed.block
+	if blockAdded {
+		out = append(out, obj{"type": "block", "tag": model.TargetBlock})
+	}
 	for _, fc := range chains {
 		if fc.Chain[0] == model.TargetBlock && !blockAdded {
 			out = append(out, obj{"type": "block", "tag": model.TargetBlock})
@@ -295,6 +314,12 @@ func selectors(chains []FailoverChain) []obj {
 			"type": "selector", "tag": fc.Tag, "outbounds": fc.Chain, "default": fc.Chain[0],
 			"interrupt_exist_connections": true,
 		})
+	}
+	for _, selector := range managed.selectors {
+		out = append(out, managedSelector(selector))
+	}
+	for _, balance := range managed.balances {
+		out = append(out, obj{"type": model.SubscriptionBalanceOutboundType, "tag": balance.Tag, "outbounds": balance.Candidates})
 	}
 	return out
 }
@@ -482,6 +507,9 @@ func clientClasses(c *model.Config) []string {
 	classes := []string{classOff}
 	for _, cn := range c.Connections {
 		classes = append(classes, classFull+cn.ID)
+	}
+	for _, target := range subscriptionTargets(c) {
+		classes = append(classes, classFull+target)
 	}
 	return append(classes, classSplit)
 }

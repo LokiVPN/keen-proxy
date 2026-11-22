@@ -45,6 +45,7 @@ func (s *Server) yamlExport(w http.ResponseWriter, r *http.Request) {
 		// profiles, including AmneziaWG text, instead of guessing secret field names.
 		cp := c.Clone()
 		cp.LocalPresets = nil
+		cp.Subscriptions = nil
 		cp.DNS.Upstreams = []string{"REDACTED"}
 		cp.DNS.BypassSources = nil
 		for i := range cp.GeoIP.Databases {

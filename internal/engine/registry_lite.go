@@ -53,6 +53,7 @@ func Context(ctx context.Context) context.Context {
 	trojan.RegisterOutbound(out)
 	vless.RegisterOutbound(out)
 	trusttunnel.RegisterOutbound(out)
+	registerSubscriptionBalance(out)
 
 	ep := endpoint.NewRegistry()
 	wireguard.RegisterEndpoint(ep)

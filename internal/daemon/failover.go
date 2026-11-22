@@ -297,6 +297,11 @@ func (d *Daemon) reselectLocked() {
 			members[cn.ID] = true
 		}
 	}
+	for source, state := range d.subscriptions.states {
+		for _, node := range state.snapshot.Nodes {
+			members[model.ManagedTarget(source, node.ID)] = true
+		}
+	}
 	for id := range d.health {
 		if !members[id] {
 			delete(d.health, id)

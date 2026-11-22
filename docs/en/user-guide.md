@@ -47,6 +47,24 @@ Raw sing-box profiles keep their `detour` and selector references to the configu
 
 ![Connection creation wizard](../assets/screenshots/en-wizard.png)
 
+### Native subscriptions { #native-subscriptions }
+
+Open **Connections → Subscriptions** and add a provider's HTTPS URL for an Xray share list. KeenProxy accepts plain text and Base64 lists up to 2 MiB and 256 distinct nodes. For a provider that requires a specific client, use its explicit Xray share-list URL or enable the KeenProxy client in the provider settings. **Preview** displays the supported nodes, skipped entries, provider message, usage, and expiry when available. Enable **Send HWID** if your provider requires a device ID. KeenProxy derives a stable ID for that provider origin. A preview with this option can register the router with the provider.
+
+Save the source to the shared draft. Choose a target in a group or a full-tunnel device or network policy, then choose **Apply**.
+
+- A specific node stays fixed. The route blocks if the node disappears from the subscription.
+- **Auto (on failure)** starts in provider order and switches after sustained failure of the active node. By default, checks run every 15 seconds and the failure window is 60 seconds. A working replacement stays selected when a preferred node recovers. The subscription shows the active node and the reason for the last switch.
+- **Round robin** cycles through eligible nodes for successive new connections.
+- **By site** assigns each site to the same eligible node across devices. It uses the registrable domain when available and the destination IP otherwise.
+- **By session** keeps the same eligible node for each device IP and site pair, up to 1,024 pairs per subscription. The assignment expires after 30 minutes of inactivity or when that node stops being eligible.
+
+The three balancing modes use nodes that passed their latest check and support the connection's transport. If no eligible node supports the transport, new connections are blocked. When a balancing target is applied, the subscription shows how many nodes are eligible.
+
+For a saved subscription, open **Supported nodes** and choose **Check** for one node, or choose **Check all** to check the full list. The panel shows progress and the last result, including the check time, HTTPS duration in milliseconds on success, or the reason for failure. Duration includes connection setup. KeenProxy uses the configured HTTPS probe URL or its default HTTPS endpoint and verifies the server certificate.
+
+Choose **Refresh saved source** to fetch the provider's latest list and metadata over HTTPS. If a fetch fails, the provider rejects the device, or the response contains no usable nodes, KeenProxy shows the status and retains its last validated list. Keep subscription URLs private. They are included in full YAML backups.
+
 ### AmneziaWG profiles (experimental lx build)
 
 Import a single-peer AmneziaWG `.conf` file or paste its contents in the connection wizard. AWG fields select **AmneziaWG** automatically; you can also select the AmneziaWG protocol explicitly. The original profile stays in the shared draft and can be edited before **Apply**. Keep it private: it contains the tunnel's private key and may contain a preshared key.

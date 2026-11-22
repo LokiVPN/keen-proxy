@@ -1,13 +1,15 @@
 import { catalog, createDemo } from './model.ts'
 import { DEMO_JOURNAL_LIMIT, DEMO_TICK_MS } from './telemetry.ts'
 import { createDemoUpdates, demoRevision } from './updates.ts'
-import type { Config, Connection, JournalKind, LinkPreview, Status, TProxyReadiness, UpdatePreferences, UpdateSelection } from '../types'
+import type { Config, Connection, JournalKind, LinkPreview, Status, SubscriptionSource, SubscriptionStatus, TProxyReadiness, UpdatePreferences, UpdateSelection } from '../types'
 import type { ResourceExport, ResourceFormat, ResourceList, ResourcePreview } from '../resourceExchange'
 import { activeExit } from '../activation.ts'
+import { ApiError } from '../apiError.ts'
 
 const demo = createDemo()
 const updates = createDemoUpdates()
 const resourceFileUnavailable = 'Resource file conversion requires the Go backend.'
+const subscriptionsUnavailable = 'Provider subscriptions require the router backend.'
 
 // Configuration-only simulation; no resolver or transport is contacted.
 function dnsExit(config: Config): string {
@@ -87,6 +89,11 @@ export const api = {
   config: async () => demo.config(),
   saveConfig: async (config: Config) => demo.save(config),
   validateConfig: async (config: Config) => { demo.validate(config); return { ok: true } },
+  subscriptionsAvailable: false,
+  previewSubscription: async (_source: SubscriptionSource): Promise<SubscriptionStatus> => { throw new ApiError(501, subscriptionsUnavailable) },
+  subscriptionStatus: async (): Promise<SubscriptionStatus[]> => [],
+  refreshSubscription: async (_id: string): Promise<{ ok: boolean }> => { throw new ApiError(501, subscriptionsUnavailable) },
+  checkSubscription: async (_id: string, _nodeId?: string): Promise<{ ok: boolean }> => { throw new ApiError(501, subscriptionsUnavailable) },
   devices: async () => [
     { mac: '02:00:00:00:00:10', ip: '192.168.7.10', client: 'Phone', mode: 'full' as const, hostname: 'phone.local', hostname_source: 'dhcp' as const },
     { mac: 'aa:bb:cc:dd:ee:01', ip: '192.168.7.20', client: 'TV', mode: 'split' as const },

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -129,12 +130,12 @@ func TestDiagnosticResponseBoundaries(t *testing.T) {
 func TestDiagnosticNetworkErrorsAreSanitized(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if diagnosticNetworkError(ctx) != "check cancelled" {
+	if diagnosticNetworkError(ctx, nil) != "check cancelled" {
 		t.Fatal("cancellation lost")
 	}
 	ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	if diagnosticNetworkError(ctx) != "check timed out" {
+	if diagnosticNetworkError(ctx, nil) != "check timed out" {
 		t.Fatal("deadline lost")
 	}
 	client := &http.Client{Transport: diagnosticTransport(func(*http.Request) (*http.Response, error) { return nil, errors.New("secret") })}
@@ -148,5 +149,23 @@ func TestDiagnosticNetworkErrorsAreSanitized(t *testing.T) {
 	r = diagnosticRequest(context.Background(), client, diagnosticTest{kind: "https", url: "https://example.test"})
 	if r.OK || r.Error != "HTTP 503" {
 		t.Fatalf("HTTP status lost: %+v", r)
+	}
+}
+
+func TestDiagnosticCheckDistinguishesTLSAndDNSFailures(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&tls.CertificateVerificationError{Err: errors.New("private target")}, "TLS check failed"},
+		{&net.DNSError{Name: "private target", Err: "host not found"}, "DNS lookup failed"},
+	} {
+		client := &http.Client{Transport: diagnosticTransport(func(*http.Request) (*http.Response, error) {
+			return nil, tc.err
+		})}
+		got := diagnosticRequest(t.Context(), client, diagnosticTest{kind: "https", url: "https://example.test"})
+		if got.OK || got.Error != tc.want {
+			t.Errorf("diagnostic returned %q, want %q", got.Error, tc.want)
+		}
 	}
 }

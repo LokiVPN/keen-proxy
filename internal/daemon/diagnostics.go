@@ -2,16 +2,18 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/ordo-systems/keen-proxy/internal/model"
-	M "github.com/sagernet/sing/common/metadata"
 	"io"
 	"net"
 	"net/http"
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/ordo-systems/keen-proxy/internal/model"
+	M "github.com/sagernet/sing/common/metadata"
 )
 
 // DiagnosticResult reports one connectivity or transfer check with elapsed milliseconds.
@@ -34,8 +36,12 @@ type DiagnosticReport struct {
 // ErrDiagnosticConnection means the requested profile is absent from applied runtime state.
 var ErrDiagnosticConnection = errors.New("connection is not applied")
 var diagnosticSlots = make(chan struct{}, 2)
+var errDiagnosticDNS = errors.New("diagnostic DNS lookup failed")
 
-const diagnosticTimeout = 8 * time.Second
+const (
+	diagnosticTimeout  = 8 * time.Second
+	diagnosticHTTPSURL = "https://www.gstatic.com/generate_204"
+)
 
 // acquireDiagnosticSlot bounds concurrent reports and returns a release function.
 func acquireDiagnosticSlot(ctx context.Context) (func(), error) {
@@ -89,7 +95,7 @@ func diagnosticTarget(ctx context.Context, address string) (M.Socksaddr, error) 
 	// Control-plane DNS is explicit; these checks do not certify DNS leakage.
 	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
 	if err != nil || len(ips) == 0 {
-		return M.Socksaddr{}, errors.New("diagnostic DNS lookup failed")
+		return M.Socksaddr{}, errDiagnosticDNS
 	}
 	return M.SocksaddrFrom(ips[0].Unmap(), uint16(port)), nil
 }
@@ -122,7 +128,7 @@ type diagnosticTest struct {
 
 var diagnosticTests = []diagnosticTest{
 	{"http", "http://connectivitycheck.gstatic.com/generate_204", 0},
-	{"https", "https://www.gstatic.com/generate_204", 0},
+	{"https", diagnosticHTTPSURL, 0},
 	{"transfer", "https://speed.cloudflare.com/__down?bytes=65536", 65536},
 }
 
@@ -161,12 +167,23 @@ func diagnosticResponse(response *http.Response, want int64) (int64, string, err
 	}
 	return count, "", err
 }
-func diagnosticNetworkError(ctx context.Context) string {
-	switch ctx.Err() {
-	case context.DeadlineExceeded:
+func diagnosticNetworkError(ctx context.Context, cause error) string {
+	var dns *net.DNSError
+	var cert *tls.CertificateVerificationError
+	var record tls.RecordHeaderError
+	var alert tls.AlertError
+	var op *net.OpError
+	switch {
+	case ctx.Err() == context.DeadlineExceeded || errors.Is(cause, context.DeadlineExceeded):
 		return "check timed out"
-	case context.Canceled:
+	case ctx.Err() == context.Canceled || errors.Is(cause, context.Canceled):
 		return "check cancelled"
+	case errors.Is(cause, errDiagnosticDNS) || errors.As(cause, &dns):
+		return "DNS lookup failed"
+	case errors.As(cause, &cert) || errors.As(cause, &record) || errors.As(cause, &alert):
+		return "TLS check failed"
+	case errors.As(cause, &op) || errors.Is(cause, io.EOF) || errors.Is(cause, io.ErrUnexpectedEOF):
+		return "connection check failed"
 	default:
 		return "network, DNS or TLS check failed"
 	}
@@ -186,7 +203,7 @@ func diagnosticRequest(ctx context.Context, client *http.Client, test diagnostic
 	result.OK = err == nil
 	// Never expose raw engine errors: they may contain profile credentials.
 	if err != nil && result.Error == "" {
-		result.Error = diagnosticNetworkError(ctx)
+		result.Error = diagnosticNetworkError(ctx, err)
 	}
 	return result
 }

@@ -2,9 +2,11 @@ package stats
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -78,6 +80,93 @@ func TestEvictsOldHosts(t *testing.T) {
 	if _, total := tr.Hosts("direct", "", 0); total != MaxHosts {
 		t.Errorf("hosts %d, want limit %d", total, MaxHosts)
 	}
+}
+
+func TestTrackerPrunesSubscriptionHistoryAfterCatalogRotation(t *testing.T) {
+	tr := NewTracker()
+	recordTrackerHost(tr, "manual", "manual.example")
+	previous := ""
+	for i := range 64 {
+		next := fmt.Sprintf("subscription:provider:%032x", i)
+		tr.RetainSubscriptionNodes([]string{next})
+		recordTrackerHost(tr, next, "site.example")
+		tr.sample(time.Now())
+
+		snapshot := tr.Snapshot(true)
+		if len(snapshot.Outbounds) != 2 || snapshot.Outbounds[0].Tag != "manual" || snapshot.Outbounds[1].Tag != next {
+			t.Fatalf("rotation %d retained unexpected outbounds: %+v", i, snapshot.Outbounds)
+		}
+		if _, total := tr.Hosts(previous, "", 0); total != 0 {
+			t.Fatalf("retired tag retained %d hosts", total)
+		}
+		previous = next
+	}
+	tr.RetainSubscriptionNodes(nil)
+	if snapshot := tr.Snapshot(false); len(snapshot.Outbounds) != 1 || snapshot.Outbounds[0].Tag != "manual" {
+		t.Fatalf("removing the catalog should leave only the manual outbound: %+v", snapshot.Outbounds)
+	}
+}
+
+func TestTrackerRetainsOpenFlowsOnRetiredSubscriptionNode(t *testing.T) {
+	const tag = "subscription:provider:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tr := NewTracker()
+	tr.RetainSubscriptionNodes([]string{tag})
+	device, inbound := net.Pipe()
+	defer device.Close()
+	open := tr.RoutedConnection(context.Background(), inbound, adapter.InboundContext{Domain: "site.example"}, nil, fakeOut{tag: tag})
+	defer open.Close()
+	tr.RetainSubscriptionNodes(nil)
+
+	// A route can already have selected the retired node when the catalog changes.
+	otherDevice, otherInbound := net.Pipe()
+	defer otherDevice.Close()
+	late := tr.RoutedConnection(context.Background(), otherInbound, adapter.InboundContext{Domain: "other.example"}, nil, fakeOut{tag: tag})
+	defer late.Close()
+	go func() { _, _ = otherDevice.Write([]byte("payload")) }()
+	if _, err := io.ReadFull(late, make([]byte, 7)); err != nil {
+		t.Fatal(err)
+	}
+	_ = open.Close()
+	tr.sample(time.Now())
+
+	snapshot := tr.Snapshot(true)
+	if len(snapshot.Outbounds) != 1 || snapshot.Outbounds[0].Tag != tag ||
+		snapshot.Outbounds[0].Active != 1 || snapshot.Outbounds[0].UpTotal != 7 {
+		t.Fatalf("retired node lost an active flow or its counters: %+v", snapshot.Outbounds)
+	}
+	_ = late.Close()
+	if snapshot := tr.Snapshot(true); len(snapshot.Outbounds) != 0 {
+		t.Fatalf("retired node still has history after its last flow closed: %+v", snapshot.Outbounds)
+	}
+
+	recordTrackerHost(tr, tag, "late.example")
+	if _, total := tr.Hosts(tag, "", 0); total != 0 {
+		t.Fatalf("late flow recreated history for a retired subscription node: %d hosts", total)
+	}
+}
+
+func TestTrackerBoundsHostsPerSubscriptionNode(t *testing.T) {
+	tr := NewTracker()
+	tags := make([]string, 256)
+	for i := range tags {
+		tags[i] = fmt.Sprintf("subscription:provider:%032x", i)
+	}
+	tr.RetainSubscriptionNodes(tags)
+	for _, tag := range tags {
+		for i := range 40 {
+			recordTrackerHost(tr, tag, fmt.Sprintf("site%d.example", i))
+		}
+		hosts, total := tr.Hosts(tag, "", 0)
+		if total != 32 || !slices.ContainsFunc(hosts, func(host Host) bool { return host.Host == "site39.example" }) {
+			t.Fatalf("node %q retained %d hosts or discarded its newest host", tag, total)
+		}
+	}
+}
+
+func recordTrackerHost(tr *Tracker, tag, domain string) {
+	device, inbound := net.Pipe()
+	_ = tr.RoutedConnection(context.Background(), inbound, adapter.InboundContext{Domain: domain}, nil, fakeOut{tag: tag}).Close()
+	_ = device.Close()
 }
 
 // The panel previews the ranking and offers the rest only when total says more

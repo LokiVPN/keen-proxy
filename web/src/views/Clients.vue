@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { NButton, NInput, NSelect, NSwitch, NTooltip, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { Users, Plus, Trash2, RefreshCw, ChevronDown, ChevronRight, Network as NetIcon, Search, UserPlus } from '@lucide/vue'
-import { modeOptions, store, selectableConnections, targetLabel } from '../store'
+import { modeOptions, store, selectableTunnels, targetLabel } from '../store'
 import type { Client, Device, Network } from '../types'
 import { deviceDisplayName, deviceMatches } from '../deviceNames'
 
@@ -12,7 +12,7 @@ const { t } = useI18n()
 const cfg = computed(() => store.state.config!)
 const q = ref('')
 const closed = ref<Record<string, boolean>>({})
-const enabledTunnels = computed(() => selectableConnections())
+const enabledTunnels = computed(() => selectableTunnels())
 
 // Convert IPv4 addresses to unsigned integers for subnet membership checks.
 function ip4(s: string): number | null {
@@ -168,10 +168,12 @@ function modeText(m: string) {
             <NSelect
               v-if="sec.net.mode === 'full'"
               v-model:value="sec.net.target"
-              :options="selectableConnections(sec.net.target)"
+              :options="selectableTunnels(sec.net.target)"
               size="tiny"
               class="net-target"
               :placeholder="t('clients.connection')"
+              :aria-label="t('clients.connection')"
+              filterable
             />
             <NButton size="tiny" quaternary type="error" :aria-label="t('clients.deleteNetwork')" @click="cfg.networks!.splice(cfg.networks!.indexOf(sec.net!), 1)">
               <template #icon><Trash2 :size="14" /></template>
@@ -202,8 +204,10 @@ function modeText(m: string) {
               <NSelect
                 v-if="effective(r).mode === 'full' && r.client?.mode === 'full'"
                 :value="r.client.target"
-                :options="selectableConnections(r.client.target)"
+                :options="selectableTunnels(r.client.target)"
                 size="tiny"
+                :aria-label="t('clients.connection')"
+                filterable
                 @update:value="(v: string) => (r.client!.target = v)"
               />
               <span v-else class="conn-text">

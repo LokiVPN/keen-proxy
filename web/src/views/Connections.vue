@@ -37,6 +37,7 @@ import AreaChart from '../components/AreaChart.vue'
 import ConnectionDialog from '../components/ConnectionDialog.vue'
 import ConnectionWizard from '../components/ConnectionWizard.vue'
 import FallbackPanel from '../components/FallbackPanel.vue'
+import SubscriptionsPanel from '../components/SubscriptionsPanel.vue'
 
 const dialog = useDialog()
 const message = useMessage()
@@ -394,6 +395,7 @@ function remove() {
         >{{ t('common.add') }}</NButton
       >
     </div>
+    <SubscriptionsPanel />
     <div class="connection-layout">
       <nav class="connection-list" :aria-label="t('nav.connections')">
         <button

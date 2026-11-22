@@ -37,7 +37,7 @@ func (d *Daemon) RetrySavedTProxy(ctx context.Context) error {
 	if d.startupBlocked == nil {
 		return ErrStartupNotBlocked
 	}
-	return d.applyConfigLocked(ctx, d.cfg, false)
+	return d.applyConfigLocked(ctx, d.cfg, false, nil)
 }
 
 func (d *Daemon) tproxyPreflight(ctx context.Context, cfg *model.Config) error {

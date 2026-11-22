@@ -99,11 +99,14 @@ const expanded = ref<string[]>([])
 
 const groups = computed(() => store.state.config!.groups!)
 
-// Filter groups by all targets, one connection, direct routing, or blocking.
+// Filter groups by their routing target.
 const tabs = computed(() => [
   { label: t('groups.all'), value: 'all' },
   ...targets.value,
 ])
+watch(tabs, choices => {
+  if (!choices.some(choice => choice.value === tab.value)) tab.value = 'all'
+})
 
 // Country and category selectors share one table: both match IP databases.
 const isCountry = (g: Group) => g.countries !== undefined || g.categories !== undefined
@@ -284,6 +287,8 @@ const targetCell = (g: Group) =>
     value: g.target,
     options: selectableTargets(g.target),
     size: 'small',
+    filterable: true,
+    'aria-label': t('groups.colTarget'),
     'onUpdate:value': (v: string) => (g.target = v),
   })
 const removeCell = (g: Group) =>
@@ -649,6 +654,7 @@ const columns = computed<DataTableColumns<{ g: Group; key: string }>>(() => [
                   :value="g.target"
                   :options="selectableTargets(g.target)"
                   :aria-label="t('groups.colTarget')"
+                  filterable
                   @update:value="(v: string) => (g.target = v)"
                 />
                 <template v-if="isCountry(g)"
@@ -703,6 +709,7 @@ const columns = computed<DataTableColumns<{ g: Group; key: string }>>(() => [
           :options="selectableTargets()"
           :placeholder="t('groups.colTarget')"
           :aria-label="t('groups.colTarget')"
+          filterable
         />
         <div class="bulk-preview">
           <div v-for="g in selectedGroups" :key="groupKey(g)" class="data-row">

@@ -35,8 +35,10 @@ var xhttpSpecs = map[string]xhttpSpec{
 	"seq_placement":            {json: "seq_placement", kind: "enum", enum: []string{"path", "query", "header", "cookie"}},
 	"seqKey":                   {json: "seq_key", kind: "string"},
 	"seq_key":                  {json: "seq_key", kind: "string"},
+	"sessionIDTable":           {json: "session_table", kind: "string"},
 	"sessionTable":             {json: "session_table", kind: "string"},
 	"session_table":            {json: "session_table", kind: "string"},
+	"sessionIDLength":          {json: "session_length", kind: "range"},
 	"sessionLength":            {json: "session_length", kind: "range"},
 	"session_length":           {json: "session_length", kind: "range"},
 	"uplinkDataPlacement":      {json: "uplink_data_placement", kind: "enum", enum: []string{"body", "auto", "header", "cookie"}},
@@ -128,16 +130,12 @@ func xhttpTransport(q url.Values) (map[string]any, error) {
 }
 
 func applyXHTTPQuery(dst map[string]any, q url.Values) error {
-	seen := map[string]string{}
+	seen := map[string]struct{}{}
 	for name, spec := range xhttpSpecs {
 		if !q.Has(name) {
 			continue
 		}
-		if prev, ok := seen[spec.json]; ok && prev != q.Get(name) {
-			return fmt.Errorf("xhttp: conflicting values for %s", spec.json)
-		}
-		seen[spec.json] = q.Get(name)
-		if err := applyXHTTPValue(dst, spec, q.Get(name)); err != nil {
+		if err := applyXHTTPValue(dst, spec, q.Get(name), seen); err != nil {
 			return err
 		}
 	}
@@ -145,6 +143,7 @@ func applyXHTTPQuery(dst map[string]any, q url.Values) error {
 }
 
 func applyXHTTPObject(dst map[string]any, obj map[string]any) error {
+	// Aliases within extra must agree. Extra retains precedence over the query.
 	seen := make(map[string]struct{}, len(obj))
 	for name, val := range obj {
 		if xhttpIgnored[name] {
@@ -175,31 +174,35 @@ func applyXHTTPObject(dst map[string]any, obj map[string]any) error {
 		if !ok {
 			return fmt.Errorf("xhttp: unsupported option %q", name)
 		}
-		if _, duplicate := seen[spec.json]; duplicate {
-			return fmt.Errorf("xhttp: conflicting values for %s", spec.json)
-		}
-		seen[spec.json] = struct{}{}
-		if err := applyXHTTPValue(dst, spec, val); err != nil {
+		if err := applyXHTTPValue(dst, spec, val, seen); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func applyXHTTPValue(dst map[string]any, spec xhttpSpec, val any) error {
-	if val == nil {
+func applyXHTTPValue(dst map[string]any, spec xhttpSpec, val any, seen map[string]struct{}) error {
+	var normalized any
+	if val != nil {
+		parsed, omit, err := parseXHTTPValue(spec, val)
+		if err != nil {
+			return err
+		}
+		if !omit {
+			normalized = parsed
+		}
+	}
+	if seen != nil {
+		if _, duplicate := seen[spec.json]; duplicate && dst[spec.json] != normalized {
+			return fmt.Errorf("xhttp: conflicting values for %s", spec.json)
+		}
+		seen[spec.json] = struct{}{}
+	}
+	if normalized == nil {
 		delete(dst, spec.json)
-		return nil
+	} else {
+		dst[spec.json] = normalized
 	}
-	parsed, omit, err := parseXHTTPValue(spec, val)
-	if err != nil {
-		return err
-	}
-	if omit {
-		delete(dst, spec.json)
-		return nil
-	}
-	dst[spec.json] = parsed
 	return nil
 }
 
@@ -281,7 +284,7 @@ func applyXmux(dst map[string]any, val any) error {
 			return fmt.Errorf("xhttp: conflicting values for xmux.%s", spec.json)
 		}
 		seen[spec.json] = struct{}{}
-		if err := applyXHTTPValue(mapped, spec, item); err != nil {
+		if err := applyXHTTPValue(mapped, spec, item, nil); err != nil {
 			return err
 		}
 	}
