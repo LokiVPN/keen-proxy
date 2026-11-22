@@ -16,6 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Read pinned Go version
         id: go-version
@@ -30,9 +31,17 @@ jobs:
         run: |
           uname -rm
           lscpu
+          lscpu --extended=CPU,CORE,SOCKET,ONLINE
           docker info --format '{{.NCPU}} CPUs, kernel {{.KernelVersion}}'
-      - name: AWG 320 stress
+      - name: Stress the release candidate
         run: make memory-stress
+      - name: Stress the upstream control on the same host
+        if: ${{ !cancelled() }}
+        run: |
+          control=.agents-worktree/awg-control
+          git worktree add --detach "$control" 8215977a993f68cf9d93024ce521fc47b688d9f3
+          cp test/memory/scenario.py "$control/test/memory/scenario.py"
+          make -C "$control" memory-stress
       - name: Preserve AWG stress evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -49,3 +58,8 @@ jobs:
             .agents-work/memory-regression/*/*-build.log
             .agents-work/memory-regression/*/cleanup.log
             .agents-work/memory-regression/*/exit-code
+            .agents-worktree/awg-control/.agents-work/memory-regression/*/results/
+            .agents-worktree/awg-control/.agents-work/memory-regression/*/container-tmp/
+            .agents-worktree/awg-control/.agents-work/memory-regression/*/manifest.txt
+            .agents-worktree/awg-control/.agents-work/memory-regression/*/*-build-info.txt
+            .agents-worktree/awg-control/.agents-work/memory-regression/*/exit-code
