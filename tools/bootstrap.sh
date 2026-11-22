@@ -53,8 +53,7 @@ else
     PATH="$prefix/bin:$prefix/sbin:$PATH"
 fi
 export PATH
-source_base=https://raw.githubusercontent.com/LokiVPN/keen-proxy/master
-releases=https://github.com/LokiVPN/keen-proxy/releases/download
+releases=https://github.com/LokiVPN/keen-proxy/releases
 version=
 expected_current=
 variant=full
@@ -498,12 +497,12 @@ if [ -f "$prefix/etc/ssl/certs/ca-certificates.crt" ]; then
     export CURL_CA_BUNDLE="$prefix/etc/ssl/certs/ca-certificates.crt"
 fi
 if [ -z "$version" ]; then
-    fetch "$source_base/version.txt" "$work/version.txt"
-    version=$(cat "$work/version.txt")
+    fetch "$releases/latest/download/BUILD_INFO.txt" "$work/BUILD_INFO.txt"
+    version=$(awk '$1 == "Version:" && NF == 2 {print $2}' "$work/BUILD_INFO.txt")
 fi
 tag="v${version#v}"
 valid_release_tag "$tag" || fail 'invalid release version'
-base="$releases/$tag"
+base="$releases/download/$tag"
 fetch "$base/SHA256SUMS" "$work/SHA256SUMS"
 names="$asset $controller"
 if [ "$platform" = entware ]; then names="$names install.sh"; fi

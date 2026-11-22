@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.10.1
+
+- Select the latest published release in the bootstrap and keep explicit version selection.
+- Require native ARM64 AWG stress alongside the AMD64 check before release packaging.
+
 ## 0.10.0
 
 - Add native Xray subscriptions with provider metadata, refresh, and HTTPS node checks.

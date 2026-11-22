@@ -92,7 +92,7 @@ The full build enables QUIC, uTLS, WireGuard/AmneziaWG, gVisor, XHTTP and native
 
 These three public local build targets run both the [memory regression gate](docs/en/development.md#memory-regression-gate) and the continuous AWG stress gate before producing binaries. Run `make memory-regression` or `make memory-stress` to inspect one report, or `make memory-regression-unit` for the contract tests. Docker absence, invalid evidence, a regression, or a stress failure blocks binary production; neither gate is silently skipped.
 
-CI exposes independent **Memory regression**, **AWG stress (320 MiB)**, and **Router builds** checks. The router job uses compilation-only `build-router-ci` and `build-router-lite-ci`; it does not certify memory. Tagged release assets run both gates in separate steps before acknowledging those same-job successes with `make -o memory-stress -o memory-regression` and the public router targets. Neither the CI-only targets nor `-o` are local shortcuts around failed checks.
+CI exposes independent **Memory regression**, **AWG stress (320 MiB)**, **AWG stress ARM64 (320 MiB)**, and **Router builds** checks. The router job uses compilation-only `build-router-ci` and `build-router-lite-ci`; it does not certify memory. Tagged release assets run both gates in separate steps before acknowledging those same-job successes with `make -o memory-stress -o memory-regression` and the public router targets. Neither the CI-only targets nor `-o` are local shortcuts around failed checks.
 
 ## Configuration and router installation
 
@@ -113,14 +113,14 @@ The managed installation paths are:
 
 OpenWrt `/var` is normally volatile; configuration and update preferences use persistent paths. The native starter configuration selects `br-lan`; change it if your LAN bridge has another name. Existing configuration is never rewritten to select a different bridge.
 
-On a prepared Entware router, install `curl` and a CA bundle if needed. Run these commands from the Entware root shell. [Router preparation guide](docs/en/getting-started.md#prepare-the-router)
+Use these commands from the Entware root shell once a LokiVPN release is available. Install `curl` and a CA bundle if needed. [Releases](https://github.com/LokiVPN/keen-proxy/releases) · [Router preparation guide](docs/en/getting-started.md#prepare-the-router)
 
 ```sh
 opkg update && opkg install curl ca-bundle ca-certificates
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
-The bootstrap reads `version.txt` from `master`, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. The first start enables LAN DNS interception even with an empty routing policy. Stop any competing interceptor first.
+The bootstrap reads `BUILD_INFO.txt` from the latest published LokiVPN release, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. The first start enables LAN DNS interception even with an empty routing policy. Stop any competing interceptor first.
 
 After successful installation or command-line update, the bootstrap prints the panel URL when available. Run `keenproxy --url` to display it again and `keenproxy --key` to print the current login token from the configured token file. These commands do not start the service or generate a token; use `--config /path/to/config.yaml` for a non-default configuration. Keep token output private. See [panel access](docs/en/user-guide.md#access-the-panel).
 

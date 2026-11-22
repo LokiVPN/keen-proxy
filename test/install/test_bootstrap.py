@@ -39,6 +39,7 @@ done
 printf '%s\\n' "$url" >> "$REQUESTS"
 case "$url" in
     */main/version.txt|*/master/version.txt) path=version.txt ;;
+    */releases/latest/download/BUILD_INFO.txt) path=latest-build-info.txt ;;
     */releases/download/*) path=${url#*/releases/download/} ;;
     *) exit 22 ;;
 esac
@@ -50,6 +51,10 @@ cp "$FIXTURES/$path" "$out"
             self.executable(self.prefix / 'sbin' / name, 'exit 0')
         self.executable(self.prefix / 'etc/init.d/rc.unslung', 'exit 0')
         (self.mirror / 'version.txt').write_text('1.2.3\n')
+        self.publish_latest('v1.2.3')
+
+    def publish_latest(self, tag):
+        (self.mirror / 'latest-build-info.txt').write_text(f'Version: {tag}\n')
 
     def executable(self, path, script):
         path.write_text('#!/bin/sh\n' + script + '\n')
@@ -286,6 +291,7 @@ done
         self.assertTrue((self.prefix / 'running').exists())
 
     def test_bootstrap_installs_starts_and_preserves_configuration_on_update(self):
+        (self.mirror / 'version.txt').write_text('1.3.0\n')
         first = self.release('v1.2.3')
         result = self.install()
         self.assert_panel_access(result)
@@ -295,14 +301,15 @@ done
         self.assertTrue((self.prefix / 'running').exists())
         self.assert_url_queries(1)
         requests = self.requests.read_text().splitlines()
-        self.assertIn('https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/version.txt', requests)
+        self.assertIn('https://github.com/LokiVPN/keen-proxy/releases/latest/download/BUILD_INFO.txt',
+                      requests)
         self.assertIn('https://github.com/LokiVPN/keen-proxy/releases/download/v1.2.3/keenproxy-linux-arm64',
                       requests)
         self.config.write_text('schema_version: 1\n# user setting\n')
         token = self.config.with_name('token')
         token.write_text('test fixture\n')
         next_release = self.release('v1.2.4')
-        (self.mirror / 'version.txt').write_text('1.2.4\n')
+        self.publish_latest('v1.2.4')
         for _ in range(2):
             result = self.install()
             self.assert_panel_access(result)
@@ -326,7 +333,7 @@ done
         self.assert_release('v1.2.3')
         self.assert_url_queries(1)
         self.release('v1.2.4', url=self.url_boundary('exit 0\n'))
-        (self.mirror / 'version.txt').write_text('1.2.4\n')
+        self.publish_latest('v1.2.4')
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('could not determine the panel access URL', result.stderr)
@@ -366,14 +373,14 @@ done
                 self.assertNotIn('TrustTunnel/TrustTunnelClient',
                                  self.requests.read_text())
 
-    def test_explicit_lite_version_skips_main(self):
+    def test_explicit_lite_version_skips_latest_lookup(self):
         self.env['CPU'] = 'mipsel'
         release = self.release('v0.9.0', arch='mipsle', lite=True)
         result = self.install('--version', '0.9.0', '--lite')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.binary.read_bytes(), release.read_bytes())
         self.assert_release('v0.9.0', variant='lite')
-        self.assertNotIn('/version.txt', self.requests.read_text())
+        self.assertNotIn('/releases/latest/', self.requests.read_text())
 
     def test_bad_checksum_keeps_running_release(self):
         first = self.release('v1.2.3')

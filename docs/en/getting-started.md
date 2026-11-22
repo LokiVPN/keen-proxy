@@ -99,13 +99,13 @@ Install `curl` and the CA certificates in the Entware root shell if needed.
 opkg update && opkg install curl ca-bundle ca-certificates
 ```
 
-Stop competing traffic or DNS interception services before installation. KeenProxy begins intercepting LAN DNS when the daemon starts, including with the starter configuration. Run the bootstrap from `main`:
+Stop competing traffic or DNS interception services before installation. KeenProxy begins intercepting LAN DNS when the daemon starts, including with the starter configuration. Run the bootstrap once a LokiVPN release is available. [Releases](https://github.com/LokiVPN/keen-proxy/releases)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
-The installer reads `version.txt` from `main`, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. Display the current token with `keenproxy --key` in the router's Entware shell; the installer never prints it automatically. See [panel access](user-guide.md#access-the-panel).
+The installer reads `BUILD_INFO.txt` from the latest published LokiVPN release, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. Display the current token with `keenproxy --key` in the router's Entware shell; the installer never prints it automatically. See [panel access](user-guide.md#access-the-panel).
 
 On a clean install, the bootstrap creates `/opt/etc/keenproxy/config.yaml` with `schema_version: 1` and KeenProxy fills in defaults when it loads the file. The daemon generates the login token on first startup if the token file is missing. `keenproxy --key` reads the existing configured `api.token_file` without generating a replacement. The default path is `/opt/etc/keenproxy/token`. On older releases without the flag, read that file (or your custom token path) directly. `keenproxy --url` displays the configured access URL again; if an older binary or unavailable LAN address prevents discovery, the installer reports that limitation without rolling back a successful installation.
 
@@ -127,7 +127,7 @@ On a managed Entware or native OpenWrt installation, **Settings → Updates** sh
 
 Automatic installation is off by default. The panel still checks for releases. Enable automatic installation and save a time to install available releases during that minute in the router's local time, once per day while the service is running. Installation briefly restarts KeenProxy.
 
-To move an Ordo Systems installation to LokiVPN, turn off automatic installation and save the current binary and configuration privately. Run the LokiVPN bootstrap over SSH with `--version v0.10.0` and add `--lite` for an existing lite install. Subsequent panel updates use the LokiVPN release channel. Keep the matching configuration and upstream package for a rollback across release channels.
+To move an Ordo Systems installation to LokiVPN, turn off automatic installation and save the current binary and configuration privately. Run the LokiVPN bootstrap over SSH with `--version vX.Y.Z`, using a published LokiVPN tag, and add `--lite` for an existing lite install. Subsequent panel updates use the LokiVPN release channel. Keep the matching configuration and upstream package for a rollback across release channels.
 
 The protected installer blocks forwarded traffic before stopping the old service. The router remains reachable from the LAN. Forwarding resumes once interception is active in the new release or in the restored release after a failed update. If neither restores interception, forwarding stays blocked. From the LAN, rerun the bootstrap with a working release and configuration to restore access. If IPv6 forwarding is enabled, the installer also needs working `ip6tables`. On OpenWrt, disable software and hardware flow offloading and reload the firewall before updating. The guard covers traffic that passes through the router's Netfilter forwarding chains.
 

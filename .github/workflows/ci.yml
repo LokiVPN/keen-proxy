@@ -87,8 +87,18 @@ jobs:
             .agents-work/memory-regression/*/exit-code
 
   stress:
-    name: AWG stress (320 MiB)
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.check }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            check: AWG stress (320 MiB)
+            runner: ubuntu-24.04
+          - arch: arm64
+            check: AWG stress ARM64 (320 MiB)
+            runner: ubuntu-24.04-arm
     # Current daemon only. No baseline history and no Node toolchain.
     timeout-minutes: 60
     env:
@@ -107,12 +117,14 @@ jobs:
           go-version: ${{ steps.go-version.outputs.version }}
           cache-dependency-path: go.sum
       - name: AWG 320 stress
-        run: make memory-stress
+        run: |
+          uname -rm
+          make memory-stress
       - name: Preserve AWG stress evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: awg-stress-${{ github.run_id }}-${{ github.run_attempt }}
+          name: awg-stress-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

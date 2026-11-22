@@ -67,7 +67,7 @@ The absolute allowance was explicitly raised from 8 to 12 MiB after identical-bi
 
 A separate candidate-only AWG run proves traffic and records its memory. It stays outside the common WireGuard medians even though the accepted reference also supports AWG. This keeps the shared WireGuard workload and AWG smoke scenario separate; it is not the continuous stress gate below.
 
-Reports, raw samples, transfer evidence, logs, and build identities are retained under `.agents-work/memory-regression/`. **Memory regression** uploads that comparison evidence even when the job fails. **AWG stress (320 MiB)** uploads its own `awg-stress-<run>-<attempt>` artifact with the same evidence coverage, including failures. **Router builds** uploads no memory evidence. Review the report before changing a threshold or baseline; do not raise a budget merely to make a regression green. A threshold or baseline change requires a separate rationale and before/after measurements.
+Reports, raw samples, transfer evidence, logs, and build identities are retained under `.agents-work/memory-regression/`. **Memory regression** uploads that comparison evidence even when the job fails. Each AWG stress job uploads its own `awg-stress-<run>-<attempt>-<arch>` artifact with the same evidence coverage, including failures. **Router builds** uploads no memory evidence. Review the report before changing a threshold or baseline; do not raise a budget merely to make a regression green. A threshold or baseline change requires a separate rationale and before/after measurements.
 
 The fixture runs at the Docker server's native Linux architecture. Results are not an ARM64/MIPS hardware certification, a long-duration leak audit, or a DNS-leak/security guarantee. The gates measure the full daemon with production protocol features but without embedded UI assets; router cross-builds still compile the normal UI-enabled binaries. Public local build entry points do not bypass either gate when Docker is unavailable. The CI-only router targets compile without those gates and are not a local substitute for them.
 
@@ -92,10 +92,10 @@ The fixture drives 32 continuously progressing TCP streams through the first AWG
 
 Throughput uses the publication timestamps of the same two counter snapshots; memory and CPU phases retain their own wall-clock duration. Exported evidence keeps private file modes and is handed to the invoking host UID/GID only after the workload is confirmed stopped. A constrained, separately tracked helper mounts only this run's evidence trees; ownership handoff failures fail the gate without preventing cleanup.
 
-Local `make build`, `make build-router`, and `make build-router-lite` run this gate and `make memory-regression`. CI does not repeat that coupling and does not use `make -o`. Three independent jobs on separate runners report the work separately. A failure in one does not cancel or skip the others:
+Local `make build`, `make build-router`, and `make build-router-lite` run this gate and `make memory-regression`. CI does not repeat that coupling and does not use `make -o`. Independent jobs run on separate runners. A failure in one does not cancel or skip the others.
 
 - **Memory regression** runs `make memory-regression` with full Git history and uploads comparison evidence even when the job fails.
-- **AWG stress (320 MiB)** runs `make memory-stress`. It does not need Node or the comparison reference history. It uploads a separate `awg-stress-<run>-<attempt>` artifact with the same evidence coverage, including failures.
+- **AWG stress (320 MiB)** and **AWG stress ARM64 (320 MiB)** run `make memory-stress` on native AMD64 and ARM64 GitHub runners. Each job preserves its own evidence and must pass before release packaging.
 - **Router builds** runs `make build-router-ci build-router-lite-ci` with Go and Node. It does not run either memory workload, does not upload memory evidence, and does not certify memory.
 
 **Tests and builds** and **Network integration** are unchanged. A green **Router builds** result is not a memory result.
