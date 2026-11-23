@@ -17,8 +17,7 @@ func supportConfig(c *model.Config, alias func(kind, value string) string) any {
 	return supportFields{
 		"restorable": false, "schema_version": c.SchemaVersion,
 		"api": supportFields{
-			"listen_port":             supportListenPort(c.API.Listen),
-			"tokenless_network_count": len(c.API.NoTokenFrom),
+			"listen_port": supportListenPort(c.API.Listen),
 		},
 		"lan": supportFields{"interface": p("interface", c.LAN.Interface), "wan": p("interface", c.LAN.WAN)},
 		"dns": p.dns(c.DNS),

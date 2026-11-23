@@ -20,10 +20,10 @@ import (
 func TestYAMLPreviewAndExport(t *testing.T) {
 	s, d := newServer()
 	h := s.Handler()
-	if w := do(t, h, "GET", "/api/config/yaml", "", "", lan); w.Code != http.StatusUnauthorized {
+	if w := do(t, h, "GET", "/api/config/yaml", "", "", lan); w.Code != http.StatusForbidden {
 		t.Fatal(w.Code)
 	}
-	w := do(t, h, "POST", "/api/config/import", `{"yaml":"{}"}`, "secret", lan)
+	w := do(t, h, "POST", "/api/config/import", `{"yaml":"{}"}`, "secret", local)
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -37,11 +37,11 @@ func TestYAMLPreviewAndExport(t *testing.T) {
 	if c["schema_version"] != float64(1) {
 		t.Fatal(c)
 	}
-	w = do(t, h, "POST", "/api/config/import", `{"yaml":"{}\n---\n{}"}`, "secret", lan)
+	w = do(t, h, "POST", "/api/config/import", `{"yaml":"{}\n---\n{}"}`, "secret", local)
 	if w.Code != 400 {
 		t.Fatal(w.Code)
 	}
-	w = do(t, h, "GET", "/api/config/yaml", "", "secret", lan)
+	w = do(t, h, "GET", "/api/config/yaml", "", "secret", local)
 	if w.Code != 200 {
 		t.Fatal(w.Code)
 	}
@@ -54,23 +54,23 @@ func TestDNSBypassSourcesApplyAndExport(t *testing.T) {
 	s, d := newServer()
 	h := s.Handler()
 	const resolver = "192.168.37.53"
-	preview := do(t, h, "POST", "/api/config/import", `{"yaml":"dns: {bypass_sources: [`+resolver+`]}"}`, "secret", lan)
+	preview := do(t, h, "POST", "/api/config/import", `{"yaml":"dns: {bypass_sources: [`+resolver+`]}"}`, "secret", local)
 	if preview.Code != http.StatusOK || d.applied != nil || !strings.Contains(preview.Body.String(), `"bypass_sources":["`+resolver+`"]`) {
 		t.Fatalf("preview: %d %s, applied=%v", preview.Code, preview.Body, d.applied != nil)
 	}
-	applied := do(t, h, "PUT", "/api/config", preview.Body.String(), "secret", lan)
+	applied := do(t, h, "PUT", "/api/config", preview.Body.String(), "secret", local)
 	if applied.Code != http.StatusOK || !strings.Contains(applied.Body.String(), `"bypass_sources":["`+resolver+`"]`) {
 		t.Fatalf("apply: %d %s", applied.Code, applied.Body)
 	}
-	bad := do(t, h, "PUT", "/api/config", `{"dns":{"bypass_sources":["192.168.37.0/24"]}}`, "secret", lan)
+	bad := do(t, h, "PUT", "/api/config", `{"dns":{"bypass_sources":["192.168.37.0/24"]}}`, "secret", local)
 	if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(bad.Body.String(), "dns.bypass_sources[0]") {
 		t.Fatalf("invalid apply: %d %s", bad.Code, bad.Body)
 	}
-	redacted := do(t, h, "GET", "/api/config/yaml?redacted=1", "", "secret", lan)
+	redacted := do(t, h, "GET", "/api/config/yaml?redacted=1", "", "secret", local)
 	if redacted.Code != http.StatusOK || strings.Contains(redacted.Body.String(), resolver) {
 		t.Fatalf("redacted export: %d %s", redacted.Code, redacted.Body)
 	}
-	full := do(t, h, "GET", "/api/config/yaml", "", "secret", lan)
+	full := do(t, h, "GET", "/api/config/yaml", "", "secret", local)
 	if full.Code != http.StatusOK {
 		t.Fatalf("backup: %d %s", full.Code, full.Body)
 	}
@@ -81,7 +81,7 @@ func TestDNSBypassSourcesApplyAndExport(t *testing.T) {
 	if got := cfg.DNS.BypassSources; len(got) != 1 || got[0] != resolver {
 		t.Fatalf("bypass sources in backup = %v", got)
 	}
-	cleared := do(t, h, "PUT", "/api/config", `{"dns":{"bypass_sources":[]}}`, "secret", lan)
+	cleared := do(t, h, "PUT", "/api/config", `{"dns":{"bypass_sources":[]}}`, "secret", local)
 	if cleared.Code != http.StatusOK || strings.Contains(cleared.Body.String(), "bypass_sources") {
 		t.Fatalf("clear: %d %s", cleared.Code, cleared.Body)
 	}
@@ -92,7 +92,7 @@ func TestSupportExportRemovesURLSecrets(t *testing.T) {
 	d.cfg.DNS.Upstreams = []string{"https://dns.example/private-token"}
 	d.cfg.GeoIP.Databases = []model.GeoIPDatabase{{ID: "custom-1", URL: "https://geo.example/geo-token", Enabled: true}}
 	d.cfg.Failover.URL = "https://health.example/health-token"
-	w := do(t, s.Handler(), "GET", "/api/config/yaml?redacted=1", "", "secret", lan)
+	w := do(t, s.Handler(), "GET", "/api/config/yaml?redacted=1", "", "secret", local)
 	if w.Code != 200 {
 		t.Fatal(w.Code)
 	}
@@ -114,7 +114,7 @@ func TestRedactedYAMLOmitsAmneziaWGSecrets(t *testing.T) {
 	profile := "[Interface]\nPrivateKey = " + privateKey + "\nHeaderProtectionKey = " + hpk + "\n[Peer]\nPresharedKey = " + psk + "\nEndpoint = " + endpoint + "\n"
 	d.cfg.Connections = []model.Connection{{ID: "awg", Type: model.ConnAmneziaWG, AmneziaWG: profile}}
 	h := s.Handler()
-	plain := do(t, h, "GET", "/api/config/yaml", "", "secret", lan)
+	plain := do(t, h, "GET", "/api/config/yaml", "", "secret", local)
 	if plain.Code != 200 {
 		t.Fatal(plain.Code, plain.Body.String())
 	}
@@ -123,7 +123,7 @@ func TestRedactedYAMLOmitsAmneziaWGSecrets(t *testing.T) {
 			t.Fatalf("fixture did not retain %s", secret)
 		}
 	}
-	w := do(t, h, "GET", "/api/config/yaml?redacted=1", "", "secret", lan)
+	w := do(t, h, "GET", "/api/config/yaml?redacted=1", "", "secret", local)
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -148,7 +148,7 @@ func TestLocalPresetYAMLBackupAndRedaction(t *testing.T) {
 		Entries: []string{"internal-only.example"}, DisabledEntries: []string{"internal-only.example"},
 	}}
 	h := s.Handler()
-	backup := do(t, h, "GET", "/api/config/yaml", "", "secret", lan)
+	backup := do(t, h, "GET", "/api/config/yaml", "", "secret", local)
 	if backup.Code != http.StatusOK {
 		t.Fatal(backup.Code, backup.Body.String())
 	}
@@ -159,7 +159,7 @@ func TestLocalPresetYAMLBackupAndRedaction(t *testing.T) {
 	if len(restored.LocalPresets) != 1 || len(restored.LocalPresets[0].DisabledEntries) != 1 || restored.LocalPresets[0].DisabledEntries[0] != "internal-only.example" {
 		t.Fatalf("backup lost local preset: %+v", restored.LocalPresets)
 	}
-	redacted := do(t, h, "GET", "/api/config/yaml?redacted=1", "", "secret", lan)
+	redacted := do(t, h, "GET", "/api/config/yaml?redacted=1", "", "secret", local)
 	if redacted.Code != http.StatusOK || strings.Contains(redacted.Body.String(), "local_presets") || strings.Contains(redacted.Body.String(), "internal-only.example") {
 		t.Fatalf("unexpected redacted export: %d %s", redacted.Code, redacted.Body.String())
 	}
@@ -216,7 +216,7 @@ func TestLargeLocalPresetConfigEndpoints(t *testing.T) {
 	if len(body) <= 2<<20 || len(body) > maxConfigJSONBytes {
 		t.Fatalf("fixture outside large Apply range: %d bytes", len(body))
 	}
-	w := do(t, h, http.MethodPut, "/api/config", body, s.Token, lan)
+	w := do(t, h, http.MethodPut, "/api/config", body, "secret", local)
 	if w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -225,7 +225,7 @@ func TestLargeLocalPresetConfigEndpoints(t *testing.T) {
 
 	w = do(t, h, http.MethodPost, "/api/presets/preview", encode(map[string]any{
 		"config": draft, "id": "steam", "target": model.TargetDirect,
-	}), s.Token, lan)
+	}), "secret", local)
 	if w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -240,13 +240,13 @@ func TestLargeLocalPresetConfigEndpoints(t *testing.T) {
 		t.Fatal("bundled preset wasn't previewed")
 	}
 
-	w = do(t, h, http.MethodPost, "/api/dns/check", body, s.Token, lan)
+	w = do(t, h, http.MethodPost, "/api/dns/check", body, "secret", local)
 	var dns daemon.DNSCheck
 	if err := json.Unmarshal(w.Body.Bytes(), &dns); w.Code != http.StatusOK || err != nil || !dns.Demo {
 		t.Fatalf("DNS check: status %d, response %+v, error %v", w.Code, dns, err)
 	}
 
-	backup := do(t, h, http.MethodGet, "/api/config/yaml", "", s.Token, lan)
+	backup := do(t, h, http.MethodGet, "/api/config/yaml", "", "secret", local)
 	if backup.Code != http.StatusOK {
 		t.Fatal(backup.Code, backup.Body.String())
 	}
@@ -258,7 +258,7 @@ func TestLargeLocalPresetConfigEndpoints(t *testing.T) {
 	}
 	restore, untouched := newServer()
 	w = httptest.NewRecorder()
-	restore.Handler().ServeHTTP(w, yamlImportRequest(bytes.NewReader(backup.Body.Bytes()), restore.Token))
+	restore.Handler().ServeHTTP(w, yamlImportRequest(bytes.NewReader(backup.Body.Bytes()), "secret"))
 	if w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -278,7 +278,7 @@ func TestLargeLocalPresetConfigEndpoints(t *testing.T) {
 func TestYAMLRawImportBodyLimit(t *testing.T) {
 	s, _ := newServer()
 	h := s.Handler()
-	r := yamlImportRequest(strings.NewReader(strings.Repeat(" ", (3<<20)+1)), s.Token)
+	r := yamlImportRequest(strings.NewReader(strings.Repeat(" ", (3<<20)+1)), "secret")
 	r.ContentLength = -1 // enforce the reader limit even without a declared length
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -286,7 +286,7 @@ func TestYAMLRawImportBodyLimit(t *testing.T) {
 		t.Fatalf("oversized raw YAML: %d %s", w.Code, w.Body)
 	}
 	unread := &resourceUnreadBody{}
-	r = yamlImportRequest(unread, s.Token)
+	r = yamlImportRequest(unread, "secret")
 	r.ContentLength = (3 << 20) + 1
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -302,7 +302,7 @@ func TestYAMLImportSerializesWithResourceExchangeBeforeReading(t *testing.T) {
 	unblock := sync.OnceFunc(func() { close(resume) })
 	t.Cleanup(unblock)
 	body := &resourcePausedReader{Reader: strings.NewReader("{}"), started: started, resume: resume}
-	done := startResourceRequest(h, yamlImportRequest(body, s.Token))
+	done := startResourceRequest(h, yamlImportRequest(body, "secret"))
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
@@ -314,7 +314,7 @@ func TestYAMLImportSerializesWithResourceExchangeBeforeReading(t *testing.T) {
 		{resourcePreviewPath + "?format=txt", "application/octet-stream"},
 	} {
 		unread := &resourceUnreadBody{}
-		r := resourceRequest(tc.path, tc.media, unread, s.Token)
+		r := resourceRequest(tc.path, tc.media, unread, "secret")
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		if w.Code != http.StatusServiceUnavailable || unread.read || w.Header().Get("Connection") != "close" {
@@ -331,7 +331,7 @@ func TestYAMLImportSerializesWithResourceExchangeBeforeReading(t *testing.T) {
 		t.Fatal("active YAML import did not finish")
 	}
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, yamlImportRequest(strings.NewReader("{}"), s.Token))
+	h.ServeHTTP(w, yamlImportRequest(strings.NewReader("{}"), "secret"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("YAML import did not release gate: %d %s", w.Code, w.Body)
 	}
@@ -339,7 +339,7 @@ func TestYAMLImportSerializesWithResourceExchangeBeforeReading(t *testing.T) {
 
 func yamlImportRequest(body io.Reader, token string) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/api/config/import", body)
-	r.RemoteAddr = lan
+	r.RemoteAddr = local
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Content-Type", "application/yaml; charset=utf-8")
 	return r

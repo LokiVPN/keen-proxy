@@ -27,7 +27,7 @@ func TestDiagnosticRPCProvidesUsableBoundedContext(t *testing.T) {
 	fake.cfg.Connections = []model.Connection{{ID: "one", Type: model.ConnLink}}
 	probe := &diagnosticContextProbe{fakeDaemon: fake}
 	s.D = probe
-	w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", lan)
+	w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", local)
 	if w.Code != 200 || !probe.deadline || probe.remaining <= time.Second || probe.remaining > 25*time.Second {
 		t.Fatalf("unusable diagnostic budget: status=%d deadline=%v remaining=%s", w.Code, probe.deadline, probe.remaining)
 	}

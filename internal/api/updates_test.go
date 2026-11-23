@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -10,17 +11,14 @@ import (
 )
 
 func TestUpdatePermissions(t *testing.T) {
-	s, d := newServer()
-	d.cfg.API.NoTokenFrom = []string{"192.168.7.0/24"}
+	s, _ := newServer()
 	h := s.Handler()
 	for _, tc := range []struct {
 		name, method, path, body, token, origin string
 		want                                    int
 	}{
-		{"trusted status", "GET", "/api/updates", "", "", "", 200},
-		{"trusted check", "POST", "/api/updates/check", "{}", "", "", 200},
-		{"install requires token", "POST", "/api/updates/install", `{"target":"v0.4.0"}`, "", "", 403},
-		{"preferences require token", "PUT", "/api/updates/preferences", `{"time":"04:00"}`, "", "", 403},
+		{"loopback status", "GET", "/api/updates", "", "", "", 200},
+		{"loopback check", "POST", "/api/updates/check", "{}", "", "", 200},
 		{"blocks cross-origin install", "POST", "/api/updates/install", `{"target":"v0.4.0"}`, "secret", "http://evil.example", 403},
 		{"demo cannot configure updates", "PUT", "/api/updates/preferences", `{"time":"04:00"}`, "secret", "", 409},
 		{"invalid schedule is rejected", "PUT", "/api/updates/preferences", `{"time":7}`, "secret", "", 400},
@@ -28,7 +26,7 @@ func TestUpdatePermissions(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
-			r.RemoteAddr = lan
+			r.RemoteAddr = local
 			r.Header.Set("Content-Type", "application/json")
 			if tc.token != "" {
 				r.Header.Set("Authorization", "Bearer "+tc.token)
@@ -42,6 +40,19 @@ func TestUpdatePermissions(t *testing.T) {
 				t.Fatalf("status %d, want %d: %s", w.Code, tc.want, w.Body)
 			}
 		})
+	}
+}
+
+func TestUpdateOperationsRefuseLANPeers(t *testing.T) {
+	s, _ := newServer()
+	h := s.Handler()
+	for _, tc := range []struct{ method, path, body string }{
+		{"PUT", "/api/updates/preferences", `{"time":"04:00"}`},
+		{"POST", "/api/updates/install", `{"target":"v0.4.0"}`},
+	} {
+		if w := do(t, h, tc.method, tc.path, tc.body, "secret", lan); w.Code != http.StatusForbidden {
+			t.Errorf("%s %s from LAN: %d", tc.method, tc.path, w.Code)
+		}
 	}
 }
 

@@ -35,11 +35,10 @@ curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/boo
 
 The bootstrap installs `/usr/bin/keenproxy`, enables `/etc/init.d/keenproxy` for boot through procd, and starts the service. It verifies checksums and validates the configuration before replacing a running version. A failed startup triggers restoration of the previous files and service. Full and lite builds both embed TrustTunnel; no external helper is needed.
 
-The clean configuration is `/etc/keenproxy/config.yaml`, with `api.token_file: /etc/keenproxy/token` and `lan.interface: br-lan`. Change the bridge name if your firmware differs. Existing configurations and tokens are preserved. The CLI retains Entware defaults, so pass the native configuration explicitly:
+The clean configuration is `/etc/keenproxy/config.yaml`, with `lan.interface: br-lan`. Change the bridge name if your firmware differs. Existing configurations are preserved. The CLI retains Entware defaults, so pass the native configuration explicitly:
 
 ```sh
 keenproxy --url -config /etc/keenproxy/config.yaml
-keenproxy --key -config /etc/keenproxy/config.yaml
 /etc/init.d/keenproxy status
 ```
 
@@ -105,11 +104,11 @@ Stop competing traffic or DNS interception services before installation. KeenPro
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
-The installer reads `BUILD_INFO.txt` from the latest published LokiVPN release, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. Display the current token with `keenproxy --key` in the router's Entware shell; the installer never prints it automatically. See [panel access](user-guide.md#access-the-panel).
+The installer reads `BUILD_INFO.txt` from the latest published LokiVPN release, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. See [panel access](user-guide.md#access-the-panel).
 
-On a clean install, the bootstrap creates `/opt/etc/keenproxy/config.yaml` with `schema_version: 1` and KeenProxy fills in defaults when it loads the file. The daemon generates the login token on first startup if the token file is missing. `keenproxy --key` reads the existing configured `api.token_file` without generating a replacement. The default path is `/opt/etc/keenproxy/token`. On older releases without the flag, read that file (or your custom token path) directly. `keenproxy --url` displays the configured access URL again; if an older binary or unavailable LAN address prevents discovery, the installer reports that limitation without rolling back a successful installation.
+On a clean install, the bootstrap creates `/opt/etc/keenproxy/config.yaml` with `schema_version: 1` and KeenProxy fills in defaults when it loads the file. The deprecated `api.token_file` and `api.no_token_from` settings are accepted and ignored. `keenproxy --url` displays the configured access URL again; if an older binary or unavailable LAN address prevents discovery, the installer reports that limitation without rolling back a successful installation.
 
-Run the same command to update. Your configuration and token are preserved. The installer stages and validates the candidate before stopping the managed service. If the new service fails its startup check, it attempts to restore the previous files and restart the previous service. A manually started instance must be stopped before the installer can take over.
+Run the same command to update. Your configuration is preserved. The installer stages and validates the candidate before stopping the managed service. If the new service fails its startup check, it attempts to restore the previous files and restart the previous service. A manually started instance must be stopped before the installer can take over.
 
 To choose a release, replace `vX.Y.Z` with a published tag. The optional `--lite` flag selects the smaller build without QUIC/HTTP/3. `--without-trusttunnel` remains accepted for existing updaters and scripts, but no longer changes the payload: TrustTunnel is embedded. `--trusttunnel-only` is no longer accepted.
 
@@ -125,7 +124,7 @@ On Entware, the service tries to raise the daemon's open-file limit to at least 
 
 On a managed Entware or native OpenWrt installation, **Settings → Updates** shows the installed version, the latest available stable release, and the previous installed version when recorded. Upgrade once with the command-line bootstrap if the current build predates panel updates. To make that older release a rollback target, first rerun the current bootstrap with the exact tag and build variant already installed, then upgrade. Native OpenWrt additionally requires that target release's procd asset.
 
-Update actions and schedule changes require the panel token, including on trusted networks. An authorized management session can perform these actions in [KeeneticOS sign-in mode](development.md#keenetic-auth).
+Update actions and schedule changes require an authorized management session in [KeeneticOS sign-in mode](development.md#keenetic-auth).
 
 Automatic installation is off by default. The panel still checks for releases. Enable automatic installation and save a time to install available releases during that minute in the router's local time, once per day while the service is running. Installation briefly restarts KeenProxy.
 
@@ -145,7 +144,7 @@ Rerun the bootstrap once the match is listed. Check for it again after a router 
 
 If the service starts in `management-only` mode, for example because TPROXY is unavailable, the panel can be reachable while the installer still considers interception unavailable. If the restored release also starts in this mode, fix and apply the interception settings from the LAN and then rerun the protected bootstrap with the working release. Applying the settings alone does not remove a guard left by the installer.
 
-**Roll back** reinstalls the previous published version and switches off automatic installation. It needs access to GitHub and keeps the existing configuration and token. The installer rejects an incompatible configuration before restarting the service. Rolling back to a version released before panel updates also restores that version's earlier panel. Use the command-line installer to upgrade again.
+**Roll back** reinstalls the previous published version and switches off automatic installation. It needs access to GitHub and keeps the existing configuration. The installer rejects an incompatible configuration before restarting the service. Rolling back to a version released before panel updates also restores that version's earlier panel. Use the command-line installer to upgrade again.
 
 ## First configuration
 
@@ -163,4 +162,4 @@ Run from the Entware root shell:
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
 ```
 
-The command stops the managed service and removes `/opt/bin/keenproxy` and `/opt/etc/init.d/S99keenproxy`. It preserves `/opt/etc/keenproxy/` (including configuration and token), `/opt/var/lib/keenproxy/` (logs and derived state), and any previously installed external TrustTunnel client. KeenProxy no longer uses that executable. Run the regular installer again to reuse your settings.
+The command stops the managed service and removes `/opt/bin/keenproxy` and `/opt/etc/init.d/S99keenproxy`. It preserves `/opt/etc/keenproxy/` (including configuration), `/opt/var/lib/keenproxy/` (logs and derived state), and any previously installed external TrustTunnel client. KeenProxy no longer uses that executable. Run the regular installer again to reuse your settings.

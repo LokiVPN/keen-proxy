@@ -17,10 +17,10 @@ func TestSubscriptionAPIAuthenticationAndOfflineStatus(t *testing.T) {
 	s, _ := newServer()
 	h := s.Handler()
 	const path = "/api/subscriptions/status"
-	if w := do(t, h, http.MethodGet, path, "", "", lan); w.Code != http.StatusUnauthorized {
+	if w := do(t, h, http.MethodGet, path, "", "", lan); w.Code != http.StatusForbidden {
 		t.Fatalf("unauthenticated subscription status returned %d", w.Code)
 	}
-	if w := do(t, h, http.MethodGet, path, "", "secret", lan); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+	if w := do(t, h, http.MethodGet, path, "", "secret", local); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("offline status returned %d %s", w.Code, w.Body.String())
 	}
 }
@@ -34,11 +34,11 @@ func TestSubscriptionURLInPrivateBackupAndRedactedInSupportExport(t *testing.T) 
 	}
 	d.cfg = cfg
 	h := s.Handler()
-	full := do(t, h, http.MethodGet, "/api/config/yaml", "", "secret", lan)
+	full := do(t, h, http.MethodGet, "/api/config/yaml", "", "secret", local)
 	if full.Code != http.StatusOK || !strings.Contains(full.Body.String(), privateURL) {
 		t.Fatal("private backup did not retain the subscription URL")
 	}
-	redacted := do(t, h, http.MethodGet, "/api/config/yaml?redacted=1", "", "secret", lan)
+	redacted := do(t, h, http.MethodGet, "/api/config/yaml?redacted=1", "", "secret", local)
 	if redacted.Code != http.StatusOK || strings.Contains(redacted.Body.String(), "example-token") {
 		t.Fatal("support export exposed the subscription URL")
 	}
@@ -74,7 +74,7 @@ func TestSubscriptionPreviewReportsProviderLimitWithoutSaving(t *testing.T) {
 	h := s.Handler()
 	post := func(body, contentType string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-		r.RemoteAddr = lan
+		r.RemoteAddr = local
 		r.Header.Set("Authorization", "Bearer secret")
 		r.Header.Set("Content-Type", contentType)
 		w := httptest.NewRecorder()
@@ -108,7 +108,7 @@ func TestSubscriptionMutationRejectsForeignOriginFromTrustedLAN(t *testing.T) {
 	for _, path := range []string{"/api/subscriptions/preview", "/api/subscriptions/provider/refresh", "/api/subscriptions/provider/check"} {
 		request := httptest.NewRequest(http.MethodPost, "http://router.test"+path,
 			strings.NewReader(`{"id":"provider","url":"https://provider.example/list"}`))
-		request.RemoteAddr = lan
+		request.RemoteAddr = local
 		request.Header.Set("Content-Type", "text/plain")
 		request.Header.Set("Origin", "https://other.example")
 		request.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -145,10 +145,9 @@ func TestSubscriptionCheckRequestUsesOnlyAppliedNodeIDs(t *testing.T) {
 		{"saved", "null", "application/json", "secret", http.StatusBadRequest},
 		{"saved", "{\"node_id\":null}", "application/json", "secret", http.StatusBadRequest},
 		{"saved", "{}", "text/plain", "secret", http.StatusUnsupportedMediaType},
-		{"saved", "{}", "application/json", "", http.StatusUnauthorized},
 	} {
 		r := httptest.NewRequest(http.MethodPost, "/api/subscriptions/"+tc.source+"/check", strings.NewReader(tc.body))
-		r.RemoteAddr = lan
+		r.RemoteAddr = local
 		r.Header.Set("Authorization", "Bearer "+tc.token)
 		r.Header.Set("Content-Type", tc.contentType)
 		w := httptest.NewRecorder()

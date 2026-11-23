@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net/netip"
 	"os"
 	"os/exec"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -80,7 +78,6 @@ func TestUnavailableSavedTProxyKeepsConfigAndCanRecover(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg := quietConfig(t)
 	cfg.Intercept.Mode = model.InterceptTProxy
-	cfg.API.NoTokenFrom = []string{"192.0.2.0/24"}
 	path := writeSavedConfig(t, cfg)
 	runner := &recoveryFirewall{fail: true, jumps: make(map[[3]string]bool), chains: make(map[[2]string]bool)}
 	// Model stale jumps from both modes, with unrelated firewall state.
@@ -118,7 +115,7 @@ func TestUnavailableSavedTProxyKeepsConfigAndCanRecover(t *testing.T) {
 		t.Helper()
 		saved := d.Config()
 		status := d.Status(ctx)
-		if saved == nil || saved.Intercept.Mode != model.InterceptTProxy || status.DNS != "" || status.Firewall || !d.TProxyReadiness(ctx).StartupBlocked || len(d.NoTokenFrom()) != 1 {
+		if saved == nil || saved.Intercept.Mode != model.InterceptTProxy || status.DNS != "" || status.Firewall || !d.TProxyReadiness(ctx).StartupBlocked {
 			t.Fatalf("saved mode or management state lost: saved=%+v status=%+v", saved, status)
 		}
 		if _, _, running := d.eng.Outbound(model.TargetDirect); running {
@@ -137,13 +134,6 @@ func TestUnavailableSavedTProxyKeepsConfigAndCanRecover(t *testing.T) {
 	}
 	redirect := d.Config()
 	redirect.Intercept.Mode = model.InterceptRedirect
-	redirect.API.NoTokenFrom = []string{"198.51.100.0/24"}
-	trustedSaved := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
-	runner.onRestore = func() {
-		if got := d.NoTokenFrom(); !slices.Equal(got, trustedSaved) {
-			t.Errorf("staged draft changed trusted networks before commit: %v", got)
-		}
-	}
 	if err := d.Apply(ctx, redirect); err == nil || !strings.Contains(err.Error(), "jump insertion failed") {
 		t.Fatalf("expected first activation to fail during jump insertion: %v", err)
 	}
@@ -205,9 +195,6 @@ func TestUnavailableSavedTProxyKeepsConfigAndCanRecover(t *testing.T) {
 	if got := debug.SetMemoryLimit(-1); got != memoryBefore {
 		t.Fatalf("failed persistence committed memory limit %d, want %d", got, memoryBefore)
 	}
-	if got := d.NoTokenFrom(); !slices.Equal(got, trustedSaved) {
-		t.Fatalf("failed persistence changed trusted networks: %v", got)
-	}
 	if current, err := os.ReadFile(path); err != nil || !bytes.Equal(current, original) {
 		t.Fatalf("failed persistence changed saved YAML: %v", err)
 	}
@@ -225,9 +212,6 @@ func TestUnavailableSavedTProxyKeepsConfigAndCanRecover(t *testing.T) {
 	}
 	if status := d.Status(ctx); status.Mode != string(model.InterceptRedirect) || status.DNS == "" || !status.Firewall || d.TProxyReadiness(ctx).StartupBlocked {
 		t.Fatalf("REDIRECT did not activate and clear blocked state: %+v", status)
-	}
-	if trusted := d.NoTokenFrom(); !slices.Equal(trusted, []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}) {
-		t.Fatalf("committed access policy = %v", trusted)
 	}
 	if err := d.RetrySavedTProxy(ctx); !errors.Is(err, ErrStartupNotBlocked) {
 		t.Fatalf("active daemon accepted saved retry: %v", err)

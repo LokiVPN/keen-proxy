@@ -184,15 +184,12 @@ connections:
 	}
 }
 
-func TestNoTokenFrom(t *testing.T) {
-	cfg, err := Parse([]byte("api: {no_token_from: [\"192.168.7.1/24\", \" 10.0.0.0/8 \"]}\n"))
+func TestDeprecatedTokenSettingsAreAcceptedAndIgnored(t *testing.T) {
+	cfg, err := Parse([]byte("api: {token_file: /tmp/token, no_token_from: [\"192.168.7.1\", \"not-a-network\"]}\n"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("deprecated settings must not fail validation: %v", err)
 	}
-	if got := cfg.API.NoTokenPrefixes(); len(got) != 2 || got[0].String() != "192.168.7.0/24" {
-		t.Errorf("%v", got)
-	}
-	if _, err := Parse([]byte("api: {no_token_from: [\"192.168.7.1\"]}\n")); err == nil || !strings.Contains(err.Error(), "no_token_from") {
-		t.Errorf("address without a prefix must fail: %v", err)
+	if cfg.API.Listen == "" {
+		t.Error("defaults were not applied")
 	}
 }

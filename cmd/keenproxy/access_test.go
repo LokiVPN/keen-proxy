@@ -17,129 +17,6 @@ import (
 	"time"
 )
 
-func TestPrintTokenCustomPathNoMutation(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "custom.token")
-	const raw = "  panel-token \n"
-	if err := os.WriteFile(path, []byte(raw), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var out bytes.Buffer
-	if err := printToken(&out, path); err != nil {
-		t.Fatal(err)
-	}
-	if out.String() != "panel-token\n" {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != raw || info.Mode() != before.Mode() {
-		t.Fatalf("token file changed: %q mode %v", after, info.Mode())
-	}
-	if _, err := os.Stat(filepath.Join(dir, "token")); !os.IsNotExist(err) {
-		t.Fatalf("default token name appeared: %v", err)
-	}
-}
-
-func TestPrintTokenMissingDoesNotCreate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.token")
-	var out bytes.Buffer
-	err := printToken(&out, path)
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Fatalf("missing token file was created: %v", statErr)
-	}
-}
-
-func TestPrintTokenEmptyDoesNotMutate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "empty.token")
-	const raw = " \n\t"
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if err := printToken(&out, path); err == nil {
-		t.Fatal("expected an error")
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != raw {
-		t.Fatalf("empty token file changed: %q", got)
-	}
-}
-
-func TestPrintTokenUnreadableDoesNotMutate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "locked.token")
-	const raw = "secret\n"
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	if _, err := os.ReadFile(path); err == nil {
-		t.Skip("process can read mode 000 files")
-	}
-
-	var out bytes.Buffer
-	if err := printToken(&out, path); err == nil {
-		t.Fatal("expected an error")
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != raw {
-		t.Fatalf("unreadable token file changed: %q", got)
-	}
-}
-
-func TestDiscloseKeyUsesConfiguredTokenFile(t *testing.T) {
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "not-the-default")
-	if err := os.WriteFile(tokenPath, []byte("configured-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := filepath.Join(dir, "config.yaml")
-	writeAccessConfig(t, cfg, "192.0.2.9:8086", tokenPath, "br0")
-
-	var out bytes.Buffer
-	if err := discloseAccess(&out, cfg, true); err != nil {
-		t.Fatal(err)
-	}
-	if out.String() != "configured-token\n" {
-		t.Fatalf("stdout = %q", out.String())
-	}
-}
-
 func TestDiscloseURLUsesConfiguredLocalInterface(t *testing.T) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -164,9 +41,9 @@ func TestDiscloseURLUsesConfiguredLocalInterface(t *testing.T) {
 			continue
 		}
 		config := filepath.Join(t.TempDir(), "config.yaml")
-		writeAccessConfig(t, config, "0.0.0.0:9090", "", iface.Name)
+		writeAccessConfig(t, config, "0.0.0.0:9090", iface.Name)
 		var out bytes.Buffer
-		if err := discloseAccess(&out, config, false); err != nil {
+		if err := discloseAccess(&out, config); err != nil {
 			t.Fatal(err)
 		}
 		if out.String() != "http://127.0.0.1:9090\n" {
@@ -277,55 +154,12 @@ func TestPanelURL(t *testing.T) {
 	}
 }
 
-func TestAccessConflict(t *testing.T) {
-	cases := []struct {
-		name          string
-		key, url, dry bool
-		want          string
-	}{
-		{name: "key", key: true},
-		{name: "url", url: true},
-		{name: "daemon flags alone", dry: true},
-		{name: "key and url", key: true, url: true, want: "-key and -url"},
-		{name: "key and dry-run", key: true, dry: true, want: "-dry-run"},
-		{name: "both read-only and daemon", key: true, url: true, dry: true, want: "-key and -url"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := rejectAccessConflict(tc.key, tc.url, tc.dry)
-			if tc.want == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want substring %q", err, tc.want)
-			}
-		})
-	}
-}
-
 func TestCLIAccessFlags(t *testing.T) {
 	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	const raw = "cli-token\n"
-	if err := os.WriteFile(tokenPath, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := filepath.Join(dir, "config.yaml")
-	writeAccessConfig(t, cfg, "192.0.2.9:8086", tokenPath, "br0")
+	writeAccessConfig(t, cfg, "192.0.2.9:8086", "br0")
 	ruleSets := filepath.Join(dir, "rule-sets")
 
-	t.Run("key", func(t *testing.T) {
-		stdout, stderr, code := runKeenproxy(t, "-key", "-config", cfg, "-rule-sets", ruleSets)
-		if code != 0 || stderr != "" || stdout != "cli-token\n" {
-			t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
-		}
-		assertUntouched(t, tokenPath, raw)
-		assertAbsent(t, filepath.Join(dir, "journal"))
-		assertAbsent(t, ruleSets)
-	})
 	t.Run("url", func(t *testing.T) {
 		stdout, stderr, code := runKeenproxy(t, "-url", "-config", cfg, "-rule-sets", ruleSets)
 		if code != 0 || stderr != "" || stdout != "http://192.0.2.9:8086\n" {
@@ -333,38 +167,25 @@ func TestCLIAccessFlags(t *testing.T) {
 		}
 		assertAbsent(t, filepath.Join(dir, "journal"))
 	})
-	t.Run("missing token", func(t *testing.T) {
-		missing := filepath.Join(dir, "absent.token")
-		missingCfg := filepath.Join(dir, "missing.yaml")
-		writeAccessConfig(t, missingCfg, "192.0.2.9:8086", missing, "br0")
-		stdout, stderr, code := runKeenproxy(t, "-key", "-config", missingCfg, "-rule-sets", ruleSets)
-		if code == 0 || stdout != "" || stderr == "" {
-			t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
-		}
-		assertAbsent(t, missing)
-		assertAbsent(t, filepath.Join(dir, "journal"))
-	})
 	t.Run("port 0", func(t *testing.T) {
 		portCfg := filepath.Join(dir, "port0.yaml")
-		writeAccessConfig(t, portCfg, "192.0.2.9:0", tokenPath, "br0")
+		writeAccessConfig(t, portCfg, "192.0.2.9:0", "br0")
 		stdout, stderr, code := runKeenproxy(t, "-url", "-config", portCfg)
 		if code == 0 || stdout != "" || !strings.Contains(stderr, "port is 0") {
 			t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
 		}
 	})
 	for _, args := range [][]string{
-		{"-key", "-url", "-config", cfg},
-		{"-key", "-dry-run", "-config", cfg},
+		{"-url", "-dry-run", "-config", cfg},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			stdout, stderr, code := runKeenproxy(t, args...)
 			if code == 0 || stdout != "" || stderr == "" {
 				t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
 			}
-			if strings.Contains(stdout, "cli-token") || strings.Contains(stdout, "http://") || strings.Contains(stdout, "sing-box") {
+			if strings.Contains(stdout, "http://") || strings.Contains(stdout, "sing-box") {
 				t.Fatalf("conflict disclosed output: %q", stdout)
 			}
-			assertUntouched(t, tokenPath, raw)
 			assertAbsent(t, filepath.Join(dir, "journal"))
 		})
 	}
@@ -383,9 +204,9 @@ func TestKeenproxyMain(t *testing.T) {
 	os.Exit(0)
 }
 
-func writeAccessConfig(t *testing.T, path, listen, tokenFile, iface string) {
+func writeAccessConfig(t *testing.T, path, listen, iface string) {
 	t.Helper()
-	body := fmt.Sprintf("api:\n  listen: %q\n  token_file: %q\nlan:\n  interface: %q\n", listen, tokenFile, iface)
+	body := fmt.Sprintf("api:\n  listen: %q\nlan:\n  interface: %q\n", listen, iface)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -423,17 +244,6 @@ func argsAfterDoubleDash(args []string) []string {
 		}
 	}
 	return nil
-}
-
-func assertUntouched(t *testing.T, path, raw string) {
-	t.Helper()
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != raw {
-		t.Fatalf("file %s changed: %q", path, got)
-	}
 }
 
 func assertAbsent(t *testing.T, path string) {

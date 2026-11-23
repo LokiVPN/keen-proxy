@@ -153,7 +153,7 @@ grep -q 'inbound/shadowsocks.*198.51.100.4' /tmp/sbserver.log || { cat /tmp/sbse
 ok "outside-Russia tunnel with Steam direct: steam.test used direct, the same IP without a domain used Shadowsocks"
 
 # --- The live tracker must account for bytes on each selected outbound
-TOKEN=$(cat /opt/etc/keenproxy/token)
+TOKEN=$(cat /opt/etc/keenproxy/token 2>/dev/null || true)
 STATS=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8086/api/stats)
 echo "$STATS" | python3 -c '
 import json, sys

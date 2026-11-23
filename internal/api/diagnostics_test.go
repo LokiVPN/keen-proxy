@@ -12,13 +12,13 @@ import (
 func TestDiagnosticEndpointAuthAndUnknownConnection(t *testing.T) {
 	s, _ := newServer()
 	h := s.Handler()
-	if w := do(t, h, "POST", "/api/diagnostics/check", `{"connection":"unknown"}`, "", lan); w.Code != 401 {
+	if w := do(t, h, "POST", "/api/diagnostics/check", `{"connection":"unknown"}`, "", lan); w.Code != 403 {
 		t.Fatal(w.Code)
 	}
-	if w := do(t, h, "POST", "/api/diagnostics/check", `{"connection":"unknown"}`, "secret", lan); w.Code != 400 {
+	if w := do(t, h, "POST", "/api/diagnostics/check", `{"connection":"unknown"}`, "secret", local); w.Code != 400 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if w := do(t, h, "POST", "/api/diagnostics/check", strings.Repeat("x", 5000), "secret", lan); w.Code != 400 {
+	if w := do(t, h, "POST", "/api/diagnostics/check", strings.Repeat("x", 5000), "secret", local); w.Code != 400 {
 		t.Fatal(w.Code)
 	}
 }
@@ -26,11 +26,11 @@ func TestDiagnosticEndpointAuthAndUnknownConnection(t *testing.T) {
 func TestDiagnosticEndpointCapabilityAndStrictRequests(t *testing.T) {
 	s, fake := newServer()
 	fake.cfg.Connections = []model.Connection{{ID: "one", Name: "One", Type: model.ConnLink}}
-	if w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", lan); w.Code != 501 {
+	if w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", local); w.Code != 501 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	s.D = &diagnosticContextProbe{fakeDaemon: fake}
-	w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", lan)
+	w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", local)
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -42,7 +42,7 @@ func TestDiagnosticEndpointCapabilityAndStrictRequests(t *testing.T) {
 		t.Fatal("bad report", report)
 	}
 	for _, body := range []string{`{"connection":"one","url":"https://private.test"}`, `{"connection":"one"}{}`} {
-		if w := do(t, s.Handler(), "POST", "/api/diagnostics/check", body, "secret", lan); w.Code != 400 {
+		if w := do(t, s.Handler(), "POST", "/api/diagnostics/check", body, "secret", local); w.Code != 400 {
 			t.Fatal("accepted unexpected request", w.Code)
 		}
 	}

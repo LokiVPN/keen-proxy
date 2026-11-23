@@ -25,7 +25,7 @@ const (
 
 func resourceRequest(path, contentType string, body io.Reader, token string) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, path, body)
-	r.RemoteAddr = lan
+	r.RemoteAddr = local
 	r.Header.Set("Content-Type", contentType)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -75,16 +75,17 @@ func TestResourceExchangeAuth(t *testing.T) {
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			body := &resourceUnreadBody{}
-			resourceError(t, h, resourceRequest(tc.path+"?format=txt", tc.media, body, ""), http.StatusUnauthorized)
+			r := resourceRequest(tc.path+"?format=txt", tc.media, body, "")
+			r.RemoteAddr = lan
+			resourceError(t, h, r, http.StatusForbidden)
 			if body.read {
 				t.Fatal("unauthorized body was read")
 			}
 		})
 	}
 	r := resourceRequest(resourcePreviewPath+"?format=txt", "application/octet-stream", strings.NewReader("example.org"), "")
-	r.AddCookie(&http.Cookie{Name: cookieName, Value: s.Token})
 	if got := resourceResponse[resourceexchange.Preview](t, h, r, http.StatusOK); !got.Valid {
-		t.Fatalf("cookie-authenticated preview invalid: %+v", got)
+		t.Fatalf("loopback preview invalid: %+v", got)
 	}
 }
 
@@ -121,11 +122,11 @@ func TestResourceExchangeTransport(t *testing.T) {
 		{"type mismatch", resourceExportPath + "?format=txt", "application/json", `{"entries":[{"type":"ip_cidr","value":"example.org"}]}`, http.StatusUnprocessableEntity},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resourceError(t, h, resourceRequest(tc.path, tc.media, strings.NewReader(tc.body), s.Token), tc.status)
+			resourceError(t, h, resourceRequest(tc.path, tc.media, strings.NewReader(tc.body), "secret"), tc.status)
 		})
 	}
 
-	req := resourceRequest(resourceExportPath+"?format=json", "application/json", strings.NewReader(`{"entries":[]}`), s.Token)
+	req := resourceRequest(resourceExportPath+"?format=json", "application/json", strings.NewReader(`{"entries":[]}`), "secret")
 	got := resourceResponse[struct {
 		Data []byte `json:"data"`
 	}](t, h, req, http.StatusOK)
@@ -141,22 +142,22 @@ func TestResourceExchangeBodyLimit(t *testing.T) {
 	path := resourcePreviewPath + "?format=txt"
 	const octets = "application/octet-stream"
 	exact := "#" + strings.Repeat(" ", resourceexchange.MaxFileBytes-1)
-	if got := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(path, octets, strings.NewReader(exact), s.Token), http.StatusOK); !got.Valid {
+	if got := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(path, octets, strings.NewReader(exact), "secret"), http.StatusOK); !got.Valid {
 		t.Fatalf("preview at size limit failed: %+v", got)
 	}
 
 	// An unknown Content-Length exercises the actual MaxBytesReader limits.
 	preview := io.MultiReader(strings.NewReader(exact), strings.NewReader(" "))
-	resourceError(t, h, resourceRequest(path, octets, preview, s.Token), http.StatusRequestEntityTooLarge)
+	resourceError(t, h, resourceRequest(path, octets, preview, "secret"), http.StatusRequestEntityTooLarge)
 	// An otherwise valid JSON object is still oversized if trailing whitespace
 	// takes it beyond the limit. Check that validation reads through EOF.
 	export := io.MultiReader(strings.NewReader(`{"entries":[]}`), strings.NewReader(strings.Repeat(" ", maxResourceExportBytes)))
 	exportPath := resourceExportPath + "?format=txt"
-	resourceError(t, h, resourceRequest(exportPath, "application/json", export, s.Token), http.StatusRequestEntityTooLarge)
+	resourceError(t, h, resourceRequest(exportPath, "application/json", export, "secret"), http.StatusRequestEntityTooLarge)
 
 	const entry = `{"type":"ip_cidr","value":"192.0.2.1"}`
 	entries := io.MultiReader(strings.NewReader(`{"entries":[`), strings.NewReader(strings.Repeat(entry+",", resourceexchange.MaxEntries)), strings.NewReader(entry+`]}`))
-	resourceError(t, h, resourceRequest(exportPath, "application/json", entries, s.Token), http.StatusUnprocessableEntity)
+	resourceError(t, h, resourceRequest(exportPath, "application/json", entries, "secret"), http.StatusUnprocessableEntity)
 }
 
 func TestResourceExchangePreviewAndExportDoNotApply(t *testing.T) {
@@ -164,18 +165,18 @@ func TestResourceExchangePreviewAndExportDoNotApply(t *testing.T) {
 	d.cfg.Groups = []model.Group{{Name: "Saved group", Target: "direct", Entries: []string{"saved.example"}}}
 	d.cfg.LocalPresets = []model.LocalPreset{{ID: "saved", Name: "Saved preset", Entries: []string{"saved.example"}}}
 	h := s.Handler()
-	before := do(t, h, http.MethodGet, "/api/config", "", s.Token, lan)
+	before := do(t, h, http.MethodGet, "/api/config", "", "secret", local)
 	if before.Code != http.StatusOK {
 		t.Fatalf("initial configuration: %d %s", before.Code, before.Body)
 	}
 
 	previewPath := resourcePreviewPath + "?format=txt"
-	valid := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(previewPath, "application/octet-stream", strings.NewReader("*.Example.ORG.\n192.0.2.12\nexample.org\n"), s.Token), http.StatusOK)
+	valid := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(previewPath, "application/octet-stream", strings.NewReader("*.Example.ORG.\n192.0.2.12\nexample.org\n"), "secret"), http.StatusOK)
 	wantEntries := []resourceexchange.Entry{{Type: resourceexchange.DomainSuffix, Value: "example.org"}, {Type: resourceexchange.IPCIDR, Value: "192.0.2.12/32"}}
 	if !valid.Valid || len(valid.Issues) != 0 || valid.Duplicates != 1 || !slices.Equal(valid.List.Entries, wantEntries) {
 		t.Fatalf("valid preview: %+v", valid)
 	}
-	invalid := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(previewPath, "application/octet-stream", strings.NewReader("example.org\ninvalid..example\n"), s.Token), http.StatusOK)
+	invalid := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(previewPath, "application/octet-stream", strings.NewReader("example.org\ninvalid..example\n"), "secret"), http.StatusOK)
 	if invalid.Valid || len(invalid.Issues) != 1 || invalid.Issues[0].Location != "line 2" {
 		t.Fatalf("invalid preview: %+v", invalid)
 	}
@@ -184,13 +185,13 @@ func TestResourceExchangePreviewAndExportDoNotApply(t *testing.T) {
 	got := resourceResponse[struct {
 		Data   string   `json:"data"`
 		Losses []string `json:"losses"`
-	}](t, h, resourceRequest(resourceExportPath+"?format=txt", "application/json; charset=utf-8", strings.NewReader(body), s.Token), http.StatusOK)
+	}](t, h, resourceRequest(resourceExportPath+"?format=txt", "application/json; charset=utf-8", strings.NewReader(body), "secret"), http.StatusOK)
 	wantLosses := []string{"The list name is not represented in this format.", "Disabled entries are omitted in this format."}
 	if got.Data != base64.StdEncoding.EncodeToString([]byte("example.org\n192.0.2.12/32\n")) || !slices.Equal(got.Losses, wantLosses) {
 		t.Fatalf("unexpected export: %+v", got)
 	}
 
-	after := do(t, h, http.MethodGet, "/api/config", "", s.Token, lan)
+	after := do(t, h, http.MethodGet, "/api/config", "", "secret", local)
 	if d.applied != nil || after.Code != http.StatusOK || !bytes.Equal(before.Body.Bytes(), after.Body.Bytes()) {
 		t.Fatalf("exchange changed configuration: applied=%t; configuration status=%d", d.applied != nil, after.Code)
 	}
@@ -200,7 +201,7 @@ func TestResourceExchangeSRSRoundTrip(t *testing.T) {
 	s, _ := newServer()
 	h := s.Handler()
 	input := `{"version":2,"rules":[{"domain_suffix":["example.org"],"ip_cidr":["192.0.2.0/25","192.0.2.128/25","2001:db8::/32"]}]}`
-	source := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(resourcePreviewPath+"?format=sing-box-json", "application/octet-stream", strings.NewReader(input), s.Token), http.StatusOK)
+	source := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(resourcePreviewPath+"?format=sing-box-json", "application/octet-stream", strings.NewReader(input), "secret"), http.StatusOK)
 	if !source.Valid || len(source.List.Entries) != 4 {
 		t.Fatalf("source preview: %+v", source)
 	}
@@ -211,11 +212,11 @@ func TestResourceExchangeSRSRoundTrip(t *testing.T) {
 	exported := resourceResponse[struct {
 		Data   []byte   `json:"data"`
 		Losses []string `json:"losses"`
-	}](t, h, resourceRequest(resourceExportPath+"?format=srs", "application/json", bytes.NewReader(list), s.Token), http.StatusOK)
+	}](t, h, resourceRequest(resourceExportPath+"?format=srs", "application/json", bytes.NewReader(list), "secret"), http.StatusOK)
 	if !bytes.HasPrefix(exported.Data, []byte("SRS")) || exported.Losses == nil || len(exported.Losses) != 0 {
 		t.Fatalf("expected SRS bytes and empty losses array, got %d bytes and %#v", len(exported.Data), exported.Losses)
 	}
-	recovered := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(resourcePreviewPath+"?format=srs", "application/octet-stream", bytes.NewReader(exported.Data), s.Token), http.StatusOK)
+	recovered := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(resourcePreviewPath+"?format=srs", "application/octet-stream", bytes.NewReader(exported.Data), "secret"), http.StatusOK)
 	entrySet := func(entries []resourceexchange.Entry) map[resourceexchange.Entry]int {
 		set := make(map[resourceexchange.Entry]int, len(entries))
 		for _, entry := range entries {
@@ -266,7 +267,7 @@ func TestResourceExchangeSerializesBeforeReading(t *testing.T) {
 			unblock := sync.OnceFunc(func() { close(resume) })
 			t.Cleanup(unblock)
 			body := &resourcePausedReader{Reader: strings.NewReader(active.body), started: started, resume: resume}
-			first := resourceRequest(active.path, active.media, body, s.Token)
+			first := resourceRequest(active.path, active.media, body, "secret")
 			done := startResourceRequest(h, first)
 			select {
 			case <-started:
@@ -278,7 +279,7 @@ func TestResourceExchangeSerializesBeforeReading(t *testing.T) {
 
 			other := requests[1-i]
 			unread := &resourceUnreadBody{}
-			competing := startResourceRequest(h, resourceRequest(other.path, other.media, unread, s.Token))
+			competing := startResourceRequest(h, resourceRequest(other.path, other.media, unread, "secret"))
 			select {
 			case w := <-competing:
 				got := decodeResourceResponse[map[string]string](t, w, http.StatusServiceUnavailable)
@@ -295,7 +296,7 @@ func TestResourceExchangeSerializesBeforeReading(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("active exchange did not finish")
 			}
-			resourceResponse[json.RawMessage](t, h, resourceRequest(other.path, other.media, strings.NewReader(other.body), s.Token), http.StatusOK)
+			resourceResponse[json.RawMessage](t, h, resourceRequest(other.path, other.media, strings.NewReader(other.body), "secret"), http.StatusOK)
 		})
 	}
 }

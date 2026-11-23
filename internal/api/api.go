@@ -1,27 +1,22 @@
 // Package api serves the keenProxy HTTP API and web interface.
 //
-// Authentication accepts Authorization: Bearer or the keenproxy_token cookie.
-// The token is loaded from api.token_file or created on first startup.
-// A separate address guard restricts access to private, loopback, and link-local
-// peers even when the listening port is exposed.
+// The HTTP API is a control API for local processes: it trusts only loopback
+// peers, judged by RemoteAddr alone. Other peers reach it only through a
+// verified KeeneticOS session when that sign-in mode is enabled. A separate
+// address guard restricts access to private, loopback, and link-local peers
+// even when the listening port is exposed.
 package api
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,8 +29,6 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/trusttunnel"
 	"github.com/ordo-systems/keen-proxy/internal/update"
 )
-
-const cookieName = "keenproxy_token"
 
 const maxConfigJSONBytes = 8 << 20
 
@@ -52,47 +45,17 @@ type Daemon interface {
 	Journal(kind journal.Kind) *journal.Journal
 	// Mask redacts configuration secrets from exported journal text.
 	Mask() func(string) string
-	// NoTokenFrom lists networks permitted to access the panel without a token.
-	NoTokenFrom() []netip.Prefix
 }
 
 // Server binds daemon operations and authentication policy.
 type Server struct {
 	D        Daemon
-	Token    string
 	Log      *slog.Logger
 	Updates  *update.Manager
 	Keenetic *KeeneticAuth
 
 	supportBusy  atomic.Bool
 	resourceBusy atomic.Bool
-
-	// Track the last audited trusted login per address so opening another page
-	// does not produce a separate login event.
-	trustedMu   sync.Mutex
-	trustedSeen map[string]time.Time
-}
-
-// LoadToken reads the token file or creates it. created reports first creation
-// so the caller can display the initial token once.
-func LoadToken(path string) (token string, created bool, err error) {
-	if raw, err := os.ReadFile(path); err == nil {
-		if t := strings.TrimSpace(string(raw)); t != "" {
-			return t, false, nil
-		}
-	}
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", false, err
-	}
-	token = hex.EncodeToString(b)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", false, err
-	}
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		return "", false, err
-	}
-	return token, true, nil
 }
 
 // Handler builds the API routes and applies the peer-address guard to all requests.
@@ -116,7 +79,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/geoip", s.auth(s.geoDatabases))
 	mux.Handle("POST /api/geoip/update", s.auth(s.updateGeo))
 	mux.Handle("POST /api/geoip/lookup", s.auth(s.lookupGeo))
-	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/session", s.session)
 	mux.Handle("GET /api/domains", s.auth(s.domainStatus))
@@ -155,112 +117,51 @@ func (s *Server) lanOnly(next http.Handler) http.Handler {
 	})
 }
 
-// tokenOK compares the bearer token or session cookie without trusting URL parameters.
-func (s *Server) tokenOK(r *http.Request) bool {
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if got == "" {
-		if c, err := r.Cookie(cookieName); err == nil {
-			got = c.Value
-		}
-	}
-	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) == 1
-}
-
-// trustedNet finds the configured token-exempt network containing the peer.
-// It uses only RemoteAddr; client-controlled forwarding headers are untrusted.
-func (s *Server) trustedNet(r *http.Request) (netip.Prefix, bool) {
+// isLoopback reports whether the peer is a local process. It uses only
+// RemoteAddr; client-controlled forwarding headers are untrusted.
+func isLoopback(r *http.Request) bool {
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	a, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Prefix{}, false
-	}
-	a = a.Unmap()
-	for _, p := range s.D.NoTokenFrom() {
-		if p.Contains(a) {
-			return p, true
-		}
-	}
-	return netip.Prefix{}, false
+	return err == nil && a.Unmap().IsLoopback()
 }
 
-// auth applies the configured authorization policy before calling the endpoint.
+// authorized applies the access policy: loopback peers are trusted, other
+// peers need a verified KeeneticOS session, and without that mode they are
+// refused. It writes the refusal itself.
+func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case isLoopback(r):
+		return true
+	case s.Keenetic != nil:
+		return s.allowKeenetic(w, r)
+	default:
+		writeError(w, http.StatusForbidden, "local access only")
+		return false
+	}
+}
+
+// auth applies the access policy before calling the endpoint.
 func (s *Server) auth(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Keenetic != nil {
-			if !s.allowKeenetic(w, r) {
-				return
-			}
-		} else if _, trusted := s.trustedNet(r); !trusted && !s.tokenOK(r) {
-			writeError(w, http.StatusUnauthorized, "token login required")
-			return
+		if s.authorized(w, r) {
+			h(w, r)
 		}
-		h(w, r)
 	})
 }
 
-// login bounds token input, audits attempts, and issues a 30-day HttpOnly cookie.
-// Failed comparisons incur a fixed delay before the unauthorized response.
-func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if s.Keenetic != nil {
-		writeKeeneticError(w, http.StatusForbidden)
-		return
-	}
-	var req struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(req.Token)), []byte(s.Token)) != 1 {
-		s.auditLogin(r, "error", "invalid token")
-		time.Sleep(500 * time.Millisecond) // Slow repeated token guesses.
-		writeError(w, http.StatusUnauthorized, "invalid token")
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: s.Token, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, MaxAge: int((30 * 24 * time.Hour).Seconds()),
-	})
-	s.auditLogin(r, "ok", "token login")
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-// session reports whether the browser can enter and where it should sign in.
+// session reports whether the caller has access and, in KeeneticOS mode,
+// where to sign in.
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	if s.Keenetic != nil {
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"authed":       s.keeneticStatus(r) == http.StatusOK,
-			"trusted":      false,
 			"ip":           clientIP(r),
 			"keenetic_url": s.Keenetic.applicationsURL(),
 		})
 		return
 	}
-	p, trusted := s.trustedNet(r)
-	out := map[string]any{"authed": trusted || s.tokenOK(r), "trusted": trusted, "ip": clientIP(r)}
-	if trusted {
-		out["network"] = p.String()
-		if !s.tokenOK(r) && r.URL.Query().Get("open") == "1" && s.firstTrustedVisit(clientIP(r)) {
-			s.auditLogin(r, "ok", "without token — address in network "+p.String())
-		}
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-// firstTrustedVisit rate-limits trusted-login audit events per address.
-func (s *Server) firstTrustedVisit(ip string) bool {
-	s.trustedMu.Lock()
-	defer s.trustedMu.Unlock()
-	if s.trustedSeen == nil {
-		s.trustedSeen = map[string]time.Time{}
-	}
-	if last, ok := s.trustedSeen[ip]; ok && time.Since(last) < time.Hour {
-		return false
-	}
-	s.trustedSeen[ip] = time.Now()
-	return true
+	writeJSON(w, http.StatusOK, map[string]any{"authed": isLoopback(r), "ip": clientIP(r)})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +171,6 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

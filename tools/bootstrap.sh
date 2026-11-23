@@ -338,9 +338,6 @@ print_panel_access() {
         printf 'KeenProxy: could not determine the panel access URL; installation kept\n' >&2
         url=
     fi
-    printf 'Retrieve existing panel token: %s --key -config %s\n' \
-        "$(shell_quote "$prefix/$binary_path")" \
-        "$(shell_quote "$config")"
     return 0
 }
 
@@ -518,7 +515,7 @@ config="$prefix/etc/keenproxy/config.yaml"
 config_source="$config"
 if [ ! -f "$config" ]; then
     if [ "$platform" = openwrt ]; then
-        printf 'schema_version: 1\napi:\n  token_file: %s/etc/keenproxy/token\nlan:\n  interface: br-lan\n' "${prefix%/}" > "$work/config.yaml"
+        printf 'schema_version: 1\nlan:\n  interface: br-lan\n' > "$work/config.yaml"
     else
         printf 'schema_version: 1\n' > "$work/config.yaml"
     fi

@@ -4,18 +4,9 @@ These screenshots show the same Vue screens shipped by KeenProxy, running in the
 
 ## Access the panel
 
-After a successful installation or command-line update, the installer prints the panel URL. Open it from your LAN. To display the current login token, run this command in the router's Entware shell:
+After a successful installation or command-line update, the installer prints the panel URL. Browser sign-in uses KeeneticOS sessions (see [KeeneticOS sign-in](development.md#keenetic-auth)); the HTTP API itself accepts only local processes on the router. You can display the URL again with `keenproxy --url`, which reads the existing configuration without starting the daemon or changing its settings. For a non-default configuration:
 
 ```sh
-keenproxy --key
-```
-
-Paste the token into the sign-in form. Treat it as a password: do not include it in screenshots, support reports or shared terminal output. The installer does not print the token automatically.
-
-You can display the URL again with `keenproxy --url`. Both commands read the existing configuration without starting the daemon or changing its settings. `--key` reads the configured `api.token_file`; it does not create or rotate a missing token. For a non-default configuration:
-
-```sh
-keenproxy --key --config /path/to/config.yaml
 keenproxy --url --config /path/to/config.yaml
 ```
 
@@ -234,7 +225,7 @@ Open **Logs** and switch between **Routing**, **Audit**, and **System**. In **Ro
 
 ## 8. Find settings and manage backups
 
-Open **Settings** with the gear icon. On narrow screens, choose a section from the dropdown. **DNS** opens by default. Use **YAML configuration** to manage backups. Use **Network and interception** for REDIRECT/TPROXY and interfaces, **Panel access** for the listener, token path, and trusted networks, and **Country databases** for GeoIP status. Use **Language and theme** for browser preferences. Routing and access changes use the shared **Apply** action. Changing the panel listener or token file also requires a service restart. **Updates** has its own controls.
+Open **Settings** with the gear icon. On narrow screens, choose a section from the dropdown. **DNS** opens by default. Use **YAML configuration** to manage backups. Use **Network and interception** for REDIRECT/TPROXY and interfaces, **Panel access** for the listener, and **Country databases** for GeoIP status. Use **Language and theme** for browser preferences. Routing and access changes use the shared **Apply** action. Changing the panel listener also requires a service restart. **Updates** has its own controls.
 
 Open **Settings → DNS** to choose the primary DNS server. The secondary is optional; clear its selection to remove it. Choose a provider and protocol from the list or select **Custom DNS server** and enter an IP address or a DoH, DoT, or UDP URL. The provider list includes Cloudflare, Google Public DNS, Quad9, AdGuard, Yandex DNS, Cisco OpenDNS, CleanBrowsing, and Control D. Each choice shows its filtering policy. KeenProxy tries the primary first and uses the secondary, if configured, when the primary is unavailable. The two servers must be different. **Advanced settings** contains any additional resolvers, bootstrap addresses, and the listening address. The DNS route and tunnel failure policy are configured separately. Imported YAML can also list just one server in `dns.upstreams`.
 

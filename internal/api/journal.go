@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/journal"
@@ -19,12 +18,6 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
-}
-
-func (s *Server) auditLogin(r *http.Request, result, details string) {
-	if j := s.D.Journal(journal.Audit); j != nil {
-		j.Add(journal.Entry{Actor: "user", Action: "Panel login", Target: "auth", Result: result, Details: details + ", " + clientIP(r)})
-	}
 }
 
 func (s *Server) journalOf(w http.ResponseWriter, r *http.Request) (journal.Kind, *journal.Journal, bool) {
@@ -108,7 +101,7 @@ func (s *Server) journalStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // journalExport writes a redacted text export for since (default: 24h),
-// excluding configured secrets and the panel token.
+// excluding configured secrets.
 func (s *Server) journalExport(w http.ResponseWriter, r *http.Request) {
 	k, j, ok := s.journalOf(w, r)
 	if !ok {
@@ -119,13 +112,7 @@ func (s *Server) journalExport(w http.ResponseWriter, r *http.Request) {
 		since = d
 	}
 	mask := s.D.Mask()
-	token := s.Token
-	full := func(t string) string {
-		if token != "" {
-			t = strings.ReplaceAll(t, token, "•••")
-		}
-		return mask(t)
-	}
+	full := mask
 	name := fmt.Sprintf("keenproxy-%s-%s.log", k, time.Now().Format("20060102-1504"))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)

@@ -202,9 +202,9 @@ management permissions. Read-only, manager and demo accounts are denied.
 Signing out of either panel ends the router session. An active journal
 stream also checks access before sending more events.
 
-Explicit Bearer tokens are available for API automation. Browser access
-uses the KeeneticOS session policy, including on trusted networks. Remove
-the startup option to use the token sign-in form.
+The HTTP API trusts only loopback peers for local automation, such as the
+installer and test scripts; an `Authorization` header is ignored. Other
+peers need a verified KeeneticOS session.
 
 ## GitHub Pages
 

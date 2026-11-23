@@ -89,7 +89,6 @@ func keeneticRequest(method, path, body string, withSession bool) *http.Request 
 
 func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
 	s, d, mode := keeneticFixture(t)
-	d.cfg.API.NoTokenFrom = []string{"192.168.7.0/24"}
 	h := s.Handler()
 	call := func(r *http.Request, status int) *httptest.ResponseRecorder {
 		t.Helper()
@@ -101,9 +100,7 @@ func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
 		return w
 	}
 
-	stale := keeneticRequest("GET", "/api/status", "", false)
-	stale.AddCookie(&http.Cookie{Name: cookieName, Value: s.Token})
-	call(stale, http.StatusUnauthorized)
+	call(keeneticRequest("GET", "/api/status", "", false), http.StatusUnauthorized)
 	call(keeneticRequest("GET", "/api/status", "", true), http.StatusOK)
 
 	view := call(keeneticRequest("GET", "/api/session", "", true), http.StatusOK)
@@ -136,8 +133,12 @@ func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
 	call(keeneticRequest("GET", "/api/config", "", true), http.StatusUnauthorized)
 
 	automation := keeneticRequest("GET", "/api/status", "", false)
-	automation.Header.Set("Authorization", "Bearer "+s.Token)
-	call(automation, http.StatusOK)
+	automation.Header.Set("Authorization", "Bearer secret")
+	call(automation, http.StatusUnauthorized)
+
+	local := keeneticRequest("GET", "/api/status", "", false)
+	local.RemoteAddr = "127.0.0.1:5000"
+	call(local, http.StatusOK)
 }
 
 func TestKeeneticLogoutRevokesSessionAndStopsJournal(t *testing.T) {

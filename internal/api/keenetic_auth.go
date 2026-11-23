@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -261,13 +260,9 @@ func (a *KeeneticAuth) applicationsURL() string {
 	return "http://" + a.router.Host + "/apps"
 }
 
-// keeneticStatus keeps explicit API credentials usable. Browser cookies and
-// network exceptions from token mode do not grant KeeneticOS authority.
+// keeneticStatus verifies the browser's KeeneticOS session; no other
+// credential grants KeeneticOS authority.
 func (s *Server) keeneticStatus(r *http.Request) int {
-	got, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if bearer && got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) == 1 {
-		return http.StatusOK
-	}
 	return s.Keenetic.verify(r)
 }
 

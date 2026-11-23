@@ -22,26 +22,26 @@ func TestConfigRoutePreservesMemoryLimit(t *testing.T) {
 	h := s.Handler()
 
 	body := `{"system":{"memory_limit_mib":400}}`
-	if w := do(t, h, "PUT", "/api/config", body, "", lan); w.Code != http.StatusUnauthorized {
+	if w := do(t, h, "PUT", "/api/config", body, "", lan); w.Code != http.StatusForbidden {
 		t.Fatalf("unauthenticated put: %d", w.Code)
 	}
-	w := do(t, h, "PUT", "/api/config", body, "secret", lan)
+	w := do(t, h, "PUT", "/api/config", body, "secret", local)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"memory_limit_mib":400`) {
 		t.Fatalf("put: %d %s", w.Code, w.Body)
 	}
-	w = do(t, h, "GET", "/api/config", "", "secret", lan)
+	w = do(t, h, "GET", "/api/config", "", "secret", local)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"memory_limit_mib":400`) {
 		t.Fatalf("get: %d %s", w.Code, w.Body)
 	}
-	w = do(t, h, "PUT", "/api/config", `{"system":{"memory_limit_mib":0}}`, "secret", lan)
+	w = do(t, h, "PUT", "/api/config", `{"system":{"memory_limit_mib":0}}`, "secret", local)
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("zero accepted: %d %s", w.Code, w.Body)
 	}
-	w = do(t, h, "GET", "/api/config", "", "secret", lan)
+	w = do(t, h, "GET", "/api/config", "", "secret", local)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"memory_limit_mib":400`) {
 		t.Fatalf("rejected put changed the stored limit: %d %s", w.Code, w.Body)
 	}
-	w = do(t, h, "PUT", "/api/config", `{"system":{"memory_limit_mib":null}}`, "secret", lan)
+	w = do(t, h, "PUT", "/api/config", `{"system":{"memory_limit_mib":null}}`, "secret", local)
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "memory_limit_mib") {
 		t.Fatalf("clear: %d %s", w.Code, w.Body)
 	}

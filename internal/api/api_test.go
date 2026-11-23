@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"runtime"
 	"slices"
 	"strconv"
@@ -30,7 +29,6 @@ type fakeDaemon struct {
 
 func (f *fakeDaemon) Journal(k journal.Kind) *journal.Journal { return f.journals[k] }
 func (f *fakeDaemon) Mask() func(string) string               { return journal.Masker(f.cfg) }
-func (f *fakeDaemon) NoTokenFrom() []netip.Prefix             { return f.cfg.API.NoTokenPrefixes() }
 
 func (f *fakeDaemon) Config() *model.Config { return f.cfg }
 func (f *fakeDaemon) Apply(_ context.Context, c *model.Config) error {
@@ -58,7 +56,7 @@ func newServer() (*Server, *fakeDaemon) {
 	cfg := &model.Config{}
 	cfg.Defaults()
 	d := &fakeDaemon{cfg: cfg, journals: journal.NewSet("")}
-	return &Server{D: d, Token: "secret"}, d
+	return &Server{D: d}, d
 }
 
 func do(t *testing.T, h http.Handler, method, path, body, token, remote string) *httptest.ResponseRecorder {
@@ -75,77 +73,69 @@ func do(t *testing.T, h http.Handler, method, path, body, token, remote string) 
 
 const lan = "192.168.7.88:5000"
 
-func TestAuthAndLANOnly(t *testing.T) {
+const local = "127.0.0.1:5000"
+
+func TestControlAPIAcceptsLoopbackWithoutToken(t *testing.T) {
 	s, _ := newServer()
 	h := s.Handler()
-	if c := do(t, h, "GET", "/api/status", "", "", lan).Code; c != http.StatusUnauthorized {
-		t.Errorf("without token: %d", c)
+	for _, remote := range []string{"127.0.0.1:5000", "[::1]:5000", "[::ffff:127.0.0.1]:5000"} {
+		if c := do(t, h, "GET", "/api/status", "", "", remote).Code; c != http.StatusOK {
+			t.Errorf("%s: %d", remote, c)
+		}
 	}
-	if c := do(t, h, "GET", "/api/status", "", "wrong", lan).Code; c != http.StatusUnauthorized {
-		t.Errorf("invalid token: %d", c)
+}
+
+func TestControlAPIRejectsLANWithoutKeenetic(t *testing.T) {
+	s, _ := newServer()
+	h := s.Handler()
+	w := do(t, h, "GET", "/api/status", "", "", lan)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "local access only") {
+		t.Errorf("LAN peer: %d %s", w.Code, w.Body)
 	}
-	if c := do(t, h, "GET", "/api/status", "", "secret", lan).Code; c != http.StatusOK {
-		t.Errorf("with token: %d", c)
+	// A forwarding header cannot turn a LAN peer into a loopback one.
+	r := httptest.NewRequest("GET", "/api/status", nil)
+	r.RemoteAddr = lan
+	r.Header.Set("X-Forwarded-For", "127.0.0.1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("X-Forwarded-For: %d", rec.Code)
 	}
-	if c := do(t, h, "GET", "/api/status", "", "secret", "8.8.8.8:1234").Code; c != http.StatusForbidden {
+	if c := do(t, h, "GET", "/api/status", "", "", "8.8.8.8:1234").Code; c != http.StatusForbidden {
 		t.Errorf("from the internet: %d", c)
 	}
 }
 
-func TestNoTokenFrom(t *testing.T) {
-	s, d := newServer()
-	d.cfg.API.NoTokenFrom = []string{"192.168.7.0/24"}
+func TestControlAPIIgnoresBearerHeader(t *testing.T) {
+	s, _ := newServer()
 	h := s.Handler()
-	if c := do(t, h, "GET", "/api/status", "", "", lan).Code; c != http.StatusOK {
-		t.Errorf("from trusted network without token: %d", c)
+	if c := do(t, h, "GET", "/api/status", "", "wrong", local).Code; c != http.StatusOK {
+		t.Errorf("loopback with a stray token: %d", c)
 	}
-	if c := do(t, h, "GET", "/api/status", "", "", "10.1.30.5:4000").Code; c != http.StatusUnauthorized {
-		t.Errorf("from another network without token: %d", c)
-	}
-	// A forwarding header cannot turn an untrusted peer into a trusted address.
-	r := httptest.NewRequest("GET", "/api/status", nil)
-	r.RemoteAddr = "10.1.30.5:4000"
-	r.Header.Set("X-Forwarded-For", "192.168.7.20")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, r)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("X-Forwarded-For: %d", rec.Code)
-	}
-
-	var sess map[string]any
-	do(t, h, "GET", "/api/session?open=1", "", "", lan) // Reopening within an hour is not a new login.
-	json.Unmarshal(do(t, h, "GET", "/api/session?open=1", "", "", lan).Body.Bytes(), &sess)
-	if sess["authed"] != true || sess["trusted"] != true || sess["network"] != "192.168.7.0/24" {
-		t.Errorf("session from trusted network: %v", sess)
-	}
-	json.Unmarshal(do(t, h, "GET", "/api/session", "", "", "10.1.30.5:4000").Body.Bytes(), &sess)
-	if sess["authed"] != false || sess["trusted"] != false {
-		t.Errorf("session from untrusted network: %v", sess)
-	}
-	if p := d.journals[journal.Audit].Find(journal.Query{Text: "without token"}, nil); len(p.Entries) != 1 {
-		t.Errorf("tokenless login in audit: %d", len(p.Entries))
+	if c := do(t, h, "GET", "/api/status", "", "secret", lan).Code; c != http.StatusForbidden {
+		t.Errorf("a token does not open the API to a LAN peer: %d", c)
 	}
 }
 
-func TestLoginSetsCookie(t *testing.T) {
+func TestSessionReportsLoopbackAccess(t *testing.T) {
 	s, _ := newServer()
-	w := do(t, s.Handler(), "POST", "/api/login", `{"token":"secret"}`, "", lan)
-	if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Set-Cookie"), "keenproxy_token=secret") {
-		t.Fatalf("login: %d %q", w.Code, w.Header().Get("Set-Cookie"))
+	h := s.Handler()
+	for remote, want := range map[string]bool{local: true, lan: false} {
+		var sess map[string]any
+		w := do(t, h, "GET", "/api/session", "", "", remote)
+		json.Unmarshal(w.Body.Bytes(), &sess)
+		if w.Code != http.StatusOK || sess["authed"] != want {
+			t.Errorf("session for %s: %d %v", remote, w.Code, sess)
+		}
 	}
-	r := httptest.NewRequest("GET", "/api/devices", nil)
-	r.RemoteAddr = lan
-	r.AddCookie(&http.Cookie{Name: cookieName, Value: "secret"})
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, r)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "aa:bb:cc:dd:ee:ff") {
-		t.Errorf("using cookie: %d %s", rec.Code, rec.Body)
+	if c := do(t, h, "POST", "/api/login", `{"token":"x"}`, "", local).Code; c == http.StatusOK {
+		t.Errorf("token login still exists: %d", c)
 	}
 }
 
 func TestStatusIncludesRunningBuild(t *testing.T) {
 	s, _ := newServer()
-	w := do(t, s.Handler(), "GET", "/api/status", "", "secret", lan)
+	w := do(t, s.Handler(), "GET", "/api/status", "", "secret", local)
 	var got struct {
 		Mode  string `json:"mode"`
 		Build struct {
@@ -166,21 +156,21 @@ func TestPutConfig(t *testing.T) {
 	s, d := newServer()
 	h := s.Handler()
 	body := `{"groups":[{"name":"g","target":"direct","entries":["example.com"]}]}`
-	w := do(t, h, "PUT", "/api/config", body, "secret", lan)
+	w := do(t, h, "PUT", "/api/config", body, "secret", local)
 	if w.Code != http.StatusOK || d.applied == nil || d.applied.Groups[0].Entries[0] != "example.com" {
 		t.Fatalf("PUT: %d %s", w.Code, w.Body)
 	}
 	bad := `{"groups":[{"name":"g","target":"nowhere","entries":["example.com"]}]}`
-	w = do(t, h, "PUT", "/api/config", bad, "secret", lan)
+	w = do(t, h, "PUT", "/api/config", bad, "secret", local)
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "nowhere") {
 		t.Errorf("invalid configuration: %d %s", w.Code, w.Body)
 	}
-	w = do(t, h, "PUT", "/api/config", `{"unknown":1}`, "secret", lan)
+	w = do(t, h, "PUT", "/api/config", `{"unknown":1}`, "secret", local)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("unknown field: %d", w.Code)
 	}
 	d.failErr = errors.New("sing-box rejected")
-	w = do(t, h, "PUT", "/api/config", body, "secret", lan)
+	w = do(t, h, "PUT", "/api/config", body, "secret", local)
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "sing-box") {
 		t.Errorf("apply error: %d %s", w.Code, w.Body)
 	}
@@ -188,23 +178,23 @@ func TestPutConfig(t *testing.T) {
 
 func TestParseLink(t *testing.T) {
 	s, _ := newServer()
-	w := do(t, s.Handler(), "POST", "/api/links/parse", "{\"link\":\"trojan://pw@tr.example.com:443#\u041c\u043e\u0439\"}", "secret", lan)
+	w := do(t, s.Handler(), "POST", "/api/links/parse", "{\"link\":\"trojan://pw@tr.example.com:443#\u041c\u043e\u0439\"}", "secret", local)
 	var got map[string]any
 	json.Unmarshal(w.Body.Bytes(), &got)
 	if w.Code != 200 || got["protocol"] != "trojan" || got["name"] != "\u041c\u043e\u0439" || got["server"] != "tr.example.com" {
 		t.Errorf("parse: %d %v", w.Code, got)
 	}
-	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"vless://u@h:1?type=xhttp"}`, "secret", lan)
+	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"vless://u@h:1?type=xhttp"}`, "secret", local)
 	json.Unmarshal(w.Body.Bytes(), &got)
 	transport, _ := got["transport"].(map[string]any)
 	if w.Code != 200 || got["type"] != "link" || got["protocol"] != "vless" || transport["type"] != "xhttp" {
 		t.Errorf("xhttp preview: %d %v", w.Code, got)
 	}
-	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"vless://u@h:1?type=nope"}`, "secret", lan)
+	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"vless://u@h:1?type=nope"}`, "secret", local)
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Errorf("invalid transport: %d %s", w.Code, w.Body)
 	}
-	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"`+ttPreviewLink()+`"}`, "secret", lan)
+	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"`+ttPreviewLink()+`"}`, "secret", local)
 	json.Unmarshal(w.Body.Bytes(), &got)
 	if w.Code != 200 || got["type"] != "link" || got["protocol"] != "trusttunnel" || got["name"] != "Finland" || got["server"] != "203.0.113.50" || got["tls"] != true {
 		t.Errorf("tt preview: %d %v", w.Code, got)
@@ -228,7 +218,7 @@ func ttPreviewLink() string {
 func TestLegacyTrustTunnelMixIsRejected(t *testing.T) {
 	s, d := newServer()
 	body := `{"connections":[{"id":"tt","type":"trusttunnel","link":"tt://?one","trusttunnel":{"link":"tt://?two","binary":"/opt/bin/trusttunnel_client"}}]}`
-	w := do(t, s.Handler(), "PUT", "/api/config", body, "secret", lan)
+	w := do(t, s.Handler(), "PUT", "/api/config", body, "secret", local)
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "conflicts") {
 		t.Fatalf("raw API: %d %s", w.Code, w.Body)
 	}
@@ -236,7 +226,7 @@ func TestLegacyTrustTunnelMixIsRejected(t *testing.T) {
 		t.Fatal("mixed payload was applied")
 	}
 	yaml := `{"yaml":"connections:\n  - {id: tt, type: link, link: 'tt://?one', trusttunnel: {link: 'tt://?two'}}\n"}`
-	w = do(t, s.Handler(), "POST", "/api/config/import", yaml, "secret", lan)
+	w = do(t, s.Handler(), "POST", "/api/config/import", yaml, "secret", local)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "conflicts") {
 		t.Fatalf("yaml import: %d %s", w.Code, w.Body)
 	}
@@ -244,10 +234,10 @@ func TestLegacyTrustTunnelMixIsRejected(t *testing.T) {
 
 func TestStatsEndpoints(t *testing.T) {
 	s, _ := newServer()
-	if w := do(t, s.Handler(), "GET", "/api/stats?series=1", "", "secret", lan); w.Code != 200 || !strings.Contains(w.Body.String(), "outbounds") {
+	if w := do(t, s.Handler(), "GET", "/api/stats?series=1", "", "secret", local); w.Code != 200 || !strings.Contains(w.Body.String(), "outbounds") {
 		t.Errorf("stats: %d %s", w.Code, w.Body)
 	}
-	if w := do(t, s.Handler(), "GET", "/api/stats/hosts?tag=fi", "", "secret", lan); w.Code != 200 || !strings.Contains(w.Body.String(), "youtube.com") {
+	if w := do(t, s.Handler(), "GET", "/api/stats/hosts?tag=fi", "", "secret", local); w.Code != 200 || !strings.Contains(w.Body.String(), "youtube.com") {
 		t.Errorf("hosts: %d %s", w.Code, w.Body)
 	}
 }
@@ -256,7 +246,7 @@ func TestStatsEndpoints(t *testing.T) {
 func TestHostsLimit(t *testing.T) {
 	s, d := newServer()
 	for _, l := range []string{"10", strconv.Itoa(stats.MaxHosts), strconv.Itoa(stats.MaxHosts + 1), "0", "x"} {
-		if w := do(t, s.Handler(), "GET", "/api/stats/hosts?tag=fi&limit="+l, "", "secret", lan); w.Code != 200 {
+		if w := do(t, s.Handler(), "GET", "/api/stats/hosts?tag=fi&limit="+l, "", "secret", local); w.Code != 200 {
 			t.Fatalf("limit %s: %d", l, w.Code)
 		}
 	}
@@ -269,24 +259,24 @@ func TestHostsLimit(t *testing.T) {
 func TestJournalEndpoints(t *testing.T) {
 	s, d := newServer()
 	h := s.Handler()
-	do(t, h, "POST", "/api/login", `{"token":"nope"}`, "", lan)
-	do(t, h, "POST", "/api/login", `{"token":"secret"}`, "", lan)
-	d.journals[journal.System].Add(journal.Entry{Level: "WARN", Source: "keenproxy", Message: "token secret appeared in message"})
+	d.journals[journal.Audit].Add(journal.Entry{Actor: "user", Action: "Configuration rejected", Target: "config", Result: "error", Details: "invalid, 192.168.7.88"})
+	d.journals[journal.Audit].Add(journal.Entry{Actor: "user", Action: "Configuration applied", Target: "config", Result: "ok"})
+	d.journals[journal.System].Add(journal.Entry{Level: "WARN", Source: "keenproxy", Message: "entry appeared in message"})
 
-	w := do(t, h, "GET", "/api/journal/audit?result=error", "", "secret", lan)
+	w := do(t, h, "GET", "/api/journal/audit?result=error", "", "secret", local)
 	var page journal.Page
 	json.Unmarshal(w.Body.Bytes(), &page)
 	if w.Code != http.StatusOK || len(page.Entries) != 1 || !strings.Contains(page.Entries[0].Details, "192.168.7.88") {
-		t.Errorf("login audit: %d %s", w.Code, w.Body)
+		t.Errorf("audit filter: %d %s", w.Code, w.Body)
 	}
 	if !slices.Contains(page.Facets["result"], "ok") {
 		t.Errorf("filter values: %v", page.Facets)
 	}
-	if c := do(t, h, "GET", "/api/journal/nope", "", "secret", lan).Code; c != http.StatusNotFound {
+	if c := do(t, h, "GET", "/api/journal/nope", "", "secret", local).Code; c != http.StatusNotFound {
 		t.Errorf("unknown journal: %d", c)
 	}
-	w = do(t, h, "GET", "/api/journal/system/export?since=1h", "", "secret", lan)
-	if !strings.Contains(w.Header().Get("Content-Disposition"), "keenproxy-system-") || strings.Contains(w.Body.String(), "secret") ||
+	w = do(t, h, "GET", "/api/journal/system/export?since=1h", "", "secret", local)
+	if !strings.Contains(w.Header().Get("Content-Disposition"), "keenproxy-system-") ||
 		!strings.Contains(w.Body.String(), "appeared in message") {
 		t.Errorf("export: %q\n%s", w.Header().Get("Content-Disposition"), w.Body)
 	}

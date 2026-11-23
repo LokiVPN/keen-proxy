@@ -105,23 +105,17 @@ func MemoryLimitBytes(cfg *Config, baseline int64) (int64, bool) {
 	return mib * 1024 * 1024, true
 }
 
-// API configures the web interface and HTTP API.
+// API configures the HTTP API listener.
 type API struct {
-	Listen    string `yaml:"listen" json:"listen"`         // 0.0.0.0:8086
-	TokenFile string `yaml:"token_file" json:"token_file"` // login token created on first startup
-	// NoTokenFrom permits dashboard access without a token from these CIDR ranges.
+	Listen string `yaml:"listen" json:"listen"` // 0.0.0.0:8086
+	// TokenFile is accepted and ignored.
+	//
+	// Deprecated: the panel token no longer exists.
+	TokenFile string `yaml:"token_file,omitempty" json:"token_file,omitempty"`
+	// NoTokenFrom is accepted and ignored.
+	//
+	// Deprecated: the HTTP API trusts only loopback peers.
 	NoTokenFrom []string `yaml:"no_token_from,omitempty" json:"no_token_from,omitempty"`
-}
-
-// NoTokenPrefixes parses API.NoTokenFrom, skipping invalid ranges that Validate rejects.
-func (a API) NoTokenPrefixes() []netip.Prefix {
-	var out []netip.Prefix
-	for _, s := range a.NoTokenFrom {
-		if p, err := netip.ParsePrefix(strings.TrimSpace(s)); err == nil {
-			out = append(out, p.Masked())
-		}
-	}
-	return out
 }
 
 // LAN identifies the client-facing and provider network interfaces.
@@ -331,9 +325,6 @@ func (c *Config) Defaults() {
 	if c.API.Listen == "" {
 		c.API.Listen = "0.0.0.0:8086"
 	}
-	if c.API.TokenFile == "" {
-		c.API.TokenFile = "/opt/etc/keenproxy/token"
-	}
 	if c.LAN.Interface == "" {
 		c.LAN.Interface = "br0"
 	}
@@ -453,11 +444,6 @@ func (c *Config) Validate() error {
 	}
 	if _, err := netip.ParseAddrPort(c.API.Listen); err != nil {
 		add("api.listen: %v", err)
-	}
-	for i, s := range c.API.NoTokenFrom {
-		if _, err := netip.ParsePrefix(strings.TrimSpace(s)); err != nil {
-			add("api.no_token_from[%d]: %q requires a network such as 192.168.1.0/24", i, s)
-		}
 	}
 	for i, u := range c.DNS.Upstreams {
 		if _, err := ParseUpstream(u); err != nil {

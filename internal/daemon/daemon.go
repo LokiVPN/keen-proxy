@@ -877,15 +877,6 @@ func (d *Daemon) removeFirewall() {
 	d.planOn, d.planPending = false, false
 }
 
-// NoTokenFrom returns trusted dashboard networks from the atomic configuration
-// snapshot, avoiding locks and configuration copies on every API request.
-func (d *Daemon) NoTokenFrom() []netip.Prefix {
-	if cfg := d.live.Load(); cfg != nil {
-		return cfg.API.NoTokenPrefixes()
-	}
-	return nil
-}
-
 // Config returns a deep copy of the current configuration.
 func (d *Daemon) Config() *model.Config {
 	d.mu.Lock()

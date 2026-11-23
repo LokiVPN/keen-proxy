@@ -19,10 +19,10 @@ func TestAmneziaImportPreview(t *testing.T) {
 	envelope, _ := json.Marshal(map[string]any{"format_version": 1, "hostName": "never-resolve.invalid", "userName": "ssh-user-secret", "password": "ssh-pass-secret", "containers": []any{map[string]any{"container": "amnezia-awg2", "awg": map[string]any{"last_config": string(last)}}}})
 	body, _ := json.Marshal(map[string]string{"uri": "vpn://" + base64.RawURLEncoding.EncodeToString(envelope)})
 	h := s.Handler()
-	if w := do(t, h, "POST", "/api/amnezia/import", string(body), "", lan); w.Code != http.StatusUnauthorized {
+	if w := do(t, h, "POST", "/api/amnezia/import", string(body), "", lan); w.Code != http.StatusForbidden {
 		t.Fatalf("unauthenticated: %d", w.Code)
 	}
-	w := do(t, h, "POST", "/api/amnezia/import", string(body), "secret", lan)
+	w := do(t, h, "POST", "/api/amnezia/import", string(body), "secret", local)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d response=%s", w.Code, w.Body.String())
 	}
@@ -50,7 +50,7 @@ func TestAmneziaImportPreview(t *testing.T) {
 func TestAmneziaImportErrors(t *testing.T) {
 	s, _ := newServer()
 	for _, body := range []string{`{}`, `null`, `{"uri":7}`, `{"uri":"vpn://!!!"}`, `{"uri":"vpn://e30","extra":true}`, `{"uri":"vpn://e30"} {}`, `{"uri":"` + strings.Repeat("A", (2<<20)+1) + `"}`} {
-		w := do(t, s.Handler(), "POST", "/api/amnezia/import", body, "secret", lan)
+		w := do(t, s.Handler(), "POST", "/api/amnezia/import", body, "secret", local)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("code=%d", w.Code)
 		}
@@ -73,7 +73,7 @@ func TestAmneziaImportStableClassificationErrors(t *testing.T) {
 	} {
 		s, _ := newServer()
 		body, _ := json.Marshal(map[string]string{"uri": "vpn://" + base64.RawURLEncoding.EncodeToString([]byte(tc.payload))})
-		w := do(t, s.Handler(), "POST", "/api/amnezia/import", string(body), "secret", lan)
+		w := do(t, s.Handler(), "POST", "/api/amnezia/import", string(body), "secret", local)
 		if w.Code != http.StatusBadRequest || strings.TrimSpace(w.Body.String()) != `{"error":"`+tc.code+`"}` {
 			t.Fatalf("unexpected response: %d %s", w.Code, w.Body.String())
 		}

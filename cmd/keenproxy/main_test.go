@@ -34,7 +34,7 @@ func TestStartupStateRequiresAnActiveDaemonOrAPIBindWhenParked(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			cfg := &model.Config{API: model.API{Listen: tc.addr, TokenFile: filepath.Join(dir, "token")}}
+			cfg := &model.Config{API: model.API{Listen: tc.addr}}
 			log := slog.New(slog.NewTextHandler(io.Discard, nil))
 			path := filepath.Join(dir, "startup-state")
 			state := make(chan string, 1)

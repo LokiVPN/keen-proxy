@@ -7,9 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"os"
 	"strconv"
-	"strings"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
@@ -18,48 +16,14 @@ import (
 // resolve names or open a connection.
 type ifaceLookup func(name string) ([]netip.Addr, error)
 
-// rejectAccessConflict refuses combined disclosure and daemon actions before
-// any token or URL is printed. Daemon-only flags keep their existing precedence.
-func rejectAccessConflict(key, showURL, dryRun bool) error {
-	if !key && !showURL {
-		return nil
-	}
-	switch {
-	case key && showURL:
-		return errors.New("cannot combine -key and -url")
-	case dryRun:
-		return errors.New("cannot combine -key or -url with -dry-run")
-	default:
-		return nil
-	}
-}
-
-// discloseAccess prints the current token or configured panel URL.
+// discloseAccess prints the configured panel URL.
 // A printed URL is only an address from configuration; it is not a reachability check.
-func discloseAccess(w io.Writer, configPath string, key bool) error {
+func discloseAccess(w io.Writer, configPath string) error {
 	cfg, err := model.Load(configPath)
 	if err != nil {
 		return err
 	}
-	if key {
-		return printToken(w, cfg.API.TokenFile)
-	}
 	return printPanelURL(w, cfg.API.Listen, cfg.LAN.Interface, interfaceAddrs)
-}
-
-// printToken writes the trimmed token already stored at path.
-// Missing, unreadable, and empty files are errors and are left unchanged.
-func printToken(w io.Writer, path string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("token file: %w", err)
-	}
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		return fmt.Errorf("token file %s is empty", path)
-	}
-	_, err = fmt.Fprintln(w, token)
-	return err
 }
 
 // printPanelURL writes one http URL for listen. An explicit host is kept as

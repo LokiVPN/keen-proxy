@@ -139,13 +139,6 @@ func configChanges(prev, cfg *model.Config) string {
 	if !reflect.DeepEqual(prev.Intercept, cfg.Intercept) {
 		parts = append(parts, "interception changed")
 	}
-	if !reflect.DeepEqual(prev.API.NoTokenFrom, cfg.API.NoTokenFrom) {
-		if len(cfg.API.NoTokenFrom) == 0 {
-			parts = append(parts, "tokenless login disabled")
-		} else {
-			parts = append(parts, "tokenless login from "+strings.Join(cfg.API.NoTokenFrom, ", "))
-		}
-	}
 	if !reflect.DeepEqual(prev.GeoIP, cfg.GeoIP) {
 		parts = append(parts, "country database changed")
 	}

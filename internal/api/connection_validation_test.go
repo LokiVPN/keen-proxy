@@ -47,7 +47,7 @@ func TestConfigValidationRejectsInvalidEngineProfiles(t *testing.T) {
 		s, d := newServer()
 		d.cfg.Connections = []model.Connection{profile}
 		raw, _ := json.Marshal(d.cfg)
-		w := do(t, s.Handler(), "POST", "/api/config/validate", string(raw), "secret", lan)
+		w := do(t, s.Handler(), "POST", "/api/config/validate", string(raw), "secret", local)
 		if w.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("invalid profile accepted: %s / %s", profile.Type, w.Body.String())
 		}
@@ -74,7 +74,7 @@ func TestConfigValidationWizardProtocols(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			w := do(t, s.Handler(), "POST", "/api/config/validate", string(raw), "secret", lan)
+			w := do(t, s.Handler(), "POST", "/api/config/validate", string(raw), "secret", local)
 			if w.Code != want {
 				t.Fatalf("expected HTTP %d, got %d: %s", want, w.Code, w.Body)
 			}

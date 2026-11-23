@@ -88,7 +88,6 @@ The managed installation paths are:
 | --- | --- | --- |
 | Binary | `/opt/bin/keenproxy` | `/usr/bin/keenproxy` |
 | Configuration | `/opt/etc/keenproxy/config.yaml` | `/etc/keenproxy/config.yaml` |
-| API token on a clean install | `/opt/etc/keenproxy/token` | `/etc/keenproxy/token` |
 | Rule sets and derived state | `/opt/var/lib/keenproxy/` | `/var/lib/keenproxy/` |
 | Service | `/opt/etc/init.d/S99keenproxy` | `/etc/init.d/keenproxy` (procd) |
 | Release record and updater settings | `/opt/share/keenproxy/` and `/opt/var/lib/keenproxy/updates/` | `/usr/share/keenproxy/` |
@@ -104,9 +103,9 @@ curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/boo
 
 The bootstrap reads `BUILD_INFO.txt` from the latest published LokiVPN release, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. The first start enables LAN DNS interception even with an empty routing policy. Stop any competing interceptor first.
 
-After successful installation or command-line update, the bootstrap prints the panel URL when available. Run `keenproxy --url` to display it again and `keenproxy --key` to print the current login token from the configured token file. These commands do not start the service or generate a token; use `--config /path/to/config.yaml` for a non-default configuration. Keep token output private. See [panel access](docs/en/user-guide.md#access-the-panel).
+After successful installation or command-line update, the bootstrap prints the panel URL when available. Run `keenproxy --url` to display it again; it does not start the service. Use `--config /path/to/config.yaml` for a non-default configuration. See [panel access](docs/en/user-guide.md#access-the-panel).
 
-Run the same command again to update. Existing configuration and tokens are preserved. Select a specific published release with `--version` or choose the smaller build with `--lite`:
+Run the same command again to update. Existing configuration is preserved. Select a specific published release with `--version` or choose the smaller build with `--lite`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z --lite
@@ -120,7 +119,7 @@ For **native OpenWrt without Entware**, prepare the system dependencies and run 
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
 ```
 
-Use `keenproxy --key -config /etc/keenproxy/config.yaml` and `keenproxy --url -config /etc/keenproxy/config.yaml` for native configuration; the standalone CLI's default configuration path remains the Entware path. Service commands are `/etc/init.d/keenproxy status`, `start`, `stop`, and `restart`. To uninstall, rerun the native command with `/bin/sh -s -- --uninstall`; settings, tokens, and updater preferences are retained. Existing managed Entware installations on OpenWrt are not automatically migrated.
+Use `keenproxy --url -config /etc/keenproxy/config.yaml` for native configuration; the standalone CLI's default configuration path remains the Entware path. Service commands are `/etc/init.d/keenproxy status`, `start`, `stop`, and `restart`. To uninstall, rerun the native command with `/bin/sh -s -- --uninstall`; settings and updater preferences are retained. Existing managed Entware installations on OpenWrt are not automatically migrated.
 
 To remove an installation managed by the bootstrap:
 
@@ -128,7 +127,7 @@ To remove an installation managed by the bootstrap:
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
 ```
 
-This stops KeenProxy and removes its binary and Entware init script. It keeps the configuration, API token, logs, rule sets, and any previously installed external clients. Reinstall with the regular install command to reuse the saved settings.
+This stops KeenProxy and removes its binary and Entware init script. It keeps the configuration, logs, rule sets, and any previously installed external clients. Reinstall with the regular install command to reuse the saved settings.
 
 For offline or manual setup, `tools/install.sh` copies a supplied executable. It preserves configuration and leaves service setup to the operator. After copying the binary and installer to the router, run:
 

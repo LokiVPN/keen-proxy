@@ -83,7 +83,6 @@ cp "$FIXTURES/$path" "$out"
         script = (
             '#!/bin/sh\n'
             f'# {tag}\n'
-            'if [ "$1" = --key ]; then echo leaked-panel-token; exit 0; fi\n'
             f'if [ "$1" = --fixture-start ]; then exit {0 if start else 1}; fi\n'
             'if [ "$1" = --url ]; then\n'
             + url +
@@ -130,17 +129,12 @@ esac''')
     def service(self):
         return self.prefix / 'etc/init.d/S99keenproxy'
 
-    def token_command(self):
-        return f"'{self.binary}' --key -config '{self.config}'"
-
     def assert_panel_access(self, result, url=ACCESS_URL):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            f'Access URL: {url}\n'
-            f'Retrieve existing panel token: {self.token_command()}\n',
-            result.stdout)
+            f'Access URL: {url}\n', result.stdout)
+        self.assertNotIn('panel token', result.stdout + result.stderr)
         self.assertNotIn('0.0.0.0', result.stdout)
-        self.assertNotIn('leaked-panel-token', result.stdout + result.stderr)
         self.assertNotIn('rejected-url-args', result.stdout + result.stderr)
 
     def assert_url_queries(self, count):
@@ -327,8 +321,7 @@ done
         self.assertIn('could not determine the panel access URL', result.stderr)
         self.assertNotIn('Access URL:', result.stdout)
         self.assertNotIn('synthetic-secret', result.stdout + result.stderr)
-        self.assertNotIn('leaked-panel-token', result.stdout + result.stderr)
-        self.assertIn(f'Retrieve existing panel token: {self.token_command()}\n', result.stdout)
+        self.assertNotIn('panel token', result.stdout)
         self.assertTrue((self.prefix / 'running').exists())
         self.assert_release('v1.2.3')
         self.assert_url_queries(1)
@@ -339,7 +332,7 @@ done
         self.assertIn('could not determine the panel access URL', result.stderr)
         self.assertNotIn('Access URL:', result.stdout)
         self.assertNotIn('synthetic-secret', result.stdout + result.stderr)
-        self.assertIn(f'Retrieve existing panel token: {self.token_command()}\n', result.stdout)
+        self.assertNotIn('panel token', result.stdout)
         self.assert_release('v1.2.4', 'v1.2.3')
         self.assertTrue((self.prefix / 'running').exists())
         self.assertEqual(self.binary.read_bytes(), (self.mirror / 'v1.2.4/keenproxy-linux-arm64').read_bytes())
@@ -402,7 +395,6 @@ done
         result = self.install('--version', 'v1.2.4')
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('Access URL:', result.stdout)
-        self.assertNotIn('Retrieve existing panel token:', result.stdout)
         self.assertEqual((self.prefix / 'url-invocations').read_text(), before)
         self.assertEqual(self.binary.read_bytes(), first.read_bytes())
         self.assert_release('v1.2.3')
@@ -477,11 +469,9 @@ done
 class SpacedPrefixBootstrapTest(BootstrapFixture):
     prefix_name = 'opt dir'
 
-    def test_access_command_quotes_paths_with_spaces(self):
+    def test_access_url_is_reported_for_paths_with_spaces(self):
         self.release('v1.2.3')
         result = self.install()
         self.assert_panel_access(result)
         self.assertIn(' ', str(self.prefix))
-        self.assertIn(f"'{self.prefix}/bin/keenproxy'", result.stdout)
-        self.assertIn(f"'{self.config}'", result.stdout)
         self.assert_url_queries(1)

@@ -26,7 +26,7 @@ func TestSupportBundleFirewallDiagnostics(t *testing.T) {
 	d.journals[journal.Audit].Close()
 	d.journals[journal.Audit] = journal.New(journal.Options{File: path})
 	defer d.journals[journal.Audit].Close()
-	w := do(t, s.Handler(), "GET", bundlePath, "", s.Token, lan)
+	w := do(t, s.Handler(), "GET", bundlePath, "", "secret", local)
 	if w.Code != 200 {
 		t.Fatalf("bundle status = %d", w.Code)
 	}
@@ -97,7 +97,7 @@ func TestSupportBundleRetainsRestoreFailureWithoutRawEvidence(t *testing.T) {
 			},
 		},
 	})
-	w := do(t, s.Handler(), "GET", bundlePath, "", s.Token, lan)
+	w := do(t, s.Handler(), "GET", bundlePath, "", "secret", local)
 	if w.Code != 200 {
 		t.Fatalf("bundle status = %d", w.Code)
 	}
