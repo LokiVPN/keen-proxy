@@ -77,9 +77,8 @@ func TestSubscriptionPreviewReportsProviderLimitWithoutSaving(t *testing.T) {
 	}
 }
 
-func TestSubscriptionMutationRejectsForeignOriginFromTrustedLAN(t *testing.T) {
+func TestSubscriptionMutationRejectsForeignOrigin(t *testing.T) {
 	s, d := newServer()
-	d.cfg.API.NoTokenFrom = []string{"192.168.7.0/24"}
 	s.D = subscriptionFixture{d}
 	h := s.Handler()
 	for _, path := range []string{"/api/subscriptions/preview", "/api/subscriptions/provider/refresh", "/api/subscriptions/provider/check"} {

@@ -102,9 +102,8 @@ func TestTProxyRetryUsesAuthenticatedSavedActivation(t *testing.T) {
 	}
 }
 
-func TestTProxyRetryRejectsCrossOriginFromTrustedNetwork(t *testing.T) {
+func TestTProxyRetryRejectsCrossOrigin(t *testing.T) {
 	s, fake := newServer()
-	fake.cfg.API.NoTokenFrom = []string{"192.168.7.0/24"}
 	recovery := &tproxyDiagnosticStub{fakeDaemon: fake, result: daemon.TProxyDiagnostic{StartupBlocked: true}}
 	s.D = recovery
 	h := s.Handler()

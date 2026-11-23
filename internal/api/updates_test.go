@@ -20,9 +20,9 @@ func TestUpdatePermissions(t *testing.T) {
 		{"loopback status", "GET", "/api/updates", "", "", "", 200},
 		{"loopback check", "POST", "/api/updates/check", "{}", "", "", 200},
 		{"blocks cross-origin install", "POST", "/api/updates/install", `{"target":"v0.4.0"}`, "secret", "http://evil.example", 403},
-		{"demo cannot configure updates", "PUT", "/api/updates/preferences", `{"time":"04:00"}`, "secret", "", 409},
+		{"preferences need a managed installation", "PUT", "/api/updates/preferences", `{"time":"04:00"}`, "secret", "", 409},
 		{"invalid schedule is rejected", "PUT", "/api/updates/preferences", `{"time":7}`, "secret", "", 400},
-		{"demo cannot install", "POST", "/api/updates/install", `{"target":"v0.4.0"}`, "secret", "", 409},
+		{"install needs a managed installation", "POST", "/api/updates/install", `{"target":"v0.4.0"}`, "secret", "", 409},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
