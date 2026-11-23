@@ -11,12 +11,12 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
-// BackupV1Config keeps raw, a configuration that older releases read, beside
+// backupV1Config keeps raw, a configuration that older releases read, beside
 // path as config.v1.yaml, or as config.v1.<unix seconds>.yaml when that name
 // is taken. The installer restores config.v1.yaml when it rolls back to such a
 // release. The copy has mode 0600, is synced before return and never replaces
 // an existing file. It returns the backup path.
-func BackupV1Config(path string, raw []byte, now time.Time) (string, error) {
+func backupV1Config(path string, raw []byte, now time.Time) (string, error) {
 	dir := filepath.Dir(path)
 	for _, name := range []string{"config.v1.yaml", fmt.Sprintf("config.v1.%d.yaml", now.Unix())} {
 		backup := filepath.Join(dir, name)
@@ -42,15 +42,18 @@ func BackupV1Config(path string, raw []byte, now time.Time) (string, error) {
 }
 
 // keepV1Config backs up the saved file before the first write in the current
-// schema replaces a file that older releases can read. A file without
-// connections or subscriptions, such as the installer's placeholder, has
-// nothing a rollback needs and is not kept.
-func keepV1Config(path string, previous []byte) error {
+// schema replaces a file that older releases can read, including a v0.10 or
+// unreadable file the daemon started from after a reset in memory. A file
+// without connections or subscriptions, such as the installer's placeholder,
+// has nothing a rollback needs and is not kept. It returns the backup path, or
+// "" when nothing was kept.
+func keepV1Config(path string, previous []byte) (string, error) {
 	if model.FileSchemaVersion(previous) >= model.SchemaVersion || !model.FileHasProfiles(previous) {
-		return nil
+		return "", nil
 	}
-	if _, err := BackupV1Config(path, previous, time.Now()); err != nil {
-		return fmt.Errorf("configuration for older releases was not kept: %w", err)
+	backup, err := backupV1Config(path, previous, time.Now())
+	if err != nil {
+		return "", fmt.Errorf("configuration for older releases was not kept: %w", err)
 	}
-	return nil
+	return backup, nil
 }

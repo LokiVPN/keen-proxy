@@ -231,17 +231,21 @@ New configurations are written with `schema_version: 2`.
   copied byte for byte to `config.v1.yaml` (mode 0600, never overwritten; a
   timestamped name is used if that file exists). Installer placeholder files
   without connections and subscriptions are not backed up.
-- A schema 1 or unreadable file that no longer loads is reset at startup. The
-  original stays as `config.v1.yaml`, and `api.listen`, `lan` and the first
-  valid subscription are carried into a fresh schema 2 file. A broken schema 2
-  file is still an error. `-dry-run` reports a planned reset without writing.
-- `tools/bootstrap.sh` snapshots the configuration before installing and
-  restores it if the update fails. When the target release cannot read schema 2
-  at all, it atomically switches to the newest kept `config.v1*.yaml` and keeps
-  the newer file as `config.v2*.yaml`. A target that reads schema 2 but rejects
-  the file is refused and nothing changes. A fresh install of this release has no v1
-  backup, so a rollback to an older release is refused at validation and
-  changes nothing.
+- A schema 1 or unreadable file that no longer loads is reset in memory at
+  startup: `api.listen`, `lan` and the first valid subscription are kept, and
+  everything else starts from defaults. Startup does not change the file. The
+  first save copies it byte for byte to `config.v1.yaml` and then writes
+  schema 2, so an older release can still read its file if the update is
+  rolled back before any save, and every restart until then computes the same
+  reset. A broken schema 2 file is still an error. `-dry-run` and `--url` use
+  the reset without writing.
+- This release's `tools/bootstrap.sh` also snapshots the configuration before
+  installing and restores it if the update fails. When the target release
+  cannot read schema 2 at all, it atomically switches to the newest kept
+  `config.v1*.yaml` and keeps the newer file as `config.v2*.yaml`. A target
+  that reads schema 2 but rejects the file is refused and nothing changes. A
+  fresh install of this release has no v1 backup, so a rollback to an older
+  release is refused at validation and changes nothing.
 
 ## GitHub Pages
 

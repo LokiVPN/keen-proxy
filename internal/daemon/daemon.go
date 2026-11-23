@@ -40,7 +40,12 @@ import (
 
 // Options supplies local paths, runtime dependencies, and watchdog settings.
 type Options struct {
-	ConfigPath    string
+	ConfigPath string
+	// Config is the configuration Run starts with; nil loads ConfigPath. The
+	// caller may have reset an older file in memory: ConfigPath changes only
+	// when a configuration is saved, and that first save keeps a file older
+	// releases read as config.v1.yaml.
+	Config        *model.Config
 	ARPPath       string        // /proc/net/arp
 	RuleSetDir    string        // local sing-box client address rule-sets
 	WatchInterval time.Duration // watchdog interval for firewall and neighbor checks
@@ -215,9 +220,12 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 	if ctx.Err() != nil {
 		return nil, nil
 	}
-	cfg, err := model.Load(d.opt.ConfigPath)
-	if err != nil {
-		return nil, err
+	cfg := d.opt.Config
+	if cfg == nil {
+		var err error
+		if cfg, err = model.Load(d.opt.ConfigPath); err != nil {
+			return nil, err
+		}
 	}
 	d.started = time.Now()
 	blocked := d.tproxyPreflight(ctx, cfg)
@@ -430,8 +438,12 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 		return err
 	}
 	if previous, err := os.ReadFile(d.opt.ConfigPath); err == nil {
-		if err := keepV1Config(d.opt.ConfigPath, previous); err != nil {
+		backup, err := keepV1Config(d.opt.ConfigPath, previous)
+		if err != nil {
 			return err
+		}
+		if backup != "" {
+			d.log.Info("configuration for older releases kept", "backup", backup)
 		}
 		if recovery {
 			return persistRecoveryConfig(d.opt.ConfigPath, previous, raw)

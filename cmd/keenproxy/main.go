@@ -82,7 +82,7 @@ func main() {
 	}()
 	log := slog.New(journal.NewHandler(slog.NewTextHandler(os.Stderr, nil), journals[journal.System]))
 
-	cfg, err := loadOrReset(*configPath, log, true)
+	cfg, err := startupConfig(*configPath, log)
 	if err != nil {
 		log.Error("configuration", "err", err)
 		os.Exit(1)
@@ -104,7 +104,7 @@ func main() {
 		go publishStartupState(ctx, state, listening, path, log)
 	}
 	d := daemon.New(daemon.Options{
-		ConfigPath: *configPath, ARPPath: *arpPath, RuleSetDir: *ruleSetDir, WatchInterval: *watch,
+		ConfigPath: *configPath, Config: cfg, ARPPath: *arpPath, RuleSetDir: *ruleSetDir, WatchInterval: *watch,
 		Firewall: fw, Log: log, Journals: journals, SingBoxLog: singBoxLog(journals[journal.System], log),
 		OnStartupActive:  onStartupActive,
 		OnStartupBlocked: onStartupBlocked,
@@ -227,11 +227,14 @@ func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *upd
 
 // printDryRun renders derived settings without enabling interception; output may contain secrets.
 // A file that the daemon would reset at startup is reported on stderr and
-// rendered as reset, without changing any file.
+// rendered as reset. Like the daemon start, it changes no file.
 func printDryRun(configPath, arpPath, ruleSetDir string) error {
-	cfg, err := loadOrReset(configPath, slog.New(slog.NewTextHandler(os.Stderr, nil)), false)
+	cfg, reset, err := loadOrReset(configPath)
 	if err != nil {
 		return err
+	}
+	if reset {
+		logReset(slog.New(slog.NewTextHandler(os.Stderr, nil)), "configuration would be reset after upgrade", cfg)
 	}
 	neighbors, _ := devices.ReadARP(arpPath, cfg.LAN.Interface)
 	out, err := compile.Compile(compile.Input{Config: cfg, Neighbors: neighbors, RuleSetDir: ruleSetDir})

@@ -8,18 +8,17 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
-
-	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
 // ifaceLookup returns addresses configured on a local interface. It must not
 // resolve names or open a connection.
 type ifaceLookup func(name string) ([]netip.Addr, error)
 
-// discloseAccess prints the configured panel URL.
+// discloseAccess prints the configured panel URL. For a file the daemon resets
+// at startup it uses the address the reset keeps, and it never changes a file.
 // A printed URL is only an address from configuration; it is not a reachability check.
 func discloseAccess(w io.Writer, configPath string) error {
-	cfg, err := model.Load(configPath)
+	cfg, _, err := loadOrReset(configPath)
 	if err != nil {
 		return err
 	}

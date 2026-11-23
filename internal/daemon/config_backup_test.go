@@ -98,11 +98,11 @@ func TestBackupV1ConfigNeverReplacesAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Unix(1700000000, 0)
-	got, err := BackupV1Config(path, []byte("second\n"), now)
+	got, err := backupV1Config(path, []byte("second\n"), now)
 	if want := filepath.Join(dir, "config.v1.1700000000.yaml"); err != nil || got != want {
 		t.Fatalf("backup = %q, %v; want %q", got, err, want)
 	}
-	if _, err := BackupV1Config(path, []byte("third\n"), now); err == nil {
+	if _, err := backupV1Config(path, []byte("third\n"), now); err == nil {
 		t.Fatal("a third backup in the same second replaced an existing file")
 	}
 	assertSavedBytes(t, first, []byte("first\n"))
