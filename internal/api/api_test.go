@@ -460,12 +460,16 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 				}
 				continue
 			}
-			want := mode.page
+			want, format := mode.page, "text/plain"
 			if rq.path == "/api" || strings.HasPrefix(rq.path, "/api/") {
-				want = mode.api
+				want, format = mode.api, "application/json"
 			}
 			if w.Code != want.status || (rq.method != http.MethodHead && !strings.Contains(w.Body.String(), want.reason)) {
 				t.Errorf("%s: %s %s from LAN: %d %q, want %d %q", mode.name, rq.method, rq.path, w.Code, w.Body, want.status, want.reason)
+			}
+			if !strings.HasPrefix(w.Header().Get("Content-Type"), format) || w.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("%s: %s %s from LAN: Content-Type %q, Cache-Control %q, want %s and no-store",
+					mode.name, rq.method, rq.path, w.Header().Get("Content-Type"), w.Header().Get("Cache-Control"), format)
 			}
 		}
 	}
@@ -494,6 +498,7 @@ func TestPagesFollowTheKeeneticSession(t *testing.T) {
 		{"manage reads", []string{"http", "cli"}, "GET", true, "", http.StatusServiceUnavailable, placeholder},
 		{"manage writes", []string{"http", "cli"}, "POST", true, "", http.StatusServiceUnavailable, placeholder},
 		{"view reads", []string{"http", "readonly"}, "GET", true, "", http.StatusServiceUnavailable, placeholder},
+		{"view reads headers", []string{"http", "readonly"}, "HEAD", true, "", http.StatusServiceUnavailable, placeholder},
 		{"view cannot write", []string{"http", "readonly"}, "POST", true, "", http.StatusForbidden, "KeeneticOS management access denied"},
 		{"foreign host", []string{"http", "cli"}, "GET", true, "evil.example:8086", http.StatusForbidden, "KeeneticOS management access denied"},
 	} {
