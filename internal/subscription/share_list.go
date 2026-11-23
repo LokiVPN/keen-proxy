@@ -29,6 +29,7 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 	seen := make(map[string]bool)
 	var result Result
 	var hasContent bool
+	var routingLine string
 	for line := range strings.Lines(body) {
 		if ctx.Err() != nil {
 			return withHeaders(headers, sensitive, failure(StateNetworkError, canceledDownload))
@@ -39,6 +40,12 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 		}
 		if comment, ok := strings.CutPrefix(line, "#"); ok {
 			collectMetadata(comments, comment)
+			continue
+		}
+		if isRoutingLine(line) {
+			if routingLine == "" {
+				routingLine = line
+			}
 			continue
 		}
 		hasContent = true
@@ -70,6 +77,7 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 		result.Error = "Subscription response contains no profiles"
 	}
 	result.Metadata = parseMetadata(headers, comments, sensitive)
+	result.Routing, result.RoutingError = resolveRouting(headers, comments, routingLine, sensitive)
 	return result
 }
 
@@ -144,7 +152,7 @@ func collectMetadata(comments http.Header, line string) {
 		return
 	}
 	switch field = strings.ToLower(strings.TrimSpace(field)); field {
-	case "profile-title", "announce", "support-url", "profile-web-page-url", "profile-update-interval", "subscription-userinfo":
+	case "profile-title", "announce", "support-url", "profile-web-page-url", "profile-update-interval", "subscription-userinfo", "routing-enable":
 		if len(comments.Values(field)) == 0 {
 			comments.Set(field, value)
 		}

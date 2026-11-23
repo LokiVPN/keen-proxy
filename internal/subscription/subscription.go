@@ -73,6 +73,12 @@ type Result struct {
 	Nodes    []Node   `json:"-"`
 	Skipped  int      `json:"skipped"`
 	Error    string   `json:"error,omitempty"`
+	// Routing is the provider's private routing profile. Contract: parsed ->
+	// Routing set and RoutingError empty; absent, "off" or disabled by
+	// routing-enable -> both empty; malformed -> Routing nil and RoutingError
+	// holds a fixed message without provider text.
+	Routing      *RoutingProfile `json:"-"`
+	RoutingError string          `json:"-"`
 	// Transient tells the refresh scheduler to retry with bounded backoff.
 	Transient bool `json:"-"`
 }
