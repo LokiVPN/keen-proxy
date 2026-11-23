@@ -191,7 +191,8 @@ Remove the card and restore the stock page with `opkg remove keenproxy-app-card`
 
 On KeeneticOS sign-in is on by default. KeenProxy derives the origin from the
 first private IPv4 address of the LAN interface (`lan.interface`, `br0` by
-default). Browsers may use the router's LAN IPv4 address or `my.keenetic.net`,
+default) and expects the router's web interface on port 80 there; if it uses
+another port, set the origin explicitly (`http://ROUTER_LAN_IP:PORT`). Browsers may use the router's LAN IPv4 address or `my.keenetic.net`,
 each with the panel port (the port is omitted when it is 80); any other `Host`
 is refused. To override the origin pass
 `-keenetic-auth-origin http://ROUTER_LAN_IP` or set
@@ -222,15 +223,17 @@ them server-side once they arrive. Sign-in is the only non-loopback way in:
 without it, other clients get `403 local access only`.
 
 Recovery and non-Keenetic systems: forward the panel through SSH and open it
-on loopback, which is always trusted:
+on loopback, which is always trusted. On Keenetic, use the Entware SSH server
+on port 222; port 22 is the KeeneticOS command line. On OpenWrt, omit `-p 222`:
 
 ```sh
-ssh -L 8086:127.0.0.1:8086 root@ROUTER
+ssh -p 222 -L 8086:127.0.0.1:8086 root@ROUTER
 # then open http://127.0.0.1:8086
 ```
 
 On OpenWrt and other non-Keenetic systems sign-in is off, so the panel is
-reachable only through such a tunnel.
+reachable only through such a tunnel. See
+[recovering panel access](troubleshooting.md#recover-access).
 
 ## Control API { #control-api }
 
@@ -255,9 +258,15 @@ sessions alike, so a page you visit while an SSH tunnel is open cannot change
 settings through it. Clients that send neither header, such as curl and the
 test gates, are not affected.
 
-Residual risk: a forward proxy running on the router (tinyproxy, xray and the
-like) that connects from `127.0.0.1` with `Host: 127.0.0.1:<port>` is trusted.
-Do not run open local proxies next to KeenProxy.
+Residual risk: loopback trust cannot tell a local script from a proxy on the
+router that relays someone else's request. It trusts a forward proxy
+(tinyproxy, xray and the like) that connects from `127.0.0.1` with
+`Host: 127.0.0.1:<port>`, and a reverse proxy that forwards to `127.0.0.1` with
+a loopback `Host`, such as nginx with `proxy_pass http://127.0.0.1:8086`,
+which sends `Host: 127.0.0.1:8086` by default. Whether KeenDNS web-app
+publishing in KeeneticOS forwards this way is unverified, so do not publish
+the panel port through it. Do not run such proxies next to KeenProxy, or make
+them pass the client's own `Host` (nginx `proxy_set_header Host $host`).
 
 The panel token, the `-key` option, trusted networks and `POST /api/login` are
 removed; `api.token_file` and `api.no_token_from` are accepted and ignored. The

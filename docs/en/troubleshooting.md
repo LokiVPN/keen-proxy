@@ -220,6 +220,18 @@ The export omits credentials, raw connection profiles, and free-form log message
 
 Include the expected and actual behavior, the running release and build details, router model and firmware, steps to reproduce, and the approximate time of the incident. Use a minimal synthetic configuration or attach a reviewed [diagnostic ZIP](#download-the-diagnostic-zip). Read [CONTRIBUTING](https://github.com/ordo-systems/keen-proxy/blob/main/CONTRIBUTING.md) and [SECURITY](https://github.com/ordo-systems/keen-proxy/blob/main/SECURITY.md).
 
+## Recover panel access { #recover-access }
+
+Requests from the router itself are always trusted: a request from `127.0.0.1` that also addresses `127.0.0.1` or `localhost` skips sign-in. When KeeneticOS sign-in does not work (unknown firmware, a changed RCI, no LAN address at startup, or sign-in turned off), open the panel through an SSH tunnel. On Keenetic, connect to the Entware SSH server on port 222; port 22 is the KeeneticOS command line:
+
+```sh
+ssh -p 222 -L 8086:127.0.0.1:8086 root@ROUTER
+```
+
+Then open `http://127.0.0.1:8086` and keep that address: the panel trusts the tunnel only while the browser addresses `127.0.0.1` or `localhost`. On OpenWrt, use the default SSH port: `ssh -L 8086:127.0.0.1:8086 root@ROUTER`. The control API under `/api` answers only such loopback requests; a KeeneticOS session never reaches it.
+
+If browsers on the LAN get `503` and the system journal reports that KeeneticOS sign-in is unavailable, fix the reported cause (the LAN address, `api.listen` or the origin) and restart the service. The derived origin expects the router's web interface on port 80 at the LAN address; if it uses another port, set `KEENPROXY_KEENETIC_AUTH_ORIGIN=http://ROUTER_LAN_IP:PORT`. To keep sign-in off, set `KEENPROXY_KEENETIC_AUTH_ORIGIN=off`; the panel then opens only through the tunnel. On Entware, put the line in `/opt/etc/keenproxy/keenproxy.env`, which updates and uninstall keep, and run `/opt/etc/init.d/S99keenproxy restart`. See [KeeneticOS sign-in](development.md#keenetic-auth).
+
 ## Upgrading from v0.10 { #upgrade-from-v010 }
 
 This release no longer reads every v0.10 configuration. A file that still loads is used as is. A file that does not load is reset in memory at startup: the listen address, LAN settings and the first valid subscription are kept, and the file itself stays unchanged. Either way, the first save keeps the original byte for byte as `config.v1.yaml` next to the configuration before it writes the new format, so rolling back before that save leaves the older release its own file. A file that holds only installer starter settings is not kept. Re-create other connections and rules afterwards. Presets, resource exchange, ad filter lists and YAML import/export no longer exist, and there is no panel token to look up. A fresh install has no v1 backup, so a [rollback](getting-started.md#update-from-the-panel) to an older release is refused and changes nothing.

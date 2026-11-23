@@ -30,7 +30,7 @@ The main code boundaries are:
 | `internal/netfilter` | Owned iptables chains and policy-routing lifecycle |
 | `internal/dnsfront`, `domaincache` | DNS transport and bounded observations |
 | `internal/engine`, `links`, `trusttunnel` | Embedded engine and protocol/client adaptation |
-| `internal/api`, `journal`, `stats` | Loopback and KeeneticOS-authorized control API, journals, and telemetry |
+| `internal/api`, `journal`, `stats` | Loopback-only control API, KeeneticOS sign-in for pages, journals, and telemetry |
 
 ## Make the smallest verifiable change
 
