@@ -59,9 +59,47 @@ type Config struct {
 	Failover      Failover              `yaml:"failover" json:"failover"`
 	Connections   []Connection          `yaml:"connections" json:"connections"`
 	Subscriptions []subscription.Source `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
-	Groups        []Group               `yaml:"groups" json:"groups"`
-	Networks      []Network             `yaml:"networks" json:"networks"`
-	Clients       []Client              `yaml:"clients" json:"clients"`
+	// ProviderRules turns on the routing rules a subscription's provider
+	// sends with it; nil keeps them off.
+	ProviderRules *ProviderRulesSettings `yaml:"provider_rules,omitempty" json:"provider_rules,omitempty"`
+	Groups        []Group                `yaml:"groups" json:"groups"`
+	Networks      []Network              `yaml:"networks" json:"networks"`
+	Clients       []Client               `yaml:"clients" json:"clients"`
+}
+
+// ProviderRulesSettings selects the subscription whose provider rules apply
+// and the rules the user switched off. The rules themselves are provider data
+// kept in the private subscription snapshot, not in the configuration.
+type ProviderRulesSettings struct {
+	Source string `yaml:"source" json:"source"` // a configured subscription ID
+	// Disabled holds rule keys. Keys the provider no longer sends stay valid,
+	// so a rule returning to the provider's lists stays off.
+	Disabled []string `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+}
+
+// Bounds for provider_rules.disabled.
+const (
+	maxDisabledProviderRules = 1024
+	maxProviderRuleKey       = 256
+)
+
+func (c *Config) validateProviderRules(add func(string, ...any)) {
+	r := c.ProviderRules
+	if r == nil {
+		return
+	}
+	if !slices.ContainsFunc(c.Subscriptions, func(source subscription.Source) bool { return source.ID == r.Source }) {
+		add("provider_rules.source: unknown subscription %q", r.Source)
+	}
+	if len(r.Disabled) > maxDisabledProviderRules {
+		add("provider_rules.disabled: at most %d keys", maxDisabledProviderRules)
+		return
+	}
+	for i, key := range r.Disabled {
+		if key == "" || len(key) > maxProviderRuleKey {
+			add("provider_rules.disabled[%d]: a key must have 1 to %d bytes", i, maxProviderRuleKey)
+		}
+	}
 }
 
 // maxMemoryLimitMiB is the largest MiB count whose byte size fits in int64.
@@ -457,6 +495,7 @@ func (c *Config) Validate() error {
 
 	conns := map[string]bool{}
 	c.validateSubscriptions(add)
+	c.validateProviderRules(add)
 	for i, cn := range c.Connections {
 		switch {
 		case cn.ID == "":

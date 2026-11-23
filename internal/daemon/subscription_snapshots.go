@@ -25,6 +25,8 @@ type subscriptionSnapshot struct {
 	Skipped     int                   `json:"skipped,omitempty"`
 	LastSuccess time.Time             `json:"last_success"`
 	Selection   subscriptionSelection `json:"selection"`
+	// Rules exists only for the source named by provider_rules.
+	Rules *rulesSnapshot `json:"rules,omitempty"`
 }
 
 type subscriptionSelection struct {
@@ -94,6 +96,7 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 				}})
 			}
 		}
+		syncProviderRules(cfg, &state)
 		states[source.ID] = state
 	}
 	d.subscriptions.states = states
@@ -112,14 +115,16 @@ func validSnapshotNodeIDs(nodes []subscription.Node) bool {
 }
 
 // saveChangedSubscriptionSnapshotsLocked writes when a source set, usable list,
-// or selection has changed during Apply; ordinary unrelated edits incur no write.
+// selection or provider rules have changed during Apply; ordinary unrelated
+// edits incur no write.
 func (d *Daemon) saveChangedSubscriptionSnapshotsLocked(cfg *model.Config, previous map[string]appliedSubscription) error {
 	if len(previous) != len(d.subscriptions.states) {
 		return d.saveSubscriptionSnapshotsLocked(cfg)
 	}
 	for id, state := range d.subscriptions.states {
 		old := previous[id]
-		if subscriptionIdentity(old.source) != subscriptionIdentity(state.source) || old.snapshot.Selection != state.snapshot.Selection || !old.snapshot.LastSuccess.Equal(state.snapshot.LastSuccess) {
+		if subscriptionIdentity(old.source) != subscriptionIdentity(state.source) || old.snapshot.Selection != state.snapshot.Selection ||
+			!old.snapshot.LastSuccess.Equal(state.snapshot.LastSuccess) || old.snapshot.Rules != state.snapshot.Rules {
 			return d.saveSubscriptionSnapshotsLocked(cfg)
 		}
 	}

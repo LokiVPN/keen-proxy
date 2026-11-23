@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"time"
 
@@ -53,6 +54,9 @@ type SubscriptionStatus struct {
 	BalanceEligible *int                       `json:"balance_eligible,omitempty"`
 	// Fallback echoes the configured reserve used while no node answers.
 	Fallback string `json:"fallback,omitempty"`
+	// RulesError tells why the latest provider-rules update of the configured
+	// source failed, as a fixed English message.
+	RulesError string `json:"rules_error,omitempty"`
 }
 
 // subscriptionRuntime separates downloads from the state committed under d.mu.
@@ -90,12 +94,18 @@ type appliedSubscription struct {
 type subscriptionAttempt struct {
 	result subscription.Result
 	at     time.Time
+	// rules is the provider-rules state built from result for the configured
+	// source; nil when this attempt did not evaluate rules.
+	rules *rulesSnapshot
 }
 
 // subscriptionRefresh identifies one in-flight download even if an Apply
 // removes and re-adds the same source settings before the request returns.
 type subscriptionRefresh struct {
 	source subscription.Source
+	// rules asks the download to evaluate provider rules from previous.
+	rules    bool
+	previous *rulesSnapshot
 }
 
 func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
@@ -168,6 +178,9 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		}
 		if !snapshot.LastSuccess.IsZero() {
 			status.LastSuccess = &snapshot.LastSuccess
+		}
+		if snapshot.Rules != nil {
+			status.RulesError = snapshot.Rules.Error
 		}
 		if !snapshot.Selection.At.IsZero() {
 			status.LastSwitch = &snapshot.Selection.At
@@ -252,7 +265,8 @@ func (d *Daemon) expireSubscriptionPreviewsLocked(now time.Time) {
 	}
 }
 
-// applyWithSubscriptions obtains missing candidates outside the Apply lock and
+// applyWithSubscriptions obtains missing candidates, and the provider rules of
+// a new candidate for the configured source, outside the Apply lock and
 // rechecks them against the configuration that is active when Apply acquires it.
 func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config) error {
 	candidates := make(map[subscription.Source]subscriptionAttempt)
@@ -265,9 +279,17 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config) 
 		d.expireSubscriptionPreviewsLocked(time.Now())
 		source, missing := d.missingSubscriptionLocked(cfg, candidates)
 		if !missing {
-			err := d.applyConfigLocked(ctx, cfg, true, candidates)
+			identity, pending := d.pendingProviderRulesLocked(cfg, candidates)
+			if !pending {
+				err := d.applyConfigLocked(ctx, cfg, true, candidates)
+				d.mu.Unlock()
+				return err
+			}
 			d.mu.Unlock()
-			return err
+			candidate := candidates[identity]
+			candidate.rules = d.evaluateProviderRules(ctx, candidate.result, nil)
+			candidates[identity] = candidate
+			continue
 		}
 		d.mu.Unlock()
 		attempt := d.fetchSubscription(ctx, source)
@@ -302,6 +324,23 @@ func (d *Daemon) missingSubscriptionLocked(cfg *model.Config, candidates map[sub
 	return subscription.Source{}, false
 }
 
+// pendingProviderRulesLocked finds the candidate of the configured rules source
+// whose rules this Apply has not evaluated yet. A source kept from the running
+// configuration is left to the refresh worker.
+func (d *Daemon) pendingProviderRulesLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) (subscription.Source, bool) {
+	id := providerRulesSource(cfg)
+	for _, source := range cfg.Subscriptions {
+		identity := subscriptionIdentity(source)
+		if source.ID != id || subscriptionIdentity(d.subscriptions.states[id].source) == identity {
+			continue
+		}
+		if candidate, ok := candidates[identity]; ok && candidate.rules == nil {
+			return identity, true
+		}
+	}
+	return subscription.Source{}, false
+}
+
 func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) map[string]appliedSubscription {
 	if len(cfg.Subscriptions) == 0 {
 		return nil
@@ -311,6 +350,7 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 		previous := d.subscriptions.states[source.ID]
 		if subscriptionIdentity(previous.source) == subscriptionIdentity(source) {
 			previous.source = source // a reserve edit keeps nodes, health and selection
+			syncProviderRules(cfg, &previous)
 			states[source.ID] = previous
 			continue
 		}
@@ -320,6 +360,7 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 			state.recordAttempt(candidate)
 			state.accept(candidate)
 		}
+		syncProviderRules(cfg, &state)
 		states[source.ID] = state
 	}
 	return states
@@ -386,6 +427,9 @@ func (d *Daemon) runSubscriptions(ctx context.Context) {
 		d.mu.Unlock()
 		if request != nil {
 			attempt := d.fetchSubscription(ctx, request.source)
+			if request.rules && attempt.result.State == subscription.StateReady {
+				attempt.rules = d.evaluateProviderRules(ctx, attempt.result, request.previous)
+			}
 			d.mu.Lock()
 			if d.applyAdmissionLocked(ctx) == nil {
 				d.finishSubscriptionRefreshLocked(request, attempt)
@@ -410,6 +454,9 @@ func (d *Daemon) nextSubscriptionRefreshLocked(now time.Time) *subscriptionRefre
 		state := d.subscriptions.states[source.ID]
 		if state.request == nil && !now.Before(state.next) {
 			request := &subscriptionRefresh{source: source}
+			if source.ID == providerRulesSource(d.cfg) {
+				request.rules, request.previous = true, state.snapshot.Rules
+			}
 			state.request = request
 			d.subscriptions.states[source.ID] = state
 			return request
@@ -436,13 +483,17 @@ func (d *Daemon) finishSubscriptionRefreshLocked(request *subscriptionRefresh, a
 	}
 
 	state.accept(attempt)
+	// Apply may have turned provider rules off or on during the download.
+	syncProviderRules(d.cfg, &state)
 	before := maps.Clone(d.subscriptions.states)
 	previousHealth := maps.Clone(d.health)
 	d.subscriptions.states[id] = state
 	sameNodes := previous.probeEpoch == state.probeEpoch
+	// Rule changes reach the core through the same path as node changes.
+	coreChanged := !sameNodes || !sameProviderRules(previous.snapshot.Rules, state.snapshot.Rules)
 	var err error
 	var restoreBalanceSessions func()
-	if !sameNodes {
+	if coreChanged {
 		restoreBalanceSessions = d.eng.SubscriptionBalanceCheckpoint()
 		err = d.applySubscriptionCoreLocked()
 	}
@@ -452,7 +503,7 @@ func (d *Daemon) finishSubscriptionRefreshLocked(request *subscriptionRefresh, a
 	if err != nil {
 		d.subscriptions.states = before
 		d.health = previousHealth
-		if !sameNodes {
+		if coreChanged {
 			restoreBalanceSessions()
 			if rollback := d.applySubscriptionCoreLocked(); rollback != nil {
 				d.audit("system", "Subscription rollback failed", id, "error", "previous subscription runtime could not be restored")
@@ -510,7 +561,7 @@ func equalSubscriptionNodes(a, b []subscription.Node) bool {
 }
 
 func (s *appliedSubscription) recordAttempt(attempt subscriptionAttempt) {
-	attempt.result.Nodes = nil
+	attempt.result.Nodes, attempt.rules = nil, nil
 	s.attempt = attempt
 	interval := subscriptionRefreshInterval(attempt.result.Metadata)
 	if attempt.result.Metadata.UpdateIntervalHours == 0 {
@@ -535,7 +586,23 @@ func (s *appliedSubscription) accept(attempt subscriptionAttempt) {
 	s.snapshot.Metadata = result.Metadata
 	s.snapshot.Skipped = result.Skipped
 	s.snapshot.LastSuccess = attempt.at
+	if attempt.rules != nil {
+		s.snapshot.Rules = attempt.rules
+	}
 	s.next = attempt.at.Add(subscriptionRefreshInterval(result.Metadata))
+}
+
+// sameProviderRules compares the rules in use, ignoring download records and
+// failures that do not change routing.
+func sameProviderRules(a, b *rulesSnapshot) bool {
+	var x, y *compile.ProviderRules
+	if a != nil {
+		x = a.Built
+	}
+	if b != nil {
+		y = b.Built
+	}
+	return reflect.DeepEqual(x, y)
 }
 
 func subscriptionRefreshInterval(metadata subscription.Metadata) time.Duration {

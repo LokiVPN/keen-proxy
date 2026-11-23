@@ -36,6 +36,9 @@ var DefaultLimits = Limits{Domains: 100000, Prefixes: 200000}
 
 var errMalformed = errors.New("malformed geodata file")
 
+// ErrLimit marks an extraction stopped by Limits; the file itself may be valid.
+var ErrLimit = errors.New("extraction limit exceeded")
+
 // walk calls fn for every field of the protobuf message b. For length-delimited
 // fields v is the payload; for varints n is the value. Other wire types are
 // skipped.
@@ -141,7 +144,7 @@ func ExtractSites(data []byte, want map[string]bool, l Limits) (map[string]Sites
 					continue
 				}
 				if total++; total > l.Domains {
-					return fmt.Errorf("geosite domain limit %d exceeded in category %q", l.Domains, code)
+					return fmt.Errorf("geosite domain limit %d exceeded in category %q: %w", l.Domains, code, ErrLimit)
 				}
 				s := out[r.key]
 				switch typ {
@@ -228,7 +231,7 @@ func ExtractIPs(data []byte, want map[string]bool, l Limits) (map[string][]netip
 					return err
 				}
 				if total += len(keys); total > l.Prefixes {
-					return fmt.Errorf("geoip prefix limit %d exceeded in tag %q", l.Prefixes, code)
+					return fmt.Errorf("geoip prefix limit %d exceeded in tag %q: %w", l.Prefixes, code, ErrLimit)
 				}
 				prefixes = append(prefixes, p)
 			}

@@ -1,6 +1,7 @@
 package geodata
 
 import (
+	"errors"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -104,7 +105,7 @@ func TestExtractSitesEmptyWantDoesNotScan(t *testing.T) {
 func TestExtractSitesLimit(t *testing.T) {
 	data := siteList(siteEntry("a", dom{2, "a.example", nil}, dom{2, "b.example", nil}))
 	_, err := ExtractSites(data, map[string]bool{"a": true}, Limits{Domains: 1, Prefixes: 10})
-	if err == nil || !strings.Contains(err.Error(), "domain limit") {
+	if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), "domain limit") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -112,7 +113,7 @@ func TestExtractSitesLimit(t *testing.T) {
 func TestExtractSitesMalformed(t *testing.T) {
 	data := siteList(siteEntry("a", dom{2, "a.example", nil}))
 	for _, cut := range []int{1, len(data) / 2, len(data) - 1} {
-		if _, err := ExtractSites(data[:cut], map[string]bool{"a": true}, DefaultLimits); err == nil {
+		if _, err := ExtractSites(data[:cut], map[string]bool{"a": true}, DefaultLimits); err == nil || errors.Is(err, ErrLimit) {
 			t.Errorf("cut %d: want error", cut)
 		}
 	}
@@ -140,7 +141,7 @@ func TestExtractIPs(t *testing.T) {
 
 func TestExtractIPsLimitAndMalformed(t *testing.T) {
 	two := ipList(ipEntry("a", false, cidr([]byte{1, 0, 0, 0}, 8), cidr([]byte{2, 0, 0, 0}, 8)))
-	if _, err := ExtractIPs(two, map[string]bool{"a": true}, Limits{Domains: 10, Prefixes: 1}); err == nil || !strings.Contains(err.Error(), "prefix limit") {
+	if _, err := ExtractIPs(two, map[string]bool{"a": true}, Limits{Domains: 10, Prefixes: 1}); !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), "prefix limit") {
 		t.Fatalf("err = %v", err)
 	}
 	bad := [][]byte{
@@ -149,7 +150,7 @@ func TestExtractIPsLimitAndMalformed(t *testing.T) {
 		ipList(ipEntry("a", false, cidr(make([]byte, 16), 129))),
 	}
 	for i, d := range bad {
-		if _, err := ExtractIPs(d, map[string]bool{"a": true}, DefaultLimits); err == nil {
+		if _, err := ExtractIPs(d, map[string]bool{"a": true}, DefaultLimits); err == nil || errors.Is(err, ErrLimit) {
 			t.Errorf("case %d: want error", i)
 		}
 	}

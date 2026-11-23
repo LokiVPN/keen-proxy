@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -229,5 +230,53 @@ func TestSubscriptionFallbackValidation(t *testing.T) {
 		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
 			t.Errorf("fallback %q: got %v, want %q", fallback, err, want)
 		}
+	}
+}
+
+func TestProviderRulesValidation(t *testing.T) {
+	base := validYAML + "subscriptions:\n  - {id: lv, url: \"https://provider.example/s\"}\n"
+	keys := func(n, size int) string {
+		quoted := make([]string, n)
+		for i := range quoted {
+			key := fmt.Sprintf("proxy:geosite:c%d-", i)
+			quoted[i] = fmt.Sprintf("%q", key+strings.Repeat("x", max(0, size-len(key))))
+		}
+		return "[" + strings.Join(quoted, ", ") + "]"
+	}
+	cases := map[string]struct{ rules, want string }{
+		"source and unknown keys": {`{source: lv, disabled: ["proxy:geosite:youtube", "gone:entry"]}`, ""},
+		"longest key":             {"{source: lv, disabled: " + keys(1, 256) + "}", ""},
+		"most keys":               {"{source: lv, disabled: " + keys(1024, 0) + "}", ""},
+		"unknown source":          {"{source: nope}", `provider_rules.source: unknown subscription "nope"`},
+		"missing source":          {"{disabled: [a]}", `provider_rules.source: unknown subscription ""`},
+		"empty key":               {`{source: lv, disabled: ["a", ""]}`, "provider_rules.disabled[1]"},
+		"long key":                {"{source: lv, disabled: " + keys(1, 257) + "}", "provider_rules.disabled[0]"},
+		"too many keys":           {"{source: lv, disabled: " + keys(1025, 0) + "}", "provider_rules.disabled: at most 1024 keys"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, err := Parse([]byte(base + "provider_rules: " + tc.rules + "\n"))
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("got %v, want %q", err, tc.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := c.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			again, err := Parse(raw)
+			if err != nil || again.ProviderRules == nil || again.ProviderRules.Source != "lv" ||
+				!slices.Equal(again.ProviderRules.Disabled, c.ProviderRules.Disabled) {
+				t.Fatalf("settings did not survive a save: %+v, %v", again, err)
+			}
+		})
+	}
+	if c, err := Parse([]byte(base)); err != nil || c.ProviderRules != nil {
+		t.Fatalf("provider rules must default to off: %+v, %v", c.ProviderRules, err)
 	}
 }

@@ -53,6 +53,10 @@ func NewFetcher(identityPath string, transport http.RoundTripper) *Fetcher {
 	}
 }
 
+// Transport returns the direct HTTPS transport for other provider downloads,
+// such as the geo files a routing profile names.
+func (f *Fetcher) Transport() http.RoundTripper { return f.transport }
+
 func sameOriginRedirect(request *http.Request, previous []*http.Request) error {
 	origin := httpsOrigin(request.URL)
 	if len(previous) > maxRedirects || origin == "" || origin != httpsOrigin(previous[0].URL) {
