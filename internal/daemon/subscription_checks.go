@@ -160,7 +160,7 @@ func (d *Daemon) recordSubscriptionProbeLocked(target subscriptionProbeTarget, r
 func (d *Daemon) discardReplacedSubscriptionHealthLocked(previous map[string]appliedSubscription) {
 	for tag := range d.health {
 		source, _, managed := model.ParseManagedTarget(tag)
-		if managed && previous[source].source != d.subscriptions.states[source].source {
+		if managed && subscriptionIdentity(previous[source].source) != subscriptionIdentity(d.subscriptions.states[source].source) {
 			delete(d.health, tag)
 		}
 	}

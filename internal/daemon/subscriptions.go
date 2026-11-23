@@ -124,10 +124,10 @@ func (d *Daemon) PreviewSubscription(ctx context.Context, source subscription.So
 				oldest, first = key, preview.at
 			}
 		}
-		if _, exists := d.subscriptions.previews[source]; !exists && len(d.subscriptions.previews) >= subscriptionPreviewLimit {
+		if _, exists := d.subscriptions.previews[subscriptionIdentity(source)]; !exists && len(d.subscriptions.previews) >= subscriptionPreviewLimit {
 			delete(d.subscriptions.previews, oldest)
 		}
-		d.subscriptions.previews[source] = attempt
+		d.subscriptions.previews[subscriptionIdentity(source)] = attempt
 		d.mu.Unlock()
 	}
 	status := SubscriptionStatus{
@@ -281,18 +281,19 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config) 
 			d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 			return err
 		}
-		candidates[source] = attempt
+		candidates[subscriptionIdentity(source)] = attempt
 	}
 }
 
 func (d *Daemon) missingSubscriptionLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) (subscription.Source, bool) {
 	for _, source := range cfg.Subscriptions {
-		if d.subscriptions.states[source.ID].source == source {
+		identity := subscriptionIdentity(source)
+		if subscriptionIdentity(d.subscriptions.states[source.ID].source) == identity {
 			continue
 		}
-		if _, exists := candidates[source]; !exists {
-			if preview, ok := d.subscriptions.previews[source]; ok {
-				candidates[source] = preview
+		if _, exists := candidates[identity]; !exists {
+			if preview, ok := d.subscriptions.previews[identity]; ok {
+				candidates[identity] = preview
 			} else {
 				return source, true
 			}
@@ -308,13 +309,14 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 	states := make(map[string]appliedSubscription, len(cfg.Subscriptions))
 	for _, source := range cfg.Subscriptions {
 		previous := d.subscriptions.states[source.ID]
-		if previous.source == source {
+		if subscriptionIdentity(previous.source) == subscriptionIdentity(source) {
+			previous.source = source // a reserve edit keeps nodes, health and selection
 			states[source.ID] = previous
 			continue
 		}
 		state := appliedSubscription{source: source}
 		state.snapshot.Selection = previous.snapshot.Selection
-		if candidate, ok := candidates[source]; ok {
+		if candidate, ok := candidates[subscriptionIdentity(source)]; ok {
 			state.recordAttempt(candidate)
 			state.accept(candidate)
 		}

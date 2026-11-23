@@ -44,10 +44,14 @@ func (d *Daemon) restoreSubscriptionSelectorsLocked(out compile.Output, restarte
 		if !slices.Contains(selector.Candidates, target) {
 			if selection.Node == "" && reason == subscriptionSwitchFallback && selector.Fallback != "" {
 				target = selector.Fallback
-			} else if selection.Node != "" || reason == subscriptionSwitchRemoved {
+			} else if selection.Node != "" || reason == subscriptionSwitchRemoved || reason == subscriptionSwitchFallback {
+				// A persisted reserve whose source no longer names one is handled like a removed node.
+				wasReserve := selection.Node == ""
 				target, reason = d.firstHealthySubscriptionNodeLocked(selector.Candidates, now), subscriptionSwitchRemoved
 				if target == model.TargetBlock && selector.Fallback != "" {
 					target, reason = selector.Fallback, subscriptionSwitchFallback
+				} else if target == model.TargetBlock && wasReserve && len(selector.Candidates) > 0 {
+					target, reason = selector.Candidates[0], subscriptionSwitchInitial
 				}
 			} else if len(selector.Candidates) > 0 {
 				target, reason = selector.Candidates[0], subscriptionSwitchInitial

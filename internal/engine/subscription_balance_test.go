@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -575,17 +574,14 @@ func TestSubscriptionBalanceFallbackReplacesBlockWhenPoolIsEmpty(t *testing.T) {
 	route.cfg.Subscriptions[0].Fallback = model.TargetDirect
 	route.apply(nil)
 	route.update("source-a")
-	out, ctx, ok := route.engine.Outbound(route.tag)
-	if !ok {
-		t.Fatal("compiled subscription balance was missing")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancel()
-	conn, err := out.DialContext(ctx, "tcp", M.ParseSocksaddr("203.0.113.70:80"))
-	if conn != nil {
-		_ = conn.Close()
-	}
-	if errors.Is(err, syscall.EPERM) {
-		t.Fatalf("empty pool blocked despite a direct reserve: %v", err)
+	route.drainTrackedRoutes()
+	_, _ = route.get("video.example") // the direct destination is unreachable; only the route matters
+	select {
+	case got := <-route.routed:
+		if got.tag != model.TargetDirect {
+			t.Fatalf("empty pool counted traffic against %q, want the direct reserve", got.tag)
+		}
+	default:
+		t.Fatal("the tracker missed the routed connection")
 	}
 }

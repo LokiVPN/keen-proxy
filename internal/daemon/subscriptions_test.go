@@ -496,16 +496,96 @@ func TestSubscriptionWithoutNodesStartsOnFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var compiled struct{ Route struct{ Rules []struct{ Outbound string } } }
+	var compiled struct {
+		Route struct{ Rules []struct{ Outbound string } }
+	}
 	if err := json.Unmarshal(out.SingBox, &compiled); err != nil {
 		t.Fatal(err)
 	}
+	reserve := 0
 	for _, rule := range compiled.Route.Rules {
-		if rule.Outbound == model.TargetBlock {
+		switch rule.Outbound {
+		case model.TargetBlock:
 			t.Fatalf("group still blocks while the reserve is configured: %+v", compiled.Route.Rules)
+		case "home":
+			reserve++
 		}
+	}
+	if reserve == 0 {
+		t.Fatalf("no rule routes to the reserve: %+v", compiled.Route.Rules)
 	}
 	if got := reopened.Subscriptions()[0]; got.State != "pending" || got.Fallback != "home" {
 		t.Fatalf("pending status: %+v", got)
+	}
+}
+
+func TestSubscriptionReserveEditKeepsListAndHealth(t *testing.T) {
+	provider := new(subscriptionTestProvider)
+	provider.response.Store(&subscriptionTestResponse{body: subscriptionFirst + "\n" + subscriptionSecond})
+	d, cfg := newSubscriptionTestDaemon(t, provider)
+	cfg.Connections = []model.Connection{{ID: "home", Type: model.ConnLink, Link: "socks5://203.0.113.9:1080"}}
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	first := model.ManagedTarget("sample", d.Subscriptions()[0].Nodes[0].ID)
+	d.mu.Lock()
+	d.health[first] = &health{}
+	d.health[first].record(true, time.Millisecond, "", time.Now())
+	d.mu.Unlock()
+	before := provider.requests.Load()
+
+	next := cfg.Clone()
+	next.Subscriptions[0].Fallback = "home"
+	provider.response.Store(&subscriptionTestResponse{headers: http.Header{"X-Hwid-Max-Devices-Reached": []string{"true"}}})
+	if err := d.Apply(t.Context(), next); err != nil {
+		t.Fatalf("a reserve-only edit must not need the provider: %v", err)
+	}
+	d.mu.Lock()
+	_, kept := d.health[first]
+	d.mu.Unlock()
+	status := d.Subscriptions()[0]
+	if got := provider.requests.Load(); got != before || !kept || len(status.Nodes) != 2 || status.Fallback != "home" {
+		t.Fatalf("requests %d->%d, health kept=%v, status=%+v", before, got, kept, status)
+	}
+}
+
+func TestSubscriptionReserveIgnoresFlappingAndSurvivesRestart(t *testing.T) {
+	d, cfg := newSubscriptionReserveDaemon(t, subscriptionFirst+"\n"+subscriptionSecond)
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	nodes := d.Subscriptions()[0].Nodes
+	first, second := model.ManagedTarget("sample", nodes[0].ID), model.ManagedTarget("sample", nodes[1].ID)
+	step := time.Duration(d.cfg.Failover.Interval) * time.Second
+	now := time.Now()
+	d.health[first], d.health[second] = &health{}, &health{}
+	for i := range 8 {
+		at := now.Add(time.Duration(i) * step)
+		d.health[first].record(false, 0, "x", at)
+		d.health[second].record(false, 0, "x", at)
+		d.switchSubscriptionsLocked(at)
+	}
+	requireSubscriptionSelection(t, d, "home")
+	base := now.Add(8 * step)
+	for i := range 40 {
+		at := base.Add(time.Duration(i) * step)
+		d.health[first].record(i%2 == 0, time.Millisecond, "", at)
+		d.health[second].record(i%3 == 0, time.Millisecond, "", at)
+		d.switchSubscriptionsLocked(at)
+		requireSubscriptionSelection(t, d, "home")
+	}
+
+	d.shutdown()
+	reopened := New(d.opt)
+	t.Cleanup(reopened.shutdown)
+	if _, err := reopened.startLocked(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	out, _, ok := reopened.eng.Outbound("subscription:sample:auto")
+	if !ok || stats.Resolve(out).Tag() != "home" {
+		t.Fatal("the reserve selection was lost across a restart")
+	}
+	if status := reopened.Subscriptions()[0]; status.SwitchReason != "fallback" || status.ActiveNode != "" {
+		t.Fatalf("status after restart: %+v", status)
 	}
 }

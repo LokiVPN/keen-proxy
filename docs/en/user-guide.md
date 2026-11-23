@@ -54,13 +54,13 @@ Open **Connections → Subscriptions** and add a provider's HTTPS URL for an Xra
 
 Save the source to the shared draft. Choose a target in a group or a full-tunnel device or network policy, then choose **Apply**.
 
-- A specific node stays fixed. The route blocks if the node disappears from the subscription.
+- A specific node stays fixed. The route blocks if the node disappears from the subscription, unless the subscription has a [reserve](routing.md#subscription-reserve), which then takes the traffic.
 - **Auto (on failure)** starts in provider order and switches after sustained failure of the active node. By default, checks run every 15 seconds and the failure window is 60 seconds. A working replacement stays selected when a preferred node recovers. The subscription shows the active node and the reason for the last switch.
 - **Round robin** cycles through eligible nodes for successive new connections.
 - **By site** assigns each site to the same eligible node across devices. It uses the registrable domain when available and the destination IP otherwise.
 - **By session** keeps the same eligible node for each device IP and site pair, up to 1,024 pairs per subscription. The assignment expires after 30 minutes of inactivity or when that node stops being eligible.
 
-The three balancing modes use nodes that passed their latest check and support the connection's transport. If no eligible node supports the transport, new connections are blocked. When a balancing target is applied, the subscription shows how many nodes are eligible.
+The three balancing modes use nodes that passed their latest check and support the connection's transport. If no eligible node supports the transport, new connections are blocked, or go to the subscription's [reserve](routing.md#subscription-reserve) when one is set. When a balancing target is applied, the subscription shows how many nodes are eligible.
 
 For a saved subscription, open **Supported nodes** and choose **Check** for one node, or choose **Check all** to check the full list. The panel shows progress and the last result, including the check time, HTTPS duration in milliseconds on success, or the reason for failure. Duration includes connection setup. KeenProxy uses the configured HTTPS probe URL or its default HTTPS endpoint and verifies the server certificate.
 

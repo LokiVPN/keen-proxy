@@ -233,25 +233,32 @@ connections:
 }
 
 func TestSubscriptionWithoutNodesCompilesToFallback(t *testing.T) {
-	cfg, err := model.Parse([]byte(subscriptionConfig))
+	cfg, err := model.Parse([]byte(subscriptionConfig + `
+connections:
+  - {id: home, type: link, link: "socks5://203.0.113.9:1080"}
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Subscriptions[0].Fallback = model.TargetDirect
+	cfg.Subscriptions[0].Fallback = "home"
 	out, err := Compile(Input{Config: cfg, RuleSetDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if bytes.Contains(out.SingBox, []byte(`"outbound": "block"`)) && !bytes.Contains(out.SingBox, []byte(`"outbound": "direct"`)) {
-		t.Fatal("empty subscription still blocks despite a reserve")
 	}
 	var got struct{ Route struct{ Rules []struct{ Outbound string } } }
 	if err := json.Unmarshal(out.SingBox, &got); err != nil {
 		t.Fatal(err)
 	}
+	reserve := 0
 	for _, r := range got.Route.Rules {
-		if r.Outbound == model.TargetBlock {
+		switch r.Outbound {
+		case model.TargetBlock:
 			t.Fatalf("a rule still blocks: %+v", got.Route.Rules)
+		case "home":
+			reserve++
 		}
+	}
+	if reserve < 3 {
+		t.Fatalf("group, network and pinned device must use the reserve, got %d rules", reserve)
 	}
 }

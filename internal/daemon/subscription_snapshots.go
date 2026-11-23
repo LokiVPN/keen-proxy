@@ -33,6 +33,14 @@ type subscriptionSelection struct {
 	Reason string    `json:"reason,omitempty"`
 }
 
+// subscriptionIdentity drops settings that do not change what is downloaded
+// (the reserve), so editing them keeps the fetched list, health and selection.
+// It must cover the same fields as the fingerprint.
+func subscriptionIdentity(source subscription.Source) subscription.Source {
+	source.Fallback = ""
+	return source
+}
+
 func subscriptionFingerprint(source subscription.Source) string {
 	digest := sha256.Sum256([]byte("keenproxy-subscription-v1\x00" + source.ID + "\x00" + source.URL + "\x00" + strconv.FormatBool(source.SendHWID)))
 	return hex.EncodeToString(digest[:])
@@ -111,7 +119,7 @@ func (d *Daemon) saveChangedSubscriptionSnapshotsLocked(cfg *model.Config, previ
 	}
 	for id, state := range d.subscriptions.states {
 		old := previous[id]
-		if old.source != state.source || old.snapshot.Selection != state.snapshot.Selection || !old.snapshot.LastSuccess.Equal(state.snapshot.LastSuccess) {
+		if subscriptionIdentity(old.source) != subscriptionIdentity(state.source) || old.snapshot.Selection != state.snapshot.Selection || !old.snapshot.LastSuccess.Equal(state.snapshot.LastSuccess) {
 			return d.saveSubscriptionSnapshotsLocked(cfg)
 		}
 	}
