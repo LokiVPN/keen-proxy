@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
-	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
@@ -22,28 +21,6 @@ func TestSubscriptionAPIAuthenticationAndOfflineStatus(t *testing.T) {
 	}
 	if w := do(t, h, http.MethodGet, path, "", "secret", local); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("offline status returned %d %s", w.Code, w.Body.String())
-	}
-}
-
-func TestSubscriptionURLInPrivateBackupAndRedactedInSupportExport(t *testing.T) {
-	s, d := newServer()
-	const privateURL = "https://provider.example/sub/example-token"
-	cfg, err := model.Parse([]byte("subscriptions: [{id: provider, url: " + privateURL + "}]"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.cfg = cfg
-	h := s.Handler()
-	full := do(t, h, http.MethodGet, "/api/config/yaml", "", "secret", local)
-	if full.Code != http.StatusOK || !strings.Contains(full.Body.String(), privateURL) {
-		t.Fatal("private backup did not retain the subscription URL")
-	}
-	redacted := do(t, h, http.MethodGet, "/api/config/yaml?redacted=1", "", "secret", local)
-	if redacted.Code != http.StatusOK || strings.Contains(redacted.Body.String(), "example-token") {
-		t.Fatal("support export exposed the subscription URL")
-	}
-	if value := d.Mask()("failed download from " + privateURL); strings.Contains(value, "example-token") {
-		t.Fatal("journal masker exposed the subscription URL")
 	}
 }
 

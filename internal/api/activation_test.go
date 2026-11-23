@@ -12,7 +12,7 @@ import (
 func TestSupportExportsKeepActivationMetadataPrivate(t *testing.T) {
 	const private = "private-disabled-activation.example"
 	const historical = "historical-disabled-activation.example"
-	s, fake := newServer()
+	_, fake := newServer()
 	fake.cfg.Groups = []model.Group{{
 		Name: "rules", Target: model.TargetDirect,
 		Entries: []string{private}, DisabledEntries: []string{private, historical},
@@ -23,17 +23,6 @@ func TestSupportExportsKeepActivationMetadataPrivate(t *testing.T) {
 	}
 	if strings.Contains(string(raw), private) || strings.Contains(string(raw), historical) {
 		t.Fatal("anonymous support projection leaked inactive metadata")
-	}
-	w := do(t, s.Handler(), "GET", "/api/config/yaml?redacted=1", "", "secret", local)
-	if w.Code != 200 || strings.Contains(w.Body.String(), historical) || strings.Contains(w.Body.String(), "disabled_entries") {
-		t.Fatalf("redacted YAML leaked historical activation metadata: %s", w.Body)
-	}
-	if !strings.Contains(w.Body.String(), private) {
-		t.Fatal("credential redaction unexpectedly removed existing policy data")
-	}
-	w = do(t, s.Handler(), "GET", "/api/config/yaml", "", "secret", local)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), private) || !strings.Contains(w.Body.String(), historical) {
-		t.Fatal("restorable backup lost inactive metadata")
 	}
 }
 

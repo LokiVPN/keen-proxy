@@ -201,8 +201,7 @@ assert ss["client"].startswith("192.168.77.10:"), ss
 AUDIT=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8086/api/journal/audit")
 echo "$AUDIT" | grep -q 'Start keenProxy' || { echo "$AUDIT"; fail "startup audit record is missing"; }
 [ -s /tmp/journal/routes.jsonl ] && [ -s /tmp/journal/audit.jsonl ] || { ls -la /tmp/journal; fail "journals are not written to disk"; }
-curl -s -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8086/api/journal/routes/export?since=1h" | grep -q 'steam.test.*Steam direct' || fail "journal export"
-ok "journal: Steam direct and country routes, startup audit, files and export"
+ok "journal: Steam direct and country routes, startup audit and files"
 
 # --- DNS fallback: preview is isolated; a live rule-set reload changes routing.
 api_get() { curl -fsS -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8086/api/$1"; }
@@ -306,9 +305,8 @@ ip netns exec client curl -fsS -m 3 http://198.51.100.3:853/ >/dev/null || fail 
 api_get config | python3 -c 'import json,sys;c=json.load(sys.stdin);c["dns"]["block_encrypted"]=True;print(json.dumps(c))' >/tmp/guard-config.json
 curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/guard-config.json http://127.0.0.1:8086/api/config >/dev/null || fail "guard apply"
 if ip netns exec client curl -fsS -m 3 http://198.51.100.3:853/ >/dev/null 2>&1; then fail "DoT guard bypassed by TCP redirect"; fi
-api_get config/previous | python3 -c 'import json,sys;assert not json.load(sys.stdin)["dns"].get("block_encrypted",False)' || fail "previous YAML backup"
 dig +short +time=2 +tries=1 @127.0.0.1 -p 5354 example.test A | grep -q '198.51.100.2' || fail "guard blocked own DNS"
-ok "DNS guard rejects redirected port 853, own resolver works, previous YAML available"
+ok "DNS guard rejects redirected port 853, own resolver works"
 
 # --- Activation is applied through the real API without deleting profiles or references.
 # Register cleanup before creating this phase's uniquely owned temporary directory.

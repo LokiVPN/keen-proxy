@@ -41,23 +41,6 @@ func actorOf(ctx context.Context) Actor {
 // Journal returns the requested journal stream.
 func (d *Daemon) Journal(k journal.Kind) *journal.Journal { return d.journals[k] }
 
-// Mask returns a function that redacts current configuration secrets from log exports.
-func (d *Daemon) Mask() func(string) string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.cfg == nil {
-		return journal.Masker(nil)
-	}
-	cfg := *d.cfg
-	cfg.Connections = slices.Clone(cfg.Connections)
-	for _, state := range d.subscriptions.states {
-		for _, node := range state.snapshot.Nodes {
-			cfg.Connections = append(cfg.Connections, model.Connection{Type: model.ConnLink, Link: node.Link})
-		}
-	}
-	return journal.Masker(&cfg)
-}
-
 // audit records an operation result with the initiating actor and target.
 func (d *Daemon) audit(who, action, target, result, details string) {
 	d.auditEntry(journal.Entry{Actor: who, Action: action, Target: target, Result: result, Details: details})

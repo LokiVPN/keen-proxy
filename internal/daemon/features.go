@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/dnsfront"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
@@ -23,19 +22,6 @@ type DNSInfo struct {
 	Checked   time.Time `json:"checked"`
 	Fallbacks uint64    `json:"fallbacks"`
 	Blocked   uint64    `json:"blocked"`
-}
-
-// PreviousConfig loads the validated snapshot saved before the latest persisted change.
-func (d *Daemon) PreviousConfig() (*model.Config, error) {
-	return model.Load(d.opt.ConfigPath + ".previous")
-}
-
-// DNSCheck reports a single resolver probe with latency in milliseconds.
-type DNSCheck struct {
-	RCode   int    `json:"rcode"`
-	Latency int64  `json:"latency_ms"`
-	Route   string `json:"route"`
-	Error   string `json:"error,omitempty"`
 }
 
 // DNSInfo returns the last resolver check under the feature-state lock.
@@ -111,27 +97,6 @@ func (d *Daemon) dnsConfig(cfg model.DNS) dnsfront.Config {
 		c.DirectFallback = cfg.Failure == "direct"
 	}
 	return c
-}
-
-// CheckDNS probes a validated draft through its DNS policy without applying it.
-func (d *Daemon) CheckDNS(ctx context.Context, cfg *model.Config) (DNSCheck, error) {
-	if err := cfg.Validate(); err != nil {
-		return DNSCheck{}, err
-	}
-	route := ""
-	c := d.dnsConfig(cfg.DNS)
-	c.OnRoute = func(r string) { route = r }
-	s := dnsfront.New(c)
-	defer s.CloseIdle()
-	q := new(dns.Msg)
-	q.SetQuestion("example.com.", dns.TypeA)
-	start := time.Now()
-	r := s.ResolveRaw(ctx, q)
-	check := DNSCheck{RCode: r.Rcode, Latency: time.Since(start).Milliseconds(), Route: route}
-	if r.Rcode != dns.RcodeSuccess {
-		check.Error = dns.RcodeToString[r.Rcode]
-	}
-	return check, nil
 }
 
 // recordDNSRoute updates counters and journals transitions into or out of direct fallback.

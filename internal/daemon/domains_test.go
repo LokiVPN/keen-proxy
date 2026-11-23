@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"context"
+	"github.com/miekg/dns"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/domaincache"
 	"github.com/ordo-systems/keen-proxy/internal/model"
-	"github.com/miekg/dns"
 	"net"
 	"os"
 	"path/filepath"
@@ -38,26 +38,8 @@ func TestDomainsObserveAndReconcile(t *testing.T) {
 	if len(d.Domains().Records) != 0 {
 		t.Fatal("old group observations exposed")
 	}
-	if _, err = d.RefreshDomains(context.Background(), []string{"example.com"}, false); err == nil {
+	if _, err = d.RefreshDomains(context.Background(), []string{"example.com"}); err == nil {
 		t.Fatal("refresh of removed domain accepted")
-	}
-}
-
-func TestDomainPreviewDoesNotPopulateActiveCache(t *testing.T) {
-	d := New(Options{RuleSetDir: t.TempDir()})
-	cfg := &model.Config{}
-	cfg.Defaults()
-	cfg.DNS.Upstreams = []string{"udp://127.0.0.1:1"}
-	cfg.DNS.Fallback = ""
-	d.live.Store(cfg)
-	d.cfg = cfg
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := d.RefreshDomains(ctx, []string{"draft.test"}, true); err == nil {
-		t.Fatal("cancellation ignored")
-	}
-	if len(d.Domains().Records) != 0 {
-		t.Fatal("preview escaped into active cache")
 	}
 }
 
@@ -103,13 +85,14 @@ func TestDomainResolutionInFlightCancellation(t *testing.T) {
 	cfg.Defaults()
 	cfg.DNS.Upstreams = []string{"udp://" + socket.LocalAddr().String()}
 	cfg.DNS.Fallback = ""
+	cfg.Groups = []model.Group{{Target: "direct", Entries: []string{"one.test", "two.test", "three.test", "four.test"}}}
 	d.live.Store(cfg)
 	d.cfg = cfg
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := d.RefreshDomains(ctx, []string{"one.test", "two.test", "three.test", "four.test"}, true)
+		_, err := d.RefreshDomains(ctx, []string{"one.test", "two.test", "three.test", "four.test"})
 		done <- err
 	}()
 	select {

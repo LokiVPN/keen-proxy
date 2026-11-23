@@ -208,9 +208,7 @@ If you clear **Secondary DNS** while additional servers are configured, the firs
 
 If a LAN DNS forwarder's own queries are being redirected back to it, open **Advanced settings → Bypass DNS interception for source IPs**, add the forwarder's own IPv4 address (not its upstream's address), and choose **Apply**. To restore interception, remove the address and Apply again. See [DNS interception exceptions](routing.md#dns) for the YAML key and scope.
 
-Open **Settings → YAML configuration** to import, export, or restore a configuration. Importing or restoring prepares a draft. Review it and Apply. Keep unredacted backups private. The browser demo exports synthetic JSON-compatible data and disables YAML import.
-
-The panel accepts YAML backup files up to 3 MiB for preview and processes only one file conversion at a time. Applying the resulting draft still requires it to fit the 8 MiB configuration request limit. A larger full backup can exceed the panel's restore limit.
+The configuration is a YAML file on the router. You can back it up or edit it by hand over SSH; keep copies private because they contain connection credentials. KeenProxy reads the file when it starts.
 
 ### Soft memory limit
 

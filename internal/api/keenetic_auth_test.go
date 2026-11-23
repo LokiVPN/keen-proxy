@@ -1,18 +1,13 @@
 package api
 
 import (
-	"bufio"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
-
-	"github.com/ordo-systems/keen-proxy/internal/journal"
 )
 
 const (
@@ -141,28 +136,16 @@ func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
 	call(local, http.StatusOK)
 }
 
-func TestKeeneticLogoutRevokesSessionAndStopsJournal(t *testing.T) {
-	s, d, _ := keeneticFixture(t)
-	h := httptest.NewServer(s.Handler())
-	t.Cleanup(h.Close)
-	client := h.Client()
-	client.Timeout = 4 * time.Second
-	req, err := http.NewRequestWithContext(t.Context(), "GET", h.URL+"/api/journal/audit/stream", nil)
-	if err != nil {
-		t.Fatal(err)
+func TestKeeneticLogoutRevokesSession(t *testing.T) {
+	s, _, _ := keeneticFixture(t)
+	journalGet := func() int {
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, keeneticRequest("GET", "/api/journal/audit", "", true))
+		return w.Code
 	}
-	req.Host = "192.168.7.1:8086"
-	req.AddCookie(&http.Cookie{Name: routerCookie, Value: routerSession})
-	stream, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	if code := journalGet(); code != http.StatusOK {
+		t.Fatalf("authorized journal: HTTP %d", code)
 	}
-	defer stream.Body.Close()
-	lines := bufio.NewReader(stream.Body)
-	if line, err := lines.ReadString('\n'); stream.StatusCode != http.StatusOK || err != nil || line != ": ok\n" {
-		t.Fatalf("could not open authorized journal stream: %q, %v", line, err)
-	}
-
 	logout := keeneticRequest("POST", "/api/logout", "", true)
 	logout.Header.Set("Origin", keeneticPanel)
 	w := httptest.NewRecorder()
@@ -170,10 +153,8 @@ func TestKeeneticLogoutRevokesSessionAndStopsJournal(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("sign out: HTTP %d (%s)", w.Code, w.Body)
 	}
-	d.journals[journal.Audit].Add(journal.Entry{Message: "post-logout test event"})
-	tail, err := io.ReadAll(lines)
-	if err != nil || strings.Contains(string(tail), "post-logout test event") {
-		t.Fatalf("journal after sign-out: %q, %v", tail, err)
+	if code := journalGet(); code != http.StatusUnauthorized {
+		t.Fatalf("journal after sign-out: HTTP %d", code)
 	}
 	w = httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, keeneticRequest("GET", "/api/status", "", true))

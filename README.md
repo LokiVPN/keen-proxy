@@ -27,7 +27,7 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 - Connection failover with recovery hysteresis and explicit direct fallback where configured.
 - Xray subscriptions with refresh, HTTPS node checks, failover, and balancing by site, by session, or round robin.
 - A UDP/TCP DNS frontend, public resolver presets, DoH/DoT, and selectable DNS routing.
-- YAML configuration, a shared draft/Apply workflow, import/export, and a previous-configuration backup.
+- YAML configuration, a shared draft/Apply workflow, and a plain YAML file you can back up or edit over SSH.
 - Dark/light themes, responsive navigation, connection wizards, file import, and bulk group route changes.
 - Routing, audit, and system journals; connection statistics; and separate HTTP, verified HTTPS, and bounded transfer diagnostics. The panel can export a [diagnostic ZIP](docs/en/troubleshooting.md#download-the-diagnostic-zip).
 - Release notifications, manual installation and rollback, and optional scheduled updates from the web panel. [Update guide](docs/en/getting-started.md#update-from-the-panel)

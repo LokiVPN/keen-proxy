@@ -64,8 +64,6 @@ The router checks enabled databases daily. Files are downloaded over HTTPS only,
 
 Category databases are a second kind of IP database. Instead of countries, they label networks, for example `RU-BLOCKED`, `RE-FILTER`, or `TELEGRAM`. They never take part in country lookups. Groups select labels under **Categories**, alone or together with countries and **All except these**. Enabled category databases are combined, so a label matches if any of them reports it. The built-in runetfreedom sources publish each network under a single label, so a network that appears in several upstream lists matches only one of them. Category groups require at least one enabled category database.
 
-Use **Check an address** to see which country each database reports. A disabled database can be downloaded and checked on its own without affecting routing. A check covers database contents only; it does not show which routing rule won for a real connection.
-
 ## Fallback chains { #fallback-chains }
 
 A connection can point to another connection or Direct as its immediate fallback. The interface displays the resulting chain. Edit the selected profile's immediate fallback; downstream inherited edges belong to their own profiles. Avoid cycles. Choosing Direct as a fallback intentionally allows a direct path when the primary connection fails.

@@ -152,7 +152,7 @@ Follow the [user guide](user-guide.md): inspect a connection, add a domain group
 
 ## Updates and recovery
 
-Back up the current configuration and keep the old binary before updating. Read release compatibility and migration notes. Settings can preview a previous configuration into the shared draft; applying it still requires **Apply**. Do not assume a successful HTTP probe establishes that all HTTPS traffic works.
+Back up the current configuration and keep the old binary before updating. Read release compatibility and migration notes. Do not assume a successful HTTP probe establishes that all HTTPS traffic works.
 
 ## Uninstall
 

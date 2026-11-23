@@ -28,7 +28,6 @@ type fakeDaemon struct {
 }
 
 func (f *fakeDaemon) Journal(k journal.Kind) *journal.Journal { return f.journals[k] }
-func (f *fakeDaemon) Mask() func(string) string               { return journal.Masker(f.cfg) }
 
 func (f *fakeDaemon) Config() *model.Config { return f.cfg }
 func (f *fakeDaemon) Apply(_ context.Context, c *model.Config) error {
@@ -225,11 +224,6 @@ func TestLegacyTrustTunnelMixIsRejected(t *testing.T) {
 	if d.applied != nil {
 		t.Fatal("mixed payload was applied")
 	}
-	yaml := `{"yaml":"connections:\n  - {id: tt, type: link, link: 'tt://?one', trusttunnel: {link: 'tt://?two'}}\n"}`
-	w = do(t, s.Handler(), "POST", "/api/config/import", yaml, "secret", local)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "conflicts") {
-		t.Fatalf("yaml import: %d %s", w.Code, w.Body)
-	}
 }
 
 func TestStatsEndpoints(t *testing.T) {
@@ -275,11 +269,6 @@ func TestJournalEndpoints(t *testing.T) {
 	if c := do(t, h, "GET", "/api/journal/nope", "", "secret", local).Code; c != http.StatusNotFound {
 		t.Errorf("unknown journal: %d", c)
 	}
-	w = do(t, h, "GET", "/api/journal/system/export?since=1h", "", "secret", local)
-	if !strings.Contains(w.Header().Get("Content-Disposition"), "keenproxy-system-") ||
-		!strings.Contains(w.Body.String(), "appeared in message") {
-		t.Errorf("export: %q\n%s", w.Header().Get("Content-Disposition"), w.Body)
-	}
 }
 
 func TestRootIsPlaceholderUntilUIExists(t *testing.T) {
@@ -291,5 +280,32 @@ func TestRootIsPlaceholderUntilUIExists(t *testing.T) {
 	}
 	if w := do(t, h, "GET", "/api/unknown", "", "", "127.0.0.1:1234"); w.Code != http.StatusNotFound {
 		t.Fatalf("unknown api path = %d", w.Code)
+	}
+}
+
+func TestRemovedEndpointsAreNotFound(t *testing.T) {
+	s, _ := newServer()
+	h := s.Handler()
+	for _, path := range []string{"/api/geoip", "/api/domains", "/api/config/yaml", "/api/catalog", "/api/journal/routes/stream", "/api/journal/routes/export"} {
+		if w := do(t, h, "GET", path, "", "", local); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, w.Code)
+		}
+	}
+	if w := do(t, h, "GET", "/api/journal/routes", "", "", local); w.Code != http.StatusOK {
+		t.Errorf("GET /api/journal/routes = %d, want 200", w.Code)
+	}
+}
+
+func TestDNSBypassSourcesApply(t *testing.T) {
+	s, _ := newServer()
+	h := s.Handler()
+	const resolver = "192.168.37.53"
+	applied := do(t, h, "PUT", "/api/config", `{"dns":{"bypass_sources":["`+resolver+`"]}}`, "", local)
+	if applied.Code != http.StatusOK || !strings.Contains(applied.Body.String(), `"bypass_sources":["`+resolver+`"]`) {
+		t.Fatalf("apply: %d %s", applied.Code, applied.Body)
+	}
+	bad := do(t, h, "PUT", "/api/config", `{"dns":{"bypass_sources":["192.168.37.0/24"]}}`, "", local)
+	if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(bad.Body.String(), "dns.bypass_sources[0]") {
+		t.Fatalf("invalid apply: %d %s", bad.Code, bad.Body)
 	}
 }

@@ -54,15 +54,11 @@ func TestGeoLookupAndDisabledDatabase(t *testing.T) {
 	d.reloadGeoLocked(cfg)
 	d.mu.Unlock()
 
-	res, err := d.LookupGeo(netip.MustParseAddr("10.0.1.1"), "")
-	if err != nil || res.Country != "FI" || res.Database != "local" || len(res.Results) != 2 || res.Results[0].Country != "" {
-		t.Fatalf("all enabled: %+v %v", res, err)
+	if cc, id := d.geo.set.Country(netip.MustParseAddr("10.0.1.1")); cc != "FI" || id != "local" {
+		t.Fatalf("all enabled: %s %s", cc, id)
 	}
-	if res, _ := d.LookupGeo(netip.MustParseAddr("10.0.0.1"), ""); res.Country != "RU" || res.Database != "dbip" {
-		t.Fatalf("priority: %+v", res)
-	}
-	if res, _ := d.LookupGeo(netip.MustParseAddr("10.0.1.1"), "remote"); !strings.Contains(res.Results[0].Error, "not downloaded") {
-		t.Fatalf("before download: %+v", res)
+	if cc, id := d.geo.set.Country(netip.MustParseAddr("10.0.0.1")); cc != "RU" || id != "dbip" {
+		t.Fatalf("priority: %s %s", cc, id)
 	}
 	p, err := d.geo.set.Prefixes([]string{"FI"})
 	if err != nil || len(p["FI"]) != 2 || p["FI"][0].String() != "10.0.1.0/24" || p["FI"][1].String() != "10.0.2.0/23" {
@@ -76,21 +72,14 @@ func TestGeoLookupAndDisabledDatabase(t *testing.T) {
 	if err := d.UpdateGeo(context.Background(), "remote"); err != nil || hits != 1 {
 		t.Fatalf("manual download: hits=%d err=%v", hits, err)
 	}
-	if res, _ := d.LookupGeo(netip.MustParseAddr("10.0.1.1"), "remote"); res.Country != "DE" || res.Results[0].Enabled {
-		t.Fatalf("disabled database: %+v", res)
+	if _, err := os.Stat(d.geoStore.Path("remote")); err != nil {
+		t.Fatalf("manual download missing: %v", err)
 	}
 	if d.geo.set.Len() != 2 {
 		t.Fatalf("disabled database must not affect routing")
 	}
-	infos := d.GeoDatabases()
-	if len(infos) != 3 || !infos[2].Present || infos[2].Loaded || !infos[2].Next.IsZero() || infos[1].Name != "Local" || !infos[1].Local {
-		t.Fatalf("state: %+v", infos)
-	}
 	if err := d.UpdateGeo(context.Background(), "nope"); err == nil {
 		t.Fatal("unknown database")
-	}
-	if _, err := d.LookupGeo(netip.MustParseAddr("10.0.1.1"), "nope"); err == nil {
-		t.Fatal("unknown database in lookup")
 	}
 
 	// Removing a custom database deletes its download on the next check.
@@ -111,7 +100,7 @@ func TestGeoLookupAndDisabledDatabase(t *testing.T) {
 }
 
 // Category databases never answer country lookups; their labels are unioned
-// into geocat-<label>.json and reported separately by test lookups.
+// into geocat-<label>.json and reported separately in the summary.
 func TestGeoCategoryDatabases(t *testing.T) {
 	d := New(Options{RuleSetDir: filepath.Join(t.TempDir(), "rule-sets")})
 	country := filepath.Join(t.TempDir(), "country.mmdb")
@@ -139,12 +128,6 @@ func TestGeoCategoryDatabases(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(d.opt.RuleSetDir, "geocat-ru-blocked.json"))
 	if err != nil || !strings.Contains(string(raw), "10.0.1.0/24") || !strings.Contains(string(raw), "10.0.2.0/24") {
 		t.Fatalf("category set: %s %v", raw, err)
-	}
-	d.mu.Unlock()
-	res, err := d.LookupGeo(netip.MustParseAddr("10.0.1.1"), "")
-	d.mu.Lock()
-	if err != nil || res.Country != "RU" || res.Database != "local" || strings.Join(res.Categories, ",") != "RU-BLOCKED,TELEGRAM" || res.Results[0].Kind != "category" {
-		t.Fatalf("lookup: %+v %v", res, err)
 	}
 	if info := d.geoInfoLocked(); info.Active != 1 || info.Categories != 2 {
 		t.Fatalf("summary: %+v", info)

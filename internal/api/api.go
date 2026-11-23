@@ -33,8 +33,6 @@ const maxConfigJSONBytes = 8 << 20
 
 // Daemon defines the daemon capabilities used by the API and its test doubles.
 type Daemon interface {
-	Domains() daemon.DomainStatus
-	RefreshDomains(context.Context, []string, bool) (daemon.DomainStatus, error)
 	Config() *model.Config
 	Apply(ctx context.Context, cfg *model.Config) error
 	Status(ctx context.Context) daemon.Status
@@ -42,8 +40,6 @@ type Daemon interface {
 	Stats(withSeries bool) stats.Snapshot
 	Hosts(tag, query string, limit int) ([]stats.Host, int)
 	Journal(kind journal.Kind) *journal.Journal
-	// Mask redacts configuration secrets from exported journal text.
-	Mask() func(string) string
 }
 
 // Server binds daemon operations and authentication policy.
@@ -53,8 +49,7 @@ type Server struct {
 	Updates  *update.Manager
 	Keenetic *KeeneticAuth
 
-	supportBusy  atomic.Bool
-	resourceBusy atomic.Bool
+	supportBusy atomic.Bool
 }
 
 // Handler builds the API routes and applies the peer-address guard to all requests.
@@ -68,19 +63,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/subscriptions/preview", s.auth(s.subscriptionPreview))
 	mux.Handle("POST /api/subscriptions/{id}/refresh", s.auth(s.subscriptionRefresh))
 	mux.Handle("POST /api/subscriptions/{id}/check", s.auth(s.subscriptionCheck))
-	mux.Handle("POST /api/dns/check", s.auth(s.checkDNS))
-	mux.Handle("GET /api/geoip", s.auth(s.geoDatabases))
-	mux.Handle("POST /api/geoip/update", s.auth(s.updateGeo))
-	mux.Handle("POST /api/geoip/lookup", s.auth(s.lookupGeo))
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/session", s.session)
-	mux.Handle("GET /api/domains", s.auth(s.domainStatus))
-	mux.Handle("POST /api/domains/resolve", s.auth(s.resolveDomains))
 	mux.Handle("GET /api/status", s.auth(s.status))
 	mux.Handle("GET /api/config", s.auth(s.getConfig))
-	mux.Handle("GET /api/config/yaml", s.auth(s.yamlExport))
-	mux.Handle("POST /api/config/import", s.auth(s.yamlImport))
-	mux.Handle("GET /api/config/previous", s.auth(s.previousConfig))
 	mux.Handle("PUT /api/config", s.auth(s.putConfig))
 	mux.Handle("POST /api/config/validate", s.auth(s.validateConfig))
 	mux.Handle("GET /api/devices", s.auth(s.devices))
@@ -89,8 +75,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/stats", s.auth(s.stats))
 	mux.Handle("GET /api/stats/hosts", s.auth(s.hosts))
 	mux.Handle("GET /api/journal/{kind}", s.auth(s.journalPage))
-	mux.Handle("GET /api/journal/{kind}/stream", s.auth(s.journalStream))
-	mux.Handle("GET /api/journal/{kind}/export", s.auth(s.journalExport))
 	s.updateRoutes(mux)
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.HandleFunc("/", rebuildingUI)

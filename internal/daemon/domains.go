@@ -128,9 +128,9 @@ func (d *Daemon) resetDomainGeneration() {
 	}
 }
 
-// RefreshDomains resolves up to 100 names with bounded concurrency. Preview uses
-// an isolated cache; applied refreshes require names in the live configuration.
-func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview bool) (DomainStatus, error) {
+// RefreshDomains resolves up to 100 names with bounded concurrency. Names must
+// belong to the live configuration.
+func (d *Daemon) RefreshDomains(ctx context.Context, names []string) (DomainStatus, error) {
 	if g := d.domainGeneration.Load(); g != nil {
 		cctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -154,7 +154,7 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 		if err != nil || e.Kind != model.EntryDomain {
 			return DomainStatus{}, fmt.Errorf("invalid domain: %s", name)
 		}
-		if !preview && !matcher.Match(e.Domain) {
+		if !matcher.Match(e.Domain) {
 			return DomainStatus{}, fmt.Errorf("domain is not in the applied list: %s", e.Domain)
 		}
 		if !seen[e.Domain] {
@@ -163,9 +163,6 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 		}
 	}
 	cache := d.domains
-	if preview {
-		cache = domaincache.New(time.Now)
-	}
 	dnsCfg := d.dnsConfig(cfg.DNS)
 	dnsCfg.Timeout = 3 * time.Second
 	resolver := dnsfront.New(dnsCfg)
@@ -201,9 +198,6 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 	wg.Wait()
 	if ctx.Err() != nil {
 		return DomainStatus{}, ctx.Err()
-	}
-	if preview {
-		return DomainStatus{Records: cache.Snapshot(nil), Conflicts: map[string][]string{}, Application: "preview"}, nil
 	}
 	d.flushDomains()
 	return d.Domains(), nil
@@ -261,7 +255,7 @@ func (d *Daemon) runDomains(ctx context.Context) {
 				}
 			}
 			if len(due) > 0 {
-				_, _ = d.RefreshDomains(ctx, due, false)
+				_, _ = d.RefreshDomains(ctx, due)
 			}
 		}()
 	}

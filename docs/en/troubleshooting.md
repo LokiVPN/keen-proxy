@@ -214,9 +214,7 @@ When `iptables-restore` fails during Apply, look for **Configuration apply faile
 
 The export omits credentials, raw connection profiles, and free-form log messages. Names and addresses are removed or replaced with aliases that are consistent within one ZIP. Event times, ports, protocols, policies, and counts can still identify activity. Review the files before attaching them to an issue or sharing them privately.
 
-For one journal as plain text on the router, open **Logs**, select **Routing**, **Audit**, or **System**, then choose **Download log** and a time range. The text export masks known secrets but can include readable domains, addresses, and log details. Use the ZIP for a support report covering all three journals.
-
-**Download report** on the Diagnostics screen saves `keenproxy-diagnostics.json` with a status summary and results from any checks you ran for the selected connection. In the browser demo this report contains synthetic data, and ZIP download is available only in the router panel. For a restorable configuration, use **Settings → YAML configuration** and store the export privately.
+**Download report** on the Diagnostics screen saves `keenproxy-diagnostics.json` with a status summary and results from any checks you ran for the selected connection. In the browser demo this report contains synthetic data, and ZIP download is available only in the router panel. For a restorable configuration, copy the YAML configuration file over SSH and store it privately.
 
 ## What should a bug report include?
 
