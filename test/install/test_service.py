@@ -138,6 +138,16 @@ esac''')
         self.assertIn(b'KEENPROXY_KEENETIC_AUTH_ORIGIN=off', environ)
         self.assert_success(self.action('stop'))
 
+    def test_start_fails_loudly_when_the_env_file_cannot_be_read(self):
+        env_file = self.prefix / 'etc/keenproxy/keenproxy.env'
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        for body in ('false\n', 'A=$UNSET_VARIABLE_FOR_TEST\n'):
+            env_file.write_text(body)
+            result = self.action('start')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('keenproxy.env failed', result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr)
+            self.assertFalse(self.pidfile.exists())
+
     def test_start_is_idempotent_and_restart_replaces_the_process(self):
         self.assert_success(self.action('start'))
         first = self.running_pid()

@@ -13,7 +13,7 @@ if [ "$prefix" = /opt ]; then state=/var/run/keenproxy; fi
 pidfile="$state/pid"
 startup_state="$state/startup-state"
 # Optional local settings for the daemon, kept by updates and uninstall, for
-# example KEENPROXY_KEENETIC_AUTH_ORIGIN=off. Sourced as shell at start.
+# example KEENPROXY_KEENETIC_AUTH_ORIGIN=off. Plain VAR=value lines, sourced as shell at start; start fails if it cannot be read.
 env_file="$prefix/etc/keenproxy/keenproxy.env"
 
 owns_pid() {
@@ -73,6 +73,12 @@ start() {
         echo 'KeenProxy: could not raise the open-file limit to 8192; continuing startup' >&2
     fi
     if [ -f "$env_file" ]; then
+        # Probe in a subshell first: under set -u an unset variable would end
+        # this shell silently, and a failing last command would abort start.
+        if ! (. "$env_file") >/dev/null 2>&1; then
+            echo 'KeenProxy: keenproxy.env failed' >&2
+            return 1
+        fi
         set -a
         . "$env_file"
         set +a
