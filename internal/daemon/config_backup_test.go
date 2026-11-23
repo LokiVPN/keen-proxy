@@ -270,6 +270,26 @@ func savedDaemon(t *testing.T, logs *bytes.Buffer) (*Daemon, *model.Config, stri
 	return d, cfg, path
 }
 
+// When only the rollback copy changes, a directory sync failure after its
+// rename is a durability warning (ruling R11), not a failed recovery save.
+func TestRecoverySaveOfOnlyThePreviousCopyWarnsOnSyncFailure(t *testing.T) {
+	var logs bytes.Buffer
+	d, cfg, path := savedDaemon(t, &logs)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failDirSync(t, syscall.EIO)
+	if err := d.persistConfig(cfg, true); err != nil {
+		t.Fatalf("recovery save failed on a durability problem: %v", err)
+	}
+	assertSavedBytes(t, path, raw)
+	assertSavedBytes(t, path+".previous", raw)
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "could not be synced") {
+		t.Errorf("no durability warning: %q", logs.String())
+	}
+}
+
 // The warning for a filesystem that cannot sync a directory goes to the
 // daemon's log, which feeds the system journal, not to the process default.
 func TestUnsupportedDirectorySyncWarnsInTheDaemonLog(t *testing.T) {

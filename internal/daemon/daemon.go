@@ -483,7 +483,8 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 // persistRecoveryConfig stages the main YAML before publishing its backup.
 // If the final rename fails, the original rollback snapshot can be restored
 // without allocating disk space. Ordinary active applies replace each file in
-// turn and report a failure without restoring the other.
+// turn and report a failure without restoring the other. A directory sync
+// failure after the last rename is a durabilityError.
 func persistRecoveryConfig(path string, original, next []byte, log *slog.Logger) error {
 	mainChanged := !bytes.Equal(original, next)
 	var mainTemp string
@@ -529,7 +530,7 @@ func persistRecoveryConfig(path string, original, next []byte, log *slog.Logger)
 	if !mainChanged {
 		if previousChanged {
 			if err := syncDir(filepath.Dir(path), log); err != nil {
-				return fmt.Errorf("previous configuration was not saved: %w", err)
+				return &durabilityError{err}
 			}
 		}
 		return nil
