@@ -34,6 +34,12 @@ type KeeneticAuth struct {
 // NewKeeneticAuth opts into the LAN HTTP session protocol. A literal address
 // assigned to the router prevents credentials from being forwarded off-device.
 func NewKeeneticAuth(rawOrigin, listen string) (*KeeneticAuth, error) {
+	return newKeeneticAuthFor(rawOrigin, listen, localAddress)
+}
+
+// newKeeneticAuthFor takes the "assigned to this router" predicate so tests do
+// not depend on the machine's interfaces.
+func newKeeneticAuthFor(rawOrigin, listen string, isLocal func(netip.Addr) bool) (*KeeneticAuth, error) {
 	if rawOrigin == "" {
 		return nil, nil
 	}
@@ -44,7 +50,7 @@ func NewKeeneticAuth(rawOrigin, listen string) (*KeeneticAuth, error) {
 		return nil, errors.New("KeeneticOS authentication requires a local HTTP origin")
 	}
 	address, err := netip.ParseAddr(origin.Hostname())
-	if err != nil || !address.Is4() || !address.IsPrivate() || !localAddress(address) {
+	if err != nil || !address.Is4() || !address.IsPrivate() || !isLocal(address) {
 		return nil, errors.New("KeeneticOS authentication requires an IP address assigned to this router")
 	}
 	if port := origin.Port(); port != "" && !validPort(port) {
@@ -64,7 +70,7 @@ func NewKeeneticAuth(rawOrigin, listen string) (*KeeneticAuth, error) {
 		Timeout: 2 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, endpoint string) (net.Conn, error) {
-				if !localAddress(address) {
+				if !isLocal(address) {
 					return nil, errors.New("the KeeneticOS address is no longer local")
 				}
 				return dialer.DialContext(ctx, network, endpoint)

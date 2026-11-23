@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -34,7 +35,7 @@ func get(t *testing.T, addr, host string) int {
 }
 
 func TestDerivedOriginFailureKeepsLoopbackPanel(t *testing.T) {
-	for _, explicit := range []bool{false, true} {
+	for _, operator := range []bool{false, true} {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -47,16 +48,22 @@ func TestDerivedOriginFailureKeepsLoopbackPanel(t *testing.T) {
 		done := make(chan error, 1)
 		go func() {
 			done <- serveAPI(ctx, cfg, statusDaemon{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)),
-				"http://192.168.1.1", explicit, false, func(context.Context) { close(listening) })
+				"http://192.168.1.1", operator, false, func(context.Context) { close(listening) })
 		}()
-		if explicit {
+		if operator {
 			if err := <-done; err == nil {
 				t.Error("an explicit origin that cannot work must fail loudly")
 			}
 			cancel()
 			continue
 		}
-		<-listening
+		select {
+		case <-listening:
+		case err := <-done:
+			t.Fatalf("serveAPI stopped before listening: %v", err)
+		case <-time.After(3 * time.Second):
+			t.Fatal("serveAPI did not start listening")
+		}
 		if c := get(t, addr, addr); c != http.StatusOK {
 			t.Errorf("loopback: %d, want 200", c)
 		}
@@ -65,5 +72,36 @@ func TestDerivedOriginFailureKeepsLoopbackPanel(t *testing.T) {
 		}
 		cancel()
 		<-done
+	}
+}
+
+// With keeneticOrigin already failed in main, serveAPI must not log a second
+// "sign-in unavailable" line.
+func TestUnavailableModeLogsNothingInServeAPI(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	var buf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	listening := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- serveAPI(ctx, &model.Config{API: model.API{Listen: addr}}, statusDaemon{}, nil,
+			slog.New(slog.NewTextHandler(&buf, nil)), "", false, true, func(context.Context) { close(listening) })
+	}()
+	select {
+	case <-listening:
+	case err := <-done:
+		t.Fatalf("serveAPI stopped before listening: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveAPI did not start listening")
+	}
+	cancel()
+	<-done
+	if bytes.Contains(buf.Bytes(), []byte("sign-in unavailable")) {
+		t.Errorf("duplicate log line: %s", buf.String())
 	}
 }

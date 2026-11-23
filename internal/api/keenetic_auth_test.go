@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -294,19 +295,32 @@ func TestMyKeeneticHostWritePath(t *testing.T) {
 		{"http://192.168.7.1:8086", http.StatusForbidden},
 	} {
 		s, d, _ := keeneticFixture(t)
-		r := keeneticRequest("PUT", "/api/config", "{}", true)
+		r := keeneticRequest("PUT", "/api/config", `{"groups":[{"name":"g","target":"direct","entries":["example.com"]}]}`, true)
 		r.Host = "my.keenetic.net:8086"
 		r.Header.Set("Origin", tc.origin)
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
-		if tc.want == http.StatusOK && w.Code == http.StatusForbidden {
-			t.Errorf("Origin %s: forbidden, want accepted", tc.origin)
+		if w.Code != tc.want {
+			t.Errorf("Origin %s: %d %s, want %d", tc.origin, w.Code, w.Body, tc.want)
 		}
-		if tc.want == http.StatusForbidden && w.Code != tc.want {
-			t.Errorf("Origin %s: %d, want 403", tc.origin, w.Code)
+		if applied := d.applied != nil; applied != (tc.want == http.StatusOK) {
+			t.Errorf("Origin %s: config applied = %t", tc.origin, applied)
 		}
-		if tc.want == http.StatusForbidden && d.applied != nil {
-			t.Error("a mismatched Origin applied settings")
+	}
+}
+
+func TestPanelListenConstraint(t *testing.T) {
+	isLocal := func(a netip.Addr) bool { return a == netip.MustParseAddr("192.168.7.1") }
+	for listen, ok := range map[string]bool{
+		"0.0.0.0:8086": true, ":8086": true, "[::]:8086": true, "192.168.7.1:8086": true,
+		"127.0.0.1:8086": false, "192.168.7.2:8086": false, "10.0.0.1:8086": false, "192.168.7.1:0": false, "bad": false,
+	} {
+		_, err := newKeeneticAuthFor("http://192.168.7.1", listen, isLocal)
+		if (err == nil) != ok {
+			t.Errorf("listen %q: error = %v, want ok = %t", listen, err, ok)
 		}
+	}
+	if _, err := newKeeneticAuthFor("http://192.168.7.9", "0.0.0.0:8086", isLocal); err == nil {
+		t.Error("an origin address not assigned to the router must be rejected")
 	}
 }
