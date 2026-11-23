@@ -26,8 +26,9 @@ func discloseAccess(w io.Writer, configPath string) error {
 }
 
 // printPanelURL writes one http URL for listen. An explicit host is kept as
-// configured, including bracketed IPv6. A wildcard uses an address configured
-// on iface in the listener's address family and never substitutes 0.0.0.0 or ::.
+// configured, including bracketed IPv6. A wildcard (0.0.0.0 or ::, which also
+// accepts IPv4) uses lanAddress, the host KeeneticOS sign-in accepts, and
+// never substitutes the wildcard itself.
 func printPanelURL(w io.Writer, listen, iface string, lookup ifaceLookup) error {
 	raw, err := panelURL(listen, iface, lookup)
 	if err != nil {
@@ -46,9 +47,30 @@ func panelURL(listen, iface string, lookup ifaceLookup) (string, error) {
 		return "", errors.New("api.listen: port is 0; bound port is unknown")
 	}
 	if ap.Addr().IsUnspecified() {
-		return wildcardURL(ap, iface, lookup)
+		addr, err := lanAddress(iface, lookup)
+		if err != nil {
+			return "", err
+		}
+		return formatHostURL(addr, ap.Port())
 	}
 	return explicitURL(listen, ap)
+}
+
+// lanAddress is the one rule for the router's LAN address: the first private
+// IPv4 address of the LAN interface. KeeneticOS sign-in derives its origin
+// from it and -url prints it, so -url never names a host that sign-in
+// refuses. Without such an address it fails rather than guess.
+func lanAddress(iface string, lookup ifaceLookup) (netip.Addr, error) {
+	addrs, err := lookup(iface)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("lan interface %s: %w", iface, err)
+	}
+	for _, addr := range addrs {
+		if addr = addr.Unmap(); addr.Is4() && addr.IsPrivate() {
+			return addr, nil
+		}
+	}
+	return netip.Addr{}, fmt.Errorf("lan interface %s: no private IPv4 address", iface)
 }
 
 func explicitURL(listen string, ap netip.AddrPort) (string, error) {
@@ -60,58 +82,6 @@ func explicitURL(listen string, ap netip.AddrPort) (string, error) {
 		return raw, nil
 	}
 	return formatHostURL(ap.Addr(), ap.Port())
-}
-
-func wildcardURL(ap netip.AddrPort, iface string, lookup ifaceLookup) (string, error) {
-	if lookup == nil {
-		return "", errors.New("lan interface: address lookup is unavailable")
-	}
-	addrs, err := lookup(iface)
-	if err != nil {
-		return "", fmt.Errorf("lan interface %s: %w", iface, err)
-	}
-	addr, ok := pickPanelAddr(addrs, ap.Addr().Is4())
-	if !ok {
-		return "", fmt.Errorf("lan interface %s: no %s address", iface, familyName(ap.Addr().Is4()))
-	}
-	if addr.Is6() && addr.IsLinkLocalUnicast() && addr.Zone() == "" {
-		addr = addr.WithZone(iface)
-	}
-	return formatHostURL(addr, ap.Port())
-}
-
-func familyName(v4 bool) string {
-	if v4 {
-		return "IPv4"
-	}
-	return "IPv6"
-}
-
-// pickPanelAddr chooses the first non-link-local address in the listener
-// family, then any other usable address in that family. It does not invent one.
-func pickPanelAddr(addrs []netip.Addr, v4 bool) (netip.Addr, bool) {
-	if addr, ok := firstFamily(addrs, v4, true); ok {
-		return addr, true
-	}
-	return firstFamily(addrs, v4, false)
-}
-
-func firstFamily(addrs []netip.Addr, v4, skipLinkLocal bool) (netip.Addr, bool) {
-	for _, addr := range addrs {
-		addr = addr.Unmap()
-		if !usablePanelAddr(addr) || addr.Is4() != v4 {
-			continue
-		}
-		if skipLinkLocal && addr.IsLinkLocalUnicast() {
-			continue
-		}
-		return addr, true
-	}
-	return netip.Addr{}, false
-}
-
-func usablePanelAddr(addr netip.Addr) bool {
-	return addr.IsValid() && !addr.IsUnspecified() && !addr.IsMulticast()
 }
 
 // Callers supply a validated address and nonzero port. Keep stdlib URL escaping

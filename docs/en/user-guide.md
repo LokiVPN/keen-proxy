@@ -13,7 +13,7 @@ After a successful installation or command-line update, the installer prints the
 keenproxy --url --config /path/to/config.yaml
 ```
 
-The URL follows `api.listen`; wildcard listeners use an address from the configured LAN interface. If that interface has no usable address, no address is guessed. A loopback listener remains accessible only from the router or through a suitable SSH tunnel. See [installation and updates](getting-started.md#install-or-update-from-github).
+The URL follows `api.listen`; wildcard listeners (`0.0.0.0` or `::`) use the first private IPv4 address of the configured LAN interface, the same address KeeneticOS sign-in accepts. If that interface has none, no address is guessed. A loopback listener remains accessible only from the router or through a suitable SSH tunnel. See [installation and updates](getting-started.md#install-or-update-from-github).
 
 ### Use an existing KeeneticOS session
 

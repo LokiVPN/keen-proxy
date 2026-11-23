@@ -120,7 +120,7 @@ func main() {
 	updates := update.NewManaged(*configPath, log)
 	go updates.Run(ctx)
 	// A management API failure must not stop the independent routing daemon.
-	origin, originErr := keeneticOrigin(*keeneticAuth, cfg.LAN.Interface, isKeenetic, interfacePrefixes)
+	origin, originErr := keeneticOrigin(*keeneticAuth, cfg.LAN.Interface, isKeenetic, interfaceAddrs)
 	if originErr != nil {
 		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working", "err", originErr)
 	}
