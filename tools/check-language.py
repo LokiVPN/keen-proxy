@@ -13,8 +13,6 @@ def allowed(path: Path) -> bool:
     """Declare the small set of intentionally Russian content locations."""
     if path.parts[:2] == ('docs', 'ru'):
         return True
-    if path.parts[:3] == ('web', 'src', 'locales'):
-        return path.name in ('ru.ts', 'redesign.ts') or path.name.endswith('.ru.ts')
     return path.parent == Path('locales') and path.name.endswith('.ru.yml')
 
 

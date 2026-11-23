@@ -23,9 +23,9 @@ class LanguagePolicyTest(unittest.TestCase):
             self.assertEqual(checker.violations(root, [Path('sample.go')]), [])
 
     def test_only_russian_documentation_and_localization_are_allowed(self):
-        for path in ['docs/ru/user-guide.md', 'web/src/locales/ru.ts', 'web/src/locales/redesign.ts', 'web/src/locales/transliteration.ru.ts', 'locales/mkdocs.ru.yml']:
+        for path in ['docs/ru/user-guide.md', 'locales/mkdocs.ru.yml']:
             self.assertTrue(checker.allowed(Path(path)), path)
-        for path in ['docs/en/user-guide.md', 'internal/config.go', 'web/src/App.vue', 'web/src/locales/en.ts', 'tools/helper.py', 'locales/mkdocs.en.yml', 'tools/example.ru.yml']:
+        for path in ['docs/en/user-guide.md', 'internal/config.go', 'tools/helper.py', 'locales/mkdocs.en.yml', 'tools/example.ru.yml']:
             self.assertFalse(checker.allowed(Path(path)), path)
 
     def test_binary_assets_are_not_source_text(self):
