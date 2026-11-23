@@ -199,8 +199,8 @@ is refused. To override the origin pass
 `KEENPROXY_KEENETIC_AUTH_ORIGIN`; `-keenetic-auth-origin=off` disables
 sign-in. On Entware, to keep such a setting across restarts and updates, put
 it in the optional `/opt/etc/keenproxy/keenproxy.env`, for example
-`KEENPROXY_KEENETIC_AUTH_ORIGIN=off`; `/opt/etc/init.d/S99keenproxy` sources
-that file as shell at every start, and updates and uninstall keep it. The file holds plain `VAR=value` lines; if it cannot be read, start fails with `keenproxy.env failed`. If the
+`KEENPROXY_KEENETIC_AUTH_ORIGIN=off`; `/opt/etc/init.d/S99keenproxy` reads
+that file at every start, and updates and uninstall keep it. Only `KEENPROXY_NAME=value` lines are read (one pair of surrounding quotes is removed); nothing is executed, and other lines are ignored with a warning. If the
 LAN interface has no IPv4 address at startup, the daemon and
 routing still start, a single error is logged, and non-loopback requests get
 `503` until restart. Sign-in needs `api.listen` to be empty-host, `0.0.0.0`,

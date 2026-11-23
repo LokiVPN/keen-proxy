@@ -13,7 +13,7 @@ if [ "$prefix" = /opt ]; then state=/var/run/keenproxy; fi
 pidfile="$state/pid"
 startup_state="$state/startup-state"
 # Optional local settings for the daemon, kept by updates and uninstall, for
-# example KEENPROXY_KEENETIC_AUTH_ORIGIN=off. Plain VAR=value lines, sourced as shell at start; start fails if it cannot be read.
+# example KEENPROXY_KEENETIC_AUTH_ORIGIN=off. Only KEENPROXY_NAME=value lines are read; nothing is executed.
 env_file="$prefix/etc/keenproxy/keenproxy.env"
 
 owns_pid() {
@@ -44,6 +44,30 @@ raise_nofile() {
     ulimit -Sn 8192
 }
 
+# load_env_file exports KEENPROXY_*=value lines from the optional env file. The
+# file is parsed, never executed: other lines are ignored with a warning.
+load_env_file() {
+    [ -f "$env_file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case $line in ''|'#'*) continue ;; esac
+        name=${line%%=*}
+        value=${line#*=}
+        case $name in
+            KEENPROXY_*) case $name in *[!A-Z0-9_]*) name= ;; esac ;;
+            *) name= ;;
+        esac
+        if [ -z "$name" ] || [ "$name" = "$line" ]; then
+            echo 'KeenProxy: ignored a line in keenproxy.env that is not KEENPROXY_NAME=value' >&2
+            continue
+        fi
+        case $value in
+            \"*\") value=${value#\"}; value=${value%\"} ;;
+            \'*\') value=${value#\'}; value=${value%\'} ;;
+        esac
+        export "$name=$value"
+    done < "$env_file"
+}
+
 start() {
     existing=
     if owns_pid; then
@@ -72,17 +96,7 @@ start() {
     if ! raise_nofile 2>/dev/null; then
         echo 'KeenProxy: could not raise the open-file limit to 8192; continuing startup' >&2
     fi
-    if [ -f "$env_file" ]; then
-        # Probe in a subshell first: under set -u an unset variable would end
-        # this shell silently, and a failing last command would abort start.
-        if ! (. "$env_file") >/dev/null 2>&1; then
-            echo 'KeenProxy: keenproxy.env failed' >&2
-            return 1
-        fi
-        set -a
-        . "$env_file"
-        set +a
-    fi
+    load_env_file
     # The daemon writes a bounded system journal beside its rule sets.
     (
         trap '' HUP

@@ -138,15 +138,24 @@ esac''')
         self.assertIn(b'KEENPROXY_KEENETIC_AUTH_ORIGIN=off', environ)
         self.assert_success(self.action('stop'))
 
-    def test_start_fails_loudly_when_the_env_file_cannot_be_read(self):
+    def test_env_file_is_parsed_and_never_executed(self):
+        for name in ('KEENPROXY_QUOTED', 'KEENPROXY_PLAIN', 'KEENPROXY_SINGLE', 'KEENPROXY_REF', 'KEENPROXY_LAST'):
+            self.env.pop(name, None)
         env_file = self.prefix / 'etc/keenproxy/keenproxy.env'
         env_file.parent.mkdir(parents=True, exist_ok=True)
-        for body in ('false\n', 'A=$UNSET_VARIABLE_FOR_TEST\n'):
-            env_file.write_text(body)
-            result = self.action('start')
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('keenproxy.env failed', result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr)
-            self.assertFalse(self.pidfile.exists())
+        env_file.write_text(
+            '# comment\n\nKEENPROXY_QUOTED="a b"\nKEENPROXY_PLAIN=off\nKEENPROXY_SINGLE=\'x y\'\n'
+            'false\nexit 0\nOTHER=1\nKEENPROXY_REF=$UNSET_FOR_TEST\nKEENPROXY_LAST=end')
+        result = self.action('start')
+        self.assert_success(result)
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        self.assertEqual(stderr.count('ignored a line in keenproxy.env'), 3)
+        environ = Path(f'/proc/{self.running_pid()}/environ').read_bytes().split(b'\0')
+        for item in (b'KEENPROXY_QUOTED=a b', b'KEENPROXY_PLAIN=off', b'KEENPROXY_SINGLE=x y',
+                     b'KEENPROXY_REF=$UNSET_FOR_TEST', b'KEENPROXY_LAST=end'):
+            self.assertIn(item, environ)
+        self.assertNotIn(b'OTHER=1', environ)
+        self.assert_success(self.action('stop'))
 
     def test_start_is_idempotent_and_restart_replaces_the_process(self):
         self.assert_success(self.action('start'))
