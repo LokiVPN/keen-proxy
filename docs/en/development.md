@@ -199,10 +199,10 @@ is refused. To override the origin pass
 sign-in. If the LAN interface has no IPv4 address at startup, the daemon and
 routing still start, a single error is logged, and non-loopback requests get
 `503` until restart. Sign-in needs `api.listen` to be empty-host, `0.0.0.0`,
-`::` or the LAN IPv4 address; with another `api.listen` (for example
-`127.0.0.1:8086`) a derived origin falls back to the 503 mode above and only an
-explicit origin fails the startup of the web interface. The mode targets the LAN HTTP session protocol in
-KeeneticOS 5.1.10.
+`::` or the LAN IPv4 address. An origin that cannot be used, derived or set
+explicitly (for example with `api.listen` `127.0.0.1:8086`), falls back to the
+503 mode above with an error in the system journal; loopback keeps working.
+The mode targets the LAN HTTP session protocol in KeeneticOS 5.1.10.
 
 KeenProxy verifies the current session and the account's permissions for
 each page request. An administrator (Web interface and command-line

@@ -3,10 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +34,10 @@ func get(t *testing.T, addr, host string) int {
 	return resp.StatusCode
 }
 
-func TestDerivedOriginFailureKeepsLoopbackPanel(t *testing.T) {
+// An origin that cannot work, derived or set by the operator, must not take
+// the loopback panel down with it (ruling R16): browsers get 503, loopback
+// keeps working, and the reason is logged as an error.
+func TestFailedOriginKeepsLoopbackPanel(t *testing.T) {
 	for _, operator := range []bool{false, true} {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -44,31 +47,30 @@ func TestDerivedOriginFailureKeepsLoopbackPanel(t *testing.T) {
 		l.Close()
 		cfg := &model.Config{API: model.API{Listen: addr}}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var logs bytes.Buffer
 		listening := make(chan struct{})
 		done := make(chan error, 1)
 		go func() {
-			done <- serveAPI(ctx, cfg, statusDaemon{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)),
+			done <- serveAPI(ctx, cfg, statusDaemon{}, nil, slog.New(slog.NewTextHandler(&logs, nil)),
 				"http://192.168.1.1", operator, false, func(context.Context) { close(listening) })
 		}()
-		if operator {
-			if err := <-done; err == nil {
-				t.Error("an explicit origin that cannot work must fail loudly")
-			}
-			cancel()
-			continue
-		}
 		select {
 		case <-listening:
 		case err := <-done:
-			t.Fatalf("serveAPI stopped before listening: %v", err)
+			cancel()
+			t.Fatalf("operator origin %t: serveAPI stopped before listening: %v", operator, err)
 		case <-time.After(3 * time.Second):
-			t.Fatal("serveAPI did not start listening")
+			cancel()
+			t.Fatalf("operator origin %t: serveAPI did not start listening", operator)
 		}
 		if c := get(t, addr, addr); c != http.StatusOK {
-			t.Errorf("loopback: %d, want 200", c)
+			t.Errorf("operator origin %t: loopback: %d, want 200", operator, c)
 		}
 		if c := get(t, addr, "192.168.1.1:8086"); c != http.StatusServiceUnavailable {
-			t.Errorf("foreign Host: %d, want 503", c)
+			t.Errorf("operator origin %t: foreign Host: %d, want 503", operator, c)
+		}
+		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "sign-in unavailable") {
+			t.Errorf("operator origin %t: log = %q", operator, logs.String())
 		}
 		cancel()
 		<-done

@@ -201,12 +201,16 @@ func writeStartupState(path, mode string) error {
 func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, operatorOrigin, unavailable bool, onListening func(context.Context)) error {
 	keenetic, err := api.NewKeeneticAuth(keeneticOrigin, cfg.API.Listen)
 	if err != nil {
+		// An origin that cannot work (for example api.listen is loopback-only)
+		// must not take the loopback panel down with it, whether it was
+		// derived or set by the operator (ruling R16). The reasons are fixed
+		// texts; the origin itself is not logged.
+		source := "derived from lan.interface"
 		if operatorOrigin {
-			return err
+			source = "-keenetic-auth-origin or KEENPROXY_KEENETIC_AUTH_ORIGIN"
 		}
-		// A derived origin that cannot work (for example api.listen is
-		// loopback-only) must not take the loopback panel down with it.
-		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working", "reason", err.Error())
+		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working",
+			"origin", source, "reason", err.Error())
 		keenetic, unavailable = nil, true
 	}
 	srv := &http.Server{
