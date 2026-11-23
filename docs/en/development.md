@@ -196,7 +196,11 @@ each with the panel port (the port is omitted when it is 80); any other `Host`
 is refused. To override the origin pass
 `-keenetic-auth-origin http://ROUTER_LAN_IP` or set
 `KEENPROXY_KEENETIC_AUTH_ORIGIN`; `-keenetic-auth-origin=off` disables
-sign-in. If the LAN interface has no IPv4 address at startup, the daemon and
+sign-in. On Entware, to keep such a setting across restarts and updates, put
+it in the optional `/opt/etc/keenproxy/keenproxy.env`, for example
+`KEENPROXY_KEENETIC_AUTH_ORIGIN=off`; `/opt/etc/init.d/S99keenproxy` sources
+that file as shell at every start, and updates and uninstall keep it. If the
+LAN interface has no IPv4 address at startup, the daemon and
 routing still start, a single error is logged, and non-loopback requests get
 `503` until restart. Sign-in needs `api.listen` to be empty-host, `0.0.0.0`,
 `::` or the LAN IPv4 address. An origin that cannot be used, derived or set

@@ -128,6 +128,16 @@ esac''')
             self.assertEqual(limits, ['4095', '4096'])
             self.assertIn('could not raise the open-file limit to 8192', stderr)
 
+    def test_start_exports_settings_from_the_env_file(self):
+        self.env.pop('KEENPROXY_KEENETIC_AUTH_ORIGIN', None)
+        env_file = self.prefix / 'etc/keenproxy/keenproxy.env'
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text('# kept by updates\nKEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
+        self.assert_success(self.action('start'))
+        environ = Path(f'/proc/{self.running_pid()}/environ').read_bytes().split(b'\0')
+        self.assertIn(b'KEENPROXY_KEENETIC_AUTH_ORIGIN=off', environ)
+        self.assert_success(self.action('stop'))
+
     def test_start_is_idempotent_and_restart_replaces_the_process(self):
         self.assert_success(self.action('start'))
         first = self.running_pid()

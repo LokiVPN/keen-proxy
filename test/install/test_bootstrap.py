@@ -166,6 +166,8 @@ class BootstrapTest(BootstrapFixture):
         self.assertEqual(self.install().returncode, 0)
         token = self.config.with_name('token')
         token.write_text('test token\n')
+        service_env = self.config.with_name('keenproxy.env')
+        service_env.write_text('KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
         self.config.write_text('schema_version: 1\n# local settings\n')
         client = self.prefix / 'bin/trusttunnel_client'
         self.executable(client, 'exit 0')
@@ -179,6 +181,7 @@ class BootstrapTest(BootstrapFixture):
             self.assertFalse(self.service.exists())
             self.assertFalse(self.release_record.exists())
             self.assertEqual(token.read_text(), 'test token\n')
+            self.assertEqual(service_env.read_text(), 'KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
             self.assertNotIn('test token', result.stdout + result.stderr)
             self.assertNotIn('Access URL:', result.stdout)
             self.assertIn('# local settings', self.config.read_text())
@@ -311,6 +314,8 @@ done
         self.config.write_text('schema_version: 1\n# user setting\n')
         token = self.config.with_name('token')
         token.write_text('test fixture\n')
+        service_env = self.config.with_name('keenproxy.env')
+        service_env.write_text('KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
         next_release = self.release('v1.2.4')
         self.publish_latest('v1.2.4')
         for _ in range(2):
@@ -321,6 +326,7 @@ done
         self.assertEqual(self.binary.read_bytes(), next_release.read_bytes())
         self.assertIn('# user setting', self.config.read_text())
         self.assertEqual(token.read_text(), 'test fixture\n')
+        self.assertEqual(service_env.read_text(), 'KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
         self.assert_url_queries(3)
 
     def test_url_query_problems_keep_installation_and_hide_command_output(self):
