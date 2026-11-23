@@ -102,8 +102,9 @@ func (s *Server) subscriptionCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-// A trusted LAN peer can be tokenless. Check browser requests before a fetch
-// or refresh can contact the provider and register the router's HWID.
+// allowSubscriptionPost rejects cross-origin browser requests, such as another
+// page posting with a signed-in KeeneticOS session, before a preview, refresh
+// or check can contact the provider and register the router's HWID.
 func allowSubscriptionPost(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
 	if err := browserOrigin.Check(r); err != nil {

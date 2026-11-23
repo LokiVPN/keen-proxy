@@ -199,8 +199,7 @@ This experimental mode targets the LAN HTTP session protocol in KeeneticOS
 KeenProxy verifies the current session and the account's permissions for
 each protected request. Access requires the Web interface and command-line
 management permissions. Read-only, manager and demo accounts are denied.
-Signing out of either panel ends the router session. An active journal
-stream also checks access before sending more events.
+Signing out of either panel ends the router session.
 
 This is the only non-loopback way in: without it, other clients get
 `403 local access only`. See the [control API](#control-api).
@@ -208,9 +207,10 @@ This is the only non-loopback way in: without it, other clients get
 ## Control API { #control-api }
 
 The HTTP API is a control API, not a browser session API. A request whose
-`RemoteAddr` is loopback is trusted without a token; the installer, the memory
-gate (`test/memory/scenario.py`) and `make integration` (`test/netns/run.sh`)
-rely on this. Any `Authorization` header they still send is ignored. Other
+`RemoteAddr` is loopback is trusted without a token. The memory gate
+(`test/memory/scenario.py`), `make integration` (`test/netns/run.sh`) and
+local scripts on the router rely on this; the installer does not call the API.
+Any `Authorization` header a client still sends is ignored. Other
 clients need a KeeneticOS session when KeeneticOS sign-in is enabled
 (`-keenetic-auth-origin`) and otherwise receive `403 local access only`.
 
