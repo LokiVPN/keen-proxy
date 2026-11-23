@@ -213,3 +213,21 @@ func TestParseRejectsRemovedSections(t *testing.T) {
 		})
 	}
 }
+
+func TestSubscriptionFallbackValidation(t *testing.T) {
+	cases := map[string]string{
+		"direct":               "",
+		"block":                "",
+		"fi":                   "",
+		"":                     "",
+		"nope":                 "unknown fallback",
+		"subscription:lv:auto": "cannot be a subscription target",
+		"subscription:lv:" + strings.Repeat("a", 32): "cannot be a subscription target",
+	}
+	for fallback, want := range cases {
+		_, err := Parse([]byte(validYAML + "subscriptions:\n  - {id: lv, url: \"https://provider.example/s\", fallback: \"" + fallback + "\"}\n"))
+		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
+			t.Errorf("fallback %q: got %v, want %q", fallback, err, want)
+		}
+	}
+}

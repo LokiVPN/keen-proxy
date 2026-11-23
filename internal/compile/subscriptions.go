@@ -1,6 +1,7 @@
 package compile
 
 import (
+	"cmp"
 	"errors"
 	"maps"
 	"slices"
@@ -14,6 +15,8 @@ type SubscriptionSelector struct {
 	SourceID   string
 	Tag        string
 	Candidates []string
+	// Fallback is the resolved reserve tag, empty when none is configured.
+	Fallback string
 }
 
 // SubscriptionBalance identifies one compiled per-connection policy and its shared node outbounds.
@@ -22,6 +25,7 @@ type SubscriptionBalance struct {
 	Tag        string
 	Strategy   string
 	Candidates []string
+	Fallback   string
 }
 
 type subscriptionRouting struct {
@@ -64,6 +68,7 @@ func compileSubscriptions(in Input, tags map[string]string) (subscriptionRouting
 	for _, target := range subscriptionTargets(in.Config) {
 		source, nodeID, _ := model.ParseManagedTarget(target)
 		balance := model.IsSubscriptionBalance(nodeID)
+		reserve := subscriptionReserve(in.Config, source, tags)
 		var candidates []string
 		for _, node := range in.Subscriptions[source] {
 			if balance || nodeID == "auto" || nodeID == node.ID {
@@ -77,14 +82,14 @@ func compileSubscriptions(in Input, tags map[string]string) (subscriptionRouting
 			result.block = true
 			slices.Sort(candidates)
 			result.balances = append(result.balances, SubscriptionBalance{
-				SourceID: source, Tag: target, Strategy: nodeID, Candidates: slices.Compact(candidates),
+				SourceID: source, Tag: target, Strategy: nodeID, Candidates: slices.Compact(candidates), Fallback: reserve,
 			})
 		case len(candidates) == 0:
 			result.block = true
-			tags[target] = model.TargetBlock
+			tags[target] = cmp.Or(reserve, model.TargetBlock)
 		case nodeID == "auto":
 			result.block = true
-			result.selectors = append(result.selectors, SubscriptionSelector{SourceID: source, Tag: target, Candidates: candidates})
+			result.selectors = append(result.selectors, SubscriptionSelector{SourceID: source, Tag: target, Candidates: candidates, Fallback: reserve})
 		}
 	}
 	if len(nodes) == 0 {
@@ -103,14 +108,29 @@ func compileSubscriptions(in Input, tags map[string]string) (subscriptionRouting
 	return result, nil
 }
 
+// subscriptionReserve resolves a source's configured reserve to an outbound
+// tag; a connection with a failover chain resolves through its selector.
+func subscriptionReserve(c *model.Config, sourceID string, tags map[string]string) string {
+	for _, source := range c.Subscriptions {
+		if source.ID == sourceID && source.Fallback != "" {
+			return cmp.Or(tags[source.Fallback], source.Fallback)
+		}
+	}
+	return ""
+}
+
 // managedSelector emits stable engine bytes when the provider only reorders nodes.
 // Block is the safe initial selection until the daemon restores or picks a node.
 func managedSelector(selector SubscriptionSelector) obj {
 	members := slices.Clone(selector.Candidates)
 	slices.Sort(members)
+	outbounds := append([]string{model.TargetBlock}, members...)
+	if selector.Fallback != "" && selector.Fallback != model.TargetBlock {
+		outbounds = append(outbounds, selector.Fallback)
+	}
 	return obj{
 		"type": "selector", "tag": selector.Tag,
-		"outbounds": append([]string{model.TargetBlock}, members...), "default": model.TargetBlock,
+		"outbounds": outbounds, "default": model.TargetBlock,
 		"interrupt_exist_connections": true,
 	}
 }

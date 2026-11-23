@@ -29,6 +29,9 @@ type Source struct {
 	ID       string `json:"id" yaml:"id"`
 	URL      string `json:"url" yaml:"url"`
 	SendHWID bool   `json:"send_hwid" yaml:"send_hwid"`
+	// Fallback is the reserve used when no node answers: "", direct, block or a
+	// manual connection ID. It is not part of the snapshot fingerprint.
+	Fallback string `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 }
 
 // Node contains the original share link for the private snapshot and compiler.

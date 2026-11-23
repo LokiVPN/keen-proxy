@@ -64,3 +64,17 @@ func (c *Config) validateSubscriptions(add func(string, ...any)) {
 		seen[source.ID] = true
 	}
 }
+
+// validateSubscriptionFallbacks runs once connection IDs are known. A reserve
+// is a manual connection or a built-in target, never another subscription.
+func (c *Config) validateSubscriptionFallbacks(conns map[string]bool, add func(string, ...any)) {
+	for i, source := range c.Subscriptions {
+		switch fb := source.Fallback; {
+		case fb == "" || fb == TargetDirect || fb == TargetBlock || conns[fb]:
+		case c.HasManagedTarget(fb):
+			add("subscriptions[%d]: fallback cannot be a subscription target", i)
+		default:
+			add("subscriptions[%d]: unknown fallback %q", i, fb)
+		}
+	}
+}

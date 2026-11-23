@@ -197,3 +197,61 @@ clients:
 		t.Fatalf("automatic selector lost its provider priority: %+v", compiled.SubscriptionSelectors)
 	}
 }
+
+func TestSubscriptionSelectorIncludesFallback(t *testing.T) {
+	cfg, err := model.Parse([]byte(subscriptionConfig + `
+connections:
+  - {id: home, type: link, link: "socks5://203.0.113.9:1080", fallback: direct}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Subscriptions[0].Fallback = "home"
+	node := subscription.Node{ID: strings.Repeat("a", 32), Name: "First", Link: "socks5://203.0.113.2:1080"}
+	out, err := Compile(Input{Config: cfg, RuleSetDir: t.TempDir(), Subscriptions: map[string][]subscription.Node{"provider": {node}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.SubscriptionSelectors) != 1 || out.SubscriptionSelectors[0].Fallback != FailoverTagPrefix+"home" {
+		t.Fatalf("reserve did not resolve through the failover chain: %+v", out.SubscriptionSelectors)
+	}
+	var got struct {
+		Outbounds []struct {
+			Tag       string
+			Outbounds []string
+		}
+	}
+	if err := json.Unmarshal(out.SingBox, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range got.Outbounds {
+		if o.Tag == "subscription:provider:auto" && slices.Contains(o.Outbounds, FailoverTagPrefix+"home") {
+			return
+		}
+	}
+	t.Fatal("selector does not offer the reserve")
+}
+
+func TestSubscriptionWithoutNodesCompilesToFallback(t *testing.T) {
+	cfg, err := model.Parse([]byte(subscriptionConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Subscriptions[0].Fallback = model.TargetDirect
+	out, err := Compile(Input{Config: cfg, RuleSetDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(out.SingBox, []byte(`"outbound": "block"`)) && !bytes.Contains(out.SingBox, []byte(`"outbound": "direct"`)) {
+		t.Fatal("empty subscription still blocks despite a reserve")
+	}
+	var got struct{ Route struct{ Rules []struct{ Outbound string } } }
+	if err := json.Unmarshal(out.SingBox, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range got.Route.Rules {
+		if r.Outbound == model.TargetBlock {
+			t.Fatalf("a rule still blocks: %+v", got.Route.Rules)
+		}
+	}
+}

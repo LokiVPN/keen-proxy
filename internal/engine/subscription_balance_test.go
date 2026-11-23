@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -566,5 +567,25 @@ func TestSubscriptionBalanceCheckpointPreservesAssignmentsAcrossRollback(t *test
 				route.expect(fmt.Sprintf("site%d.example", i), "first")
 			}
 		})
+	}
+}
+
+func TestSubscriptionBalanceFallbackReplacesBlockWhenPoolIsEmpty(t *testing.T) {
+	route := newSubscriptionBalanceTest(t, "round-robin", nil)
+	route.cfg.Subscriptions[0].Fallback = model.TargetDirect
+	route.apply(nil)
+	route.update("source-a")
+	out, ctx, ok := route.engine.Outbound(route.tag)
+	if !ok {
+		t.Fatal("compiled subscription balance was missing")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	conn, err := out.DialContext(ctx, "tcp", M.ParseSocksaddr("203.0.113.70:80"))
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if errors.Is(err, syscall.EPERM) {
+		t.Fatalf("empty pool blocked despite a direct reserve: %v", err)
 	}
 }

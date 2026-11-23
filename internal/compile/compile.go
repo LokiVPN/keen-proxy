@@ -354,7 +354,11 @@ func managedOutbounds(chains []FailoverChain, managed subscriptionRouting) []obj
 		out = append(out, managedSelector(selector))
 	}
 	for _, balance := range managed.balances {
-		out = append(out, obj{"type": model.SubscriptionBalanceOutboundType, "tag": balance.Tag, "outbounds": balance.Candidates})
+		o := obj{"type": model.SubscriptionBalanceOutboundType, "tag": balance.Tag, "outbounds": balance.Candidates}
+		if balance.Fallback != "" {
+			o["fallback"] = balance.Fallback
+		}
+		out = append(out, o)
 	}
 	return out
 }

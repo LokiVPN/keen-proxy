@@ -77,6 +77,15 @@ networks:
   - {name: Home, cidr: 192.168.7.0/24, mode: split, default: fi}
 ```
 
+## Reserve for a subscription { #subscription-reserve }
+
+A subscription can name a reserve with `fallback`: a manual connection ID, `direct` or `block`. When no node of the subscription answers for `failover.down_after`, the automatic target and the balancing modes send traffic to the reserve instead of staying on a dead node. A connection with its own fallback chain keeps that chain while it serves as the reserve. Traffic returns to a node once one has passed its checks for `failover.up_after`. Without a reserve, the automatic target stays on its last node and a subscription with no usable nodes blocks. The subscription status shows the reserve and reports the switch reason `fallback` while it is in use. A subscription cannot be the reserve of another subscription, and connections cannot reference subscriptions.
+
+```yaml
+subscriptions:
+  - {id: provider, url: "https://provider.example/links/example-token", fallback: home-wg}
+```
+
 ## Pause and devices that are off { #pause }
 
 A device whose mode is `off` is not touched by KeenProxy: no routing, no blocking and no DNS interception, so its DNS goes straight to the KeeneticOS resolver. Pausing the router (`paused: true`) does the same for every device while the daemon keeps running; unpausing is a normal Apply. DNS interception and the encrypted-DNS guard apply only to devices that take part in a network or client policy.

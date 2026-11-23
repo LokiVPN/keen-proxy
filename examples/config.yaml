@@ -27,6 +27,8 @@ connections:
 #   - {id: provider, url: "https://provider.example/links/example-token", send_hwid: true}
 # Set a group or full-tunnel policy target to "subscription:provider:round-robin"
 # to cycle through eligible nodes for new connections.
+# Add fallback: fi (a connection ID, direct or block) as the reserve used while no
+# node answers; traffic returns to a node after failover.up_after of success.
 groups:
   - {name: International, target: fi, entries: ["youtube.com", "149.154.160.0/20"]}
   - {name: Advertising, target: block, entries: ["ads.example.com"]}

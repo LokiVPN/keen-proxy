@@ -51,6 +51,8 @@ type SubscriptionStatus struct {
 	Unavailable     bool                       `json:"unavailable,omitempty"`
 	CheckProgress   *SubscriptionCheckProgress `json:"check_progress,omitempty"`
 	BalanceEligible *int                       `json:"balance_eligible,omitempty"`
+	// Fallback echoes the configured reserve used while no node answers.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // subscriptionRuntime separates downloads from the state committed under d.mu.
@@ -153,7 +155,7 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		status := SubscriptionStatus{
 			ID: source.ID, State: subscriptionPending, Metadata: subscriptionMetadata(snapshot.Metadata),
 			Nodes: make([]SubscriptionNodeStatus, 0, len(snapshot.Nodes)), Skipped: snapshot.Skipped,
-			Unavailable: len(snapshot.Nodes) == 0,
+			Unavailable: len(snapshot.Nodes) == 0, Fallback: source.Fallback,
 		}
 		if !latest.at.IsZero() {
 			status.State, status.Error, status.LastAttempt = latest.result.State, latest.result.Error, &latest.at
