@@ -26,8 +26,7 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 - WireGuard, AmneziaWG 2/3 single-peer `.conf` profiles, supported sing-box connection links, raw sing-box outbounds/endpoints, and embedded TrustTunnel.
 - Connection failover with recovery hysteresis and explicit direct fallback where configured.
 - Xray subscriptions with refresh, HTTPS node checks, failover, and balancing by site, by session, or round robin.
-- A UDP/TCP DNS frontend, public resolver presets, DoH/DoT, selectable DNS routing, and DNS-only blocklists.
-- Community domain presets with preview and managed updates that preserve manual additions and exclusions.
+- A UDP/TCP DNS frontend, public resolver presets, DoH/DoT, and selectable DNS routing.
 - YAML configuration, a shared draft/Apply workflow, import/export, and a previous-configuration backup.
 - Dark/light themes, responsive navigation, connection wizards, file import, and bulk group route changes.
 - Routing, audit, and system journals; connection statistics; and separate HTTP, verified HTTPS, and bounded transfer diagnostics. The panel can export a [diagnostic ZIP](docs/en/troubleshooting.md#download-the-diagnostic-zip).

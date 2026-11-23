@@ -25,9 +25,6 @@ func Masker(cfg *model.Config, extra ...string) func(string) string {
 			secrets = append(secrets, linkSecrets(db.URL)...)
 		}
 		secrets = append(secrets, linkSecrets(cfg.Failover.URL)...)
-		for _, source := range cfg.Filters.Sources {
-			secrets = append(secrets, linkSecrets(source.URL)...)
-		}
 		for _, source := range cfg.Subscriptions {
 			secrets = append(secrets, source.URL)
 		}

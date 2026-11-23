@@ -67,9 +67,9 @@ WireGuard, ссылки подключения sing-box, outbound-объекты
 <div class="kp-card" markdown>
 :material-dns:{ .kp-card__icon }
 
-### DNS и блок-листы
+### DNS
 
-Локальный DNS-фронтенд с резолверами DoH/DoT, выбором маршрута для DNS и блок-листами на уровне DNS.
+Локальный DNS-фронтенд с резолверами DoH/DoT и выбором маршрута для DNS.
 </div>
 
 <div class="kp-card" markdown>

@@ -34,11 +34,6 @@ func (g Group) ActiveEntries() iter.Seq[string] {
 	return activeValues(g.Entries, g.DisabledEntries, g.Disabled, entryIdentity)
 }
 
-// ActiveEntries yields reusable entries in order, excluding disabled resources.
-func (p LocalPreset) ActiveEntries() iter.Seq[string] {
-	return activeValues(p.Entries, p.DisabledEntries, false, entryIdentity)
-}
-
 func entryIdentity(raw string) string {
 	e, err := ParseEntry(raw)
 	if err != nil {

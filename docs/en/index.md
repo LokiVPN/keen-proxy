@@ -67,9 +67,9 @@ Fall back to another connection when one goes down, and return after it has reco
 <div class="kp-card" markdown>
 :material-dns:{ .kp-card__icon }
 
-### DNS and blocklists
+### DNS
 
-A local DNS frontend with DoH/DoT resolvers, selectable DNS routing, and DNS-only blocklists.
+A local DNS frontend with DoH/DoT resolvers and selectable DNS routing.
 </div>
 
 <div class="kp-card" markdown>
@@ -131,7 +131,7 @@ KeenProxy also watches its interception rules. On compatible Keenetic/Netcraze f
 </figure>
 
 <figure markdown>
-[![Diagnostics for a selected connection](../assets/screenshots/en-diagnostics.png)](user-guide.md#7-verify-the-result)
+[![Diagnostics for a selected connection](../assets/screenshots/en-diagnostics.png)](user-guide.md#6-verify-the-result)
 <figcaption markdown>Diagnostics. [How to download the ZIP on your router](troubleshooting.md#download-the-diagnostic-zip).</figcaption>
 </figure>
 

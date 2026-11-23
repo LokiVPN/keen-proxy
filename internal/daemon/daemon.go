@@ -24,13 +24,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ordo-systems/keen-proxy/internal/catalog"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/devices"
 	"github.com/ordo-systems/keen-proxy/internal/dnsfront"
 	"github.com/ordo-systems/keen-proxy/internal/domaincache"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
-	"github.com/ordo-systems/keen-proxy/internal/filterlist"
 	"github.com/ordo-systems/keen-proxy/internal/geoip"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/lists"
@@ -62,7 +60,6 @@ type Options struct {
 // Daemon owns runtime components and coordinates serialized configuration changes.
 type Daemon struct {
 	domainGeneration  atomic.Pointer[domainGeneration]
-	filters           *filterlist.Manager
 	featureMu         sync.Mutex
 	dnsInfo           DNSInfo
 	domains           *domaincache.Cache
@@ -159,7 +156,6 @@ func New(opt Options) *Daemon {
 	d.memoryBaseline = baseline
 	d.memoryDefault = memoryDefault
 	d.memoryActive = baseline
-	d.filters = filterlist.New(filepath.Join(filepath.Dir(opt.RuleSetDir), "filters"), nil)
 	d.geoStore = geoip.NewStore(filepath.Join(filepath.Dir(opt.RuleSetDir), "geoip"))
 	d.geoWake = make(chan struct{}, 1)
 	d.subscriptions = newSubscriptionRuntime(opt.RuleSetDir)
@@ -207,7 +203,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go d.runSubscriptions(ctx)
 		go d.runSubscriptionHealth(ctx)
 		go d.runDomains(ctx)
-		go d.runFilterUpdates(ctx)
 		go d.runDeviceNames(ctx)
 		d.runWatchdog(ctx)
 	}
@@ -224,7 +219,6 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	catalog.AutoUpdate(cfg)
 	d.started = time.Now()
 	blocked := d.tproxyPreflight(ctx, cfg)
 	if ctx.Err() != nil {
@@ -282,7 +276,6 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
 	by, from := applyActor(ctx)
 	cfg.Defaults()
-	catalog.AutoUpdate(cfg)
 	if err := cfg.Validate(); err != nil {
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
@@ -571,8 +564,6 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 		d.coreRestarted = true
 		d.log.Info("sing-box core restarted with new configuration")
 	}
-	d.filters.Configure(cfg.Filters)
-
 	if d.dns == nil || prev == nil || dnsFrontendChanged(prev.DNS, cfg.DNS) || dnsGroupsChanged(prev.Groups, cfg.Groups) {
 		if d.dns != nil {
 			d.dns.Close()
@@ -700,7 +691,6 @@ func (d *Daemon) restoreInactiveLocked(cfg *model.Config) {
 	d.subscriptions.generation++
 	if cfg != nil {
 		d.reselectLocked()
-		d.filters.Configure(cfg.Filters)
 	} else {
 		d.live.Store(nil)
 	}
@@ -743,7 +733,7 @@ func (d *Daemon) startDNS() error {
 		if canary && strings.EqualFold(strings.TrimSuffix(name, "."), "use-application-dns.net") {
 			return "firefox-canary"
 		}
-		return d.filters.Match(name)
+		return ""
 	}
 	cfg.OnRoute = d.recordDNSRoute
 	cfg.OnBlock = d.recordDNSBlock

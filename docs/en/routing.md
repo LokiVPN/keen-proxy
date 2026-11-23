@@ -84,12 +84,4 @@ The exception bypasses KeenProxy for all UDP/TCP port 53 queries from those addr
 
 Use your router's actual network test procedure to evaluate UDP/TCP interception and encrypted-DNS handling. Applications can use their own resolvers. The UI and demo do not establish universal DNS-leak protection.
 
-## DNS filters { #dns-filters }
-
-1. Open **Rules → Filters** and add a catalog list or a custom HTTPS source in domains, hosts, or DNS adblock format. Start with one HaGeZi level if using HaGeZi.
-2. Check which sources are enabled. Use **Update daily** for sources that should refresh automatically. Choose **Apply**, then **Download / update lists** to fetch the enabled lists now. Check the download status and rule count on each source.
-3. If a list breaks a site, add its domain to **List exceptions** and Apply. Exceptions cover the domain and its subdomains. Explicit block groups still take priority.
-
-DNS filters can block lookups for ads, trackers, and other listed domains. They work when clients use the intercepted DNS path. Ads served from the same hostname as the content and requests that use an independent resolver can still get through.
-
 See the [user guide](user-guide.md) for screenshots and [Troubleshooting](troubleshooting.md) for interpreting evidence.

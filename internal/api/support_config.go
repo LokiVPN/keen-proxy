@@ -34,9 +34,6 @@ func supportConfig(c *model.Config, alias func(kind, value string) string) any {
 		"networks":    supportList(c.Networks, p.network),
 		"clients":     supportList(c.Clients, p.client),
 		"geoip":       supportFields{"databases": supportList(c.GeoIP.Databases, p.geoDatabase)},
-		"filters": supportFields{
-			"sources": supportList(c.Filters.Sources, p.filterSource), "exception_count": len(c.Filters.Exceptions),
-		},
 	}
 }
 
@@ -141,9 +138,6 @@ func (p supportProjection) group(g model.Group) supportFields {
 		"disabled_entry_count":   len(g.DisabledEntries),
 		"disabled_country_count": len(g.DisabledCountries), "disabled_category_count": len(g.DisabledCategories),
 	}
-	if g.Preset != nil {
-		out["preset"] = supportFields{"id": p("preset", g.Preset.ID), "auto_update": g.Preset.AutoUpdate}
-	}
 	return out
 }
 
@@ -196,8 +190,4 @@ func (p supportProjection) geoDatabase(d model.GeoIPDatabase) supportFields {
 		"id": p("geo-database", d.ID), "enabled": d.Enabled,
 		"builtin": d.IsBuiltin(), "category": d.IsCategory(), "local_file": d.File != "",
 	}
-}
-
-func (p supportProjection) filterSource(s model.FilterSource) supportFields {
-	return supportFields{"id": p("filter", s.ID), "enabled": s.Enabled, "auto_update": s.AutoUpdate}
 }

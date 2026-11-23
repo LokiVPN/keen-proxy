@@ -29,6 +29,3 @@ clients:
     mac: '02:00:00:00:00:10'
     ip: 192.168.50.10
     mode: 'off'
-filters:
-  sources: []
-  exceptions: []

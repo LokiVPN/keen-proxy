@@ -49,7 +49,6 @@ const (
 type Config struct {
 	SchemaVersion int                   `yaml:"schema_version" json:"schema_version"`
 	System        System                `yaml:"system,omitempty" json:"system,omitempty"`
-	Filters       Filters               `yaml:"filters,omitempty" json:"filters"`
 	API           API                   `yaml:"api" json:"api"`
 	LAN           LAN                   `yaml:"lan" json:"lan"`
 	DNS           DNS                   `yaml:"dns" json:"dns"`
@@ -61,8 +60,6 @@ type Config struct {
 	Groups        []Group               `yaml:"groups" json:"groups"`
 	Networks      []Network             `yaml:"networks" json:"networks"`
 	Clients       []Client              `yaml:"clients" json:"clients"`
-
-	LocalPresets []LocalPreset `yaml:"local_presets,omitempty" json:"local_presets,omitempty"`
 }
 
 // maxMemoryLimitMiB is the largest MiB count whose byte size fits in int64.
@@ -273,7 +270,6 @@ type WGPeer struct {
 // databases (labels such as RU-BLOCKED); Except negates their union.
 type Group struct {
 	Disabled   bool     `yaml:"disabled,omitempty" json:"disabled,omitempty"`
-	Preset     *Preset  `yaml:"preset,omitempty" json:"preset,omitempty"`
 	Name       string   `yaml:"name" json:"name"`
 	Target     string   `yaml:"target" json:"target"` // connection ID, direct, or block
 	Entries    []string `yaml:"entries,omitempty" json:"entries"`
@@ -281,7 +277,7 @@ type Group struct {
 	Categories []string `yaml:"categories,omitempty" json:"categories,omitempty"` // uppercase category labels
 	Except     bool     `yaml:"except,omitempty" json:"except,omitempty"`
 
-	// Disabled selectors retain their configured values and preset membership.
+	// Disabled selectors retain their configured values.
 	// Sets are value-based, so reordering rules cannot change activation state.
 	DisabledEntries    []string `yaml:"disabled_entries,omitempty" json:"disabled_entries,omitempty"`
 	DisabledCountries  []string `yaml:"disabled_countries,omitempty" json:"disabled_countries,omitempty"`
@@ -425,7 +421,6 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.normalizeConnections()...)
 	c.validateFeatures(add)
 	c.GeoIP.validate(add)
-	c.validateLocalPresets(add)
 	if mib := c.System.MemoryLimitMiB; mib != nil && (*mib < 1 || *mib > maxMemoryLimitMiB) {
 		add("system.memory_limit_mib: must be a positive integer no greater than %d", maxMemoryLimitMiB)
 	}

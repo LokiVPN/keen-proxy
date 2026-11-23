@@ -30,7 +30,6 @@ type DiagnosticResult struct {
 type DiagnosticReport struct {
 	Connection string             `json:"connection"`
 	Results    []DiagnosticResult `json:"results"`
-	Demo       bool               `json:"demo,omitempty"`
 }
 
 // ErrDiagnosticConnection means the requested profile is absent from applied runtime state.

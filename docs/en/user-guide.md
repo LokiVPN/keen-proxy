@@ -168,44 +168,19 @@ In YAML, connection and group switches use `disabled: true`. Per-rule states are
 
 See [Country rules](routing.md#country-rules) for an illustrated setup, country exclusions, and rule precedence.
 
-## 4. Try a preset
-
-Open **Rules → Presets**, select a target, then preview a collection. Inspect the added/removed entries and accept it into the draft. Presets can be enabled, disabled, or removed. The static demo includes one original example collection; it does not redistribute the full community catalog.
-
-The catalog shows domain lists without resolving them. KeenProxy resolves IPs for enabled presets after **Apply**. Enable **Update with new app versions** to adopt changes to the bundled preset after upgrading KeenProxy. To block ads or other domains through DNS, see [DNS filters](routing.md#dns-filters).
-
-Updating a preset preserves per-entry off states separately from deletions, including entries that disappear from one preset revision and return later. Disabling a rule does not remove it from the preset or discard your saved value.
-
-### Exchange resource lists { #resource-lists }
-
-Import a local file into a new or existing explicit-resource group or local preset. Choose append to keep existing entries or replace to remove entries absent from the file. Inspect duplicates, additions, removals, and diagnostics before staging the result. Invalid or unsupported rules block the whole import. **Apply** saves the draft; **Discard** restores the last saved configuration.
-
-Local presets are reusable resource lists, separate from the bundled catalog. They do not change routing until you copy their entries into a group and apply the draft.
-
-| Format | Representation |
-| --- | --- |
-| TXT | One domain suffix, IP address, or CIDR per line; blank lines and `#` comments are allowed. |
-| CSV | UTF-8 `type,value` columns. Use `domain_suffix,example.com` or `ip_cidr,192.0.2.0/24`. |
-| KeenProxy JSON | `{"version":1,"name":"Example","entries":[{"type":"domain_suffix","value":"example.com","disabled":true}]}`. Only this format preserves resource activation and the optional list name. |
-| sing-box JSON / binary SRS | Import versions 1–5 for supported rules. Export version 2 for compatibility with sing-box 1.10 and later. Example source: `{"version":2,"rules":[{"domain_suffix":["example.com"]},{"ip_cidr":["2001:db8::/32"]}]}`. |
-
-Only equivalent sing-box rules can be imported. An exact domain by itself does not match subdomains, and a leading-dot suffix by itself does not match the apex. Both are rejected unless another imported rule covers the missing part without widening the result. Logical rules, inversion, regex, keywords, and source or port filters are unsupported. An existing SRS file may already have combined adjacent CIDRs; import recovers the encoded address set, not the original source text. KeenProxy's SRS export preserves separate editable prefixes. This is not a configuration backup: connection settings, routing targets, country/category selectors, and catalog provenance are not exported. Review conversion losses before downloading; a format without activation flags omits disabled resources.
-
-Files are limited to 2 MiB and 20,000 input entries; binary validation also bounds decompression and expansion. An export outside these limits is rejected rather than producing a file that KeenProxy cannot reimport. A local preset can hold up to 20,000 entries. The router stores up to 64 local presets and at most 40,000 combined values or 1 MiB of resource text, including disabled markers. Single-label suffixes such as `.cn` and suffixes that would be stored as IP addresses, such as `*.192.0.2.1`, are not representable.
-
-## 5. Choose devices and networks
+## 4. Choose devices and networks
 
 Open **Connections → Clients**. Network defaults apply to matching subnets; per-device entries let you select a policy for individual clients. **Split** uses selective rules, **Full** selects a default connection, and **Off** bypasses KeenProxy interception for that policy. Review both the device and network settings before Apply. When available, the device row also shows a discovered hostname and its DHCP/DNS source. A manually assigned name takes priority; searching matches either name. Discovery refreshes in the background and does not write names to configuration.
 
 ![Networks and individual client policies](../assets/screenshots/en-clients.png)
 
-## 6. Review and Apply
+## 5. Review and Apply
 
 The change bar appears whenever the draft differs from the saved configuration. Review changes across screens, then choose **Apply** once. Wait for success. If validation/application fails, read the error and correct the draft. **Discard** restores the last saved snapshot.
 
 ![A pending change with shared Apply and Discard controls](../assets/screenshots/en-apply.png)
 
-## 7. Verify the result
+## 6. Verify the result
 
 Open **Diagnostics** to see core uptime, applied configuration, interception, DNS settings, GeoIP, and the firewall restoration counter. Select an applied connection and choose **Run checks** to test HTTP, HTTPS with certificate verification, and a 64 KiB transfer separately. A new or edited profile must be applied first. The results leave the active failover selection unchanged. The DNS row describes the configured path. Use [a test from the affected device](network-flow.md#how-to-trace-one-request) to verify the actual path. The browser demo labels its check results as simulated and hides the ZIP download button.
 
@@ -223,7 +198,7 @@ Open **Logs** and switch between **Routing**, **Audit**, and **System**. In **Ro
 
 ![Routing journal with synthetic records](../assets/screenshots/en-journal.png)
 
-## 8. Find settings and manage backups
+## 7. Find settings and manage backups
 
 Open **Settings** with the gear icon. On narrow screens, choose a section from the dropdown. **DNS** opens by default. Use **YAML configuration** to manage backups. Use **Network and interception** for REDIRECT/TPROXY and interfaces, **Panel access** for the listener, and **Country databases** for GeoIP status. Use **Language and theme** for browser preferences. Routing and access changes use the shared **Apply** action. Changing the panel listener also requires a service restart. **Updates** has its own controls.
 
@@ -254,7 +229,7 @@ system:
 
 Only positive whole MiB values are accepted. To remove the override, omit `memory_limit_mib`, rather than setting it to zero. The demo saves this setting in memory without imposing a real process limit.
 
-## 9. Install or roll back a release
+## 8. Install or roll back a release
 
 The panel footer shows the running release and build variant, architecture, and short commit hash. A local build may lack a release tag or commit hash. **Settings → Updates** also shows the available update and the previous version when known. **Diagnostics → Build details** lets you copy the running build identity. The diagnostics ZIP includes the same information in `status.json`.
 

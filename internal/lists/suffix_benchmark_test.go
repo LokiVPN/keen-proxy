@@ -1,4 +1,4 @@
-package filterlist
+package lists
 
 import (
 	"fmt"

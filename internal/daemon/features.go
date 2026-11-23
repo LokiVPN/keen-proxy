@@ -11,7 +11,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/dnsfront"
-	"github.com/ordo-systems/keen-proxy/internal/filterlist"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
@@ -37,31 +36,10 @@ type DNSCheck struct {
 	Latency int64  `json:"latency_ms"`
 	Route   string `json:"route"`
 	Error   string `json:"error,omitempty"`
-	Demo    bool   `json:"demo,omitempty"`
 }
 
 // DNSInfo returns the last resolver check under the feature-state lock.
 func (d *Daemon) DNSInfo() DNSInfo { d.featureMu.Lock(); defer d.featureMu.Unlock(); return d.dnsInfo }
-
-// FilterStatus reports the state of each configured DNS filter snapshot.
-func (d *Daemon) FilterStatus() []filterlist.State { return d.filters.Status() }
-
-// RefreshFilters manually refreshes enabled lists without requiring automatic updates.
-func (d *Daemon) RefreshFilters(ctx context.Context) error { return d.filters.Refresh(ctx, false) }
-
-// runFilterUpdates checks for due filter refreshes hourly until cancellation.
-func (d *Daemon) runFilterUpdates(ctx context.Context) {
-	for {
-		if err := d.filters.Refresh(ctx, true); err != nil {
-			d.log.Warn("filter update", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Hour):
-		}
-	}
-}
 
 // managedConn releases dial-context resources exactly once when closed.
 type managedConn struct {

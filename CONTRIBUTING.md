@@ -28,7 +28,7 @@ The main code boundaries are:
 | `internal/compile` | Deterministic sing-box/rule-set/firewall-plan generation |
 | `internal/daemon` | Runtime lifecycle, applying changes, recovery, and health |
 | `internal/netfilter` | Owned iptables chains and policy-routing lifecycle |
-| `internal/dnsfront`, `domaincache`, `filterlist` | DNS transport, bounded observations, and DNS-only filtering |
+| `internal/dnsfront`, `domaincache` | DNS transport and bounded observations |
 | `internal/engine`, `links`, `trusttunnel` | Embedded engine and protocol/client adaptation |
 | `internal/api`, `journal`, `stats` | Authenticated management, journals, and telemetry |
 

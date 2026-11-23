@@ -193,3 +193,15 @@ func TestDeprecatedTokenSettingsAreAcceptedAndIgnored(t *testing.T) {
 		t.Error("defaults were not applied")
 	}
 }
+
+func TestParseRejectsRemovedSections(t *testing.T) {
+	for _, section := range []string{
+		"filters:\n  sources: []\n",
+		"local_presets:\n  - id: mine\n    name: Mine\n",
+	} {
+		_, err := Parse([]byte(validYAML + section))
+		if err == nil || !strings.Contains(err.Error(), strings.SplitN(section, ":", 2)[0]) {
+			t.Fatalf("section %q accepted or wrong error: %v", section, err)
+		}
+	}
+}

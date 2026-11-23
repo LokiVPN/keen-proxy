@@ -16,7 +16,6 @@ func TestSupportExportsKeepActivationMetadataPrivate(t *testing.T) {
 	fake.cfg.Groups = []model.Group{{
 		Name: "rules", Target: model.TargetDirect,
 		Entries: []string{private}, DisabledEntries: []string{private, historical},
-		Preset: &model.Preset{ID: "saved", Base: []string{private}},
 	}}
 	raw, err := json.Marshal(supportConfig(fake.cfg, func(kind, value string) string { return kind + "-alias" }))
 	if err != nil {

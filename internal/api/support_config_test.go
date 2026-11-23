@@ -33,7 +33,7 @@ func TestSupportConfigKeepsPolicyTopologyWithoutExposingUserValues(t *testing.T)
 			{ID: "PRIVATE-unknown", Type: "PRIVATE-unknown-type", Endpoint: map[string]any{"type": "PRIVATE-raw-type"}},
 		},
 		Groups: []model.Group{
-			{Name: "PRIVATE-group", Target: "PRIVATE-main", Entries: []string{"*.Private-store.example. # PRIVATE-comment", "203.0.113.12", "203.0.113.0/24", "PRIVATE-invalid-entry"}, Preset: &model.Preset{ID: "PRIVATE-preset", Version: "PRIVATE-revision", Base: []string{"PRIVATE-base"}, AutoUpdate: true}},
+			{Name: "PRIVATE-group", Target: "PRIVATE-main", Entries: []string{"*.Private-store.example. # PRIVATE-comment", "203.0.113.12", "203.0.113.0/24", "PRIVATE-invalid-entry"}},
 			{Name: "PRIVATE-geo-group", Target: model.TargetBlock, Countries: []string{"US"}, Categories: []string{"PRIVATE-category"}, Except: true},
 		},
 		Networks: []model.Network{
@@ -44,7 +44,6 @@ func TestSupportConfigKeepsPolicyTopologyWithoutExposingUserValues(t *testing.T)
 			{Name: "PRIVATE-person", MAC: "02:00:00:00:00:01", IP: "192.0.2.9", Mode: model.ModeOff},
 			{Name: "PRIVATE-auto-address", MAC: "02:00:00:00:00:02", Mode: model.ModeInherit},
 		},
-		Filters: model.Filters{Sources: []model.FilterSource{{ID: "PRIVATE-filter", Name: "PRIVATE-filter-name", URL: "https://PRIVATE-filter.example", Enabled: true}}, Exceptions: []string{"PRIVATE-exception.example"}},
 		GeoIP: model.GeoIP{URL: "https://PRIVATE-legacy.example", File: "/opt/PRIVATE-legacy-file", Databases: []model.GeoIPDatabase{
 			{ID: "PRIVATE-geo", Name: "PRIVATE-geo-name", URL: "https://PRIVATE-geo.example", File: "/opt/PRIVATE-geo-file", Kind: "PRIVATE-geo-kind", Enabled: true},
 		}},
@@ -92,7 +91,7 @@ func TestSupportConfigKeepsPolicyTopologyWithoutExposingUserValues(t *testing.T)
 		`"fallback":"direct"`, `"target":"block"`, `"protocol":"vless"`, `"protocol":"trojan"`,
 		`"type":"amneziawg"`, `"protocol":"amneziawg"`, `"protocol":"trusttunnel"`,
 		`"id":"group-store"`, `"host":"host-store"`, `"ip":"ip-address"`, `"id":"network-one"`, `"id":"client-one"`,
-		`"auto_update":true`, `"except":true`, `"interval":20`,
+		`"except":true`, `"interval":20`,
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("projection lost %s: %s", want, output)

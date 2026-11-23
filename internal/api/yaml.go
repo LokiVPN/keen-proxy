@@ -6,12 +6,12 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
-// Bound input before YAML allocates its document tree. Raw transport still
-// leaves room for a large local preset copied into a routing group.
+// Bound input before YAML allocates its document tree.
 const maxYAMLImportBytes = 3 << 20
 
 // decodeFeatureRequest accepts one JSON value up to 2 MiB and rejects unknown fields.
@@ -44,7 +44,6 @@ func (s *Server) yamlExport(w http.ResponseWriter, r *http.Request) {
 		// An intentionally non-restorable support file. Clear entire connection
 		// profiles, including AmneziaWG text, instead of guessing secret field names.
 		cp := c.Clone()
-		cp.LocalPresets = nil
 		cp.Subscriptions = nil
 		cp.DNS.Upstreams = []string{"REDACTED"}
 		cp.DNS.BypassSources = nil
@@ -54,9 +53,6 @@ func (s *Server) yamlExport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cp.Failover.URL = "REDACTED"
-		for i := range cp.Filters.Sources {
-			cp.Filters.Sources[i].URL = "REDACTED"
-		}
 		for i := range cp.Connections {
 			cn := &cp.Connections[i]
 			cn.Link = "REDACTED"
@@ -88,7 +84,7 @@ func (s *Server) yamlExport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) previousConfig(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.D.(interface{ PreviousConfig() (*model.Config, error) })
 	if !ok {
-		writeError(w, 404, "Previous file is unavailable in demo")
+		writeError(w, 404, "Previous file is unavailable")
 		return
 	}
 	c, err := d.PreviousConfig()
@@ -147,4 +143,20 @@ func (s *Server) yamlImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, c)
+}
+
+// A stalled upload must not hold the import gate indefinitely.
+func setFileConversionDeadlines(w http.ResponseWriter) {
+	controller := http.NewResponseController(w)
+	readDeadline := time.Now().Add(time.Minute)
+	_ = controller.SetReadDeadline(readDeadline)
+	_ = controller.SetWriteDeadline(readDeadline.Add(time.Minute))
+}
+
+func rejectResourceRequest(w http.ResponseWriter, r *http.Request, status int, message string) {
+	// Avoid draining an unread HTTP/1 body just to keep a connection reusable.
+	if r.ProtoMajor == 1 && r.ContentLength != 0 {
+		w.Header().Set("Connection", "close")
+	}
+	writeError(w, status, message)
 }

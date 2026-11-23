@@ -28,7 +28,6 @@ type DomainStatus struct {
 	Error       string               `json:"error,omitempty"`
 	WrittenAt   time.Time            `json:"written_at"`
 	Application string               `json:"application"`
-	Demo        bool                 `json:"demo,omitempty"`
 }
 
 // observeDomain retains device DNS answers only for currently configured domains.

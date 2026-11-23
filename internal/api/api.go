@@ -24,7 +24,6 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/links"
 	"github.com/ordo-systems/keen-proxy/internal/model"
-	"github.com/ordo-systems/keen-proxy/internal/resourceexchange"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/trusttunnel"
 	"github.com/ordo-systems/keen-proxy/internal/update"
@@ -65,16 +64,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/diagnostics/bundle", s.auth(s.supportBundle))
 	mux.Handle("GET /api/diagnostics/tproxy", s.auth(s.tproxyReadiness))
 	mux.Handle("POST /api/diagnostics/tproxy/retry", s.auth(s.retryTProxy))
-	mux.Handle("GET /api/catalog", s.auth(s.catalog))
-	mux.Handle("GET /api/features", s.auth(s.features))
-	mux.Handle("POST /api/presets/preview", s.auth(s.presetPreview))
-	mux.Handle("POST /api/resources/preview", s.resourceExchange("application/octet-stream", resourceexchange.MaxFileBytes, previewResources))
-	mux.Handle("POST /api/resources/export", s.resourceExchange("application/json", maxResourceExportBytes, exportResources))
 	mux.Handle("GET /api/subscriptions/status", s.auth(s.subscriptionStatus))
 	mux.Handle("POST /api/subscriptions/preview", s.auth(s.subscriptionPreview))
 	mux.Handle("POST /api/subscriptions/{id}/refresh", s.auth(s.subscriptionRefresh))
 	mux.Handle("POST /api/subscriptions/{id}/check", s.auth(s.subscriptionCheck))
-	mux.Handle("POST /api/filters/refresh", s.auth(s.refreshFilters))
 	mux.Handle("POST /api/dns/check", s.auth(s.checkDNS))
 	mux.Handle("GET /api/geoip", s.auth(s.geoDatabases))
 	mux.Handle("POST /api/geoip/update", s.auth(s.updateGeo))

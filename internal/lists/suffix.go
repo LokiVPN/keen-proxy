@@ -1,6 +1,4 @@
-// Package filterlist implements bounded DNS-only lists, independent of routing
-// groups and the small DNS-answer IP cache.
-package filterlist
+package lists
 
 import (
 	"bufio"
@@ -13,6 +11,9 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
+
+// Compact sorted suffix lists for large external domain sets: Parse reads
+// plain, hosts and basic Adblock DNS formats; matches does the suffix lookup.
 
 // MaxBytes bounds the downloaded text accepted by Parse.
 const MaxBytes = 8 << 20

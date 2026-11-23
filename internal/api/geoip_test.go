@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
-	"strings"
 	"testing"
 
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
@@ -56,9 +55,5 @@ func TestGeoEndpoints(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &list)
 	if len(list.Databases) != len(cfg.GeoIP.Databases) {
 		t.Fatalf("list: %s", w.Body)
-	}
-	w = do(t, h, "GET", "/api/catalog", "", "secret", local)
-	if !strings.Contains(w.Body.String(), `"geoip":[{"id":"dbip"`) {
-		t.Fatalf("catalog: %s", w.Body)
 	}
 }
