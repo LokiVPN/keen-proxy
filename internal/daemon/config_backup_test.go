@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,24 +18,9 @@ import (
 // Older releases read only version 1 files. The first save over such a file
 // keeps it byte for byte as config.v1.yaml; later saves leave that copy alone.
 func TestApplyBacksUpV1BeforeFirstWrite(t *testing.T) {
-	holdMemoryLimit(t)
-	baseline := int64(300) * memoryMiB
-	debug.SetMemoryLimit(baseline)
-	cfg := quietConfig(t)
-	cfg.SchemaVersion = 1
-	raw, err := cfg.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := append([]byte("# saved by an older release\n"), raw...)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	d, path, original := startV1Daemon(t, withConnection(t))
+	dir := filepath.Dir(path)
 	backup := filepath.Join(dir, "config.v1.yaml")
-
-	d, _ := startMemoryDaemon(t, path, &gateRunner{}, baseline)
 	if got := d.Config().SchemaVersion; got != 1 {
 		t.Fatalf("loaded schema_version %d, want 1 until the first save", got)
 	}
@@ -64,6 +51,45 @@ func TestApplyBacksUpV1BeforeFirstWrite(t *testing.T) {
 	}
 }
 
+// The installer's placeholder file lists no connections or subscriptions, so
+// a rollback has nothing to restore from it and no backup is kept.
+func TestApplySkipsBackupOfPlaceholderV1(t *testing.T) {
+	d, path, _ := startV1Daemon(t, quietConfig(t))
+	if err := d.Apply(context.Background(), d.Config()); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "config.v1*")); err != nil || len(matches) != 0 {
+		t.Fatalf("placeholder backups = %v, %v", matches, err)
+	}
+	if saved, err := model.Load(path); err != nil || saved.SchemaVersion != 2 {
+		t.Fatalf("saved config = %+v, %v; want schema_version 2", saved, err)
+	}
+}
+
+// Without a backup, a save must not replace a file that older releases read.
+func TestApplyKeepsV1FileWhenBackupFails(t *testing.T) {
+	d, path, original := startV1Daemon(t, withConnection(t))
+	dir := filepath.Dir(path)
+	// Directories take config.v1.yaml and each timestamped name for two minutes.
+	names := []string{"config.v1.yaml"}
+	for now, s := time.Now().Unix(), int64(-1); s <= 120; s++ {
+		names = append(names, fmt.Sprintf("config.v1.%d.yaml", now+s))
+	}
+	for _, name := range names {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := d.Apply(context.Background(), d.Config())
+	if err == nil || !strings.Contains(err.Error(), "not saved") || !strings.Contains(err.Error(), "older releases") {
+		t.Fatalf("apply without a free backup name: %v", err)
+	}
+	assertSavedBytes(t, path, original)
+	if _, err := os.Stat(path + ".previous"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused save wrote the previous configuration: %v", err)
+	}
+}
+
 func TestBackupV1ConfigNeverReplacesAFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -81,6 +107,35 @@ func TestBackupV1ConfigNeverReplacesAFile(t *testing.T) {
 	}
 	assertSavedBytes(t, first, []byte("first\n"))
 	assertSavedBytes(t, got, []byte("second\n"))
+}
+
+// startV1Daemon saves cfg as a version 1 file, led by a comment that a
+// re-marshal would drop, and runs a daemon from it. It returns the file bytes.
+func startV1Daemon(t *testing.T, cfg *model.Config) (*Daemon, string, []byte) {
+	t.Helper()
+	holdMemoryLimit(t)
+	baseline := int64(300) * memoryMiB
+	debug.SetMemoryLimit(baseline)
+	cfg.SchemaVersion = 1
+	raw, err := cfg.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := append([]byte("# saved by an older release\n"), raw...)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := startMemoryDaemon(t, path, &gateRunner{}, baseline)
+	return d, path, original
+}
+
+// withConnection returns a quiet configuration with one connection profile,
+// which makes its file worth keeping for older releases.
+func withConnection(t *testing.T) *model.Config {
+	cfg := quietConfig(t)
+	cfg.Connections = []model.Connection{{ID: "vpn", Name: "VPN", Type: model.ConnLink, Link: "socks5://203.0.113.1:1080"}}
+	return cfg
 }
 
 func assertSavedBytes(t *testing.T, path string, want []byte) {

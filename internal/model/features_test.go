@@ -55,9 +55,27 @@ func TestSchemaVersionsOneAndTwoLoad(t *testing.T) {
 		"schema_version: 2\nfilters: [legacy]\n": 2,
 		"api: {listen: 127.0.0.1:8086}\n":        0,
 		"\x00{{ not yaml":                        0,
+		"- not\n- a mapping\n":                   0,
 	} {
 		if got := FileSchemaVersion([]byte(raw)); got != want {
 			t.Errorf("FileSchemaVersion(%q) = %d, want %d", raw, got, want)
+		}
+	}
+}
+
+// Installer placeholders have no profiles; unreadable files count as having them.
+func TestFileHasProfiles(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"schema_version: 1\n":                            false,
+		"schema_version: 1\nlan:\n  interface: br-lan\n": false,
+		"connections: []\nsubscriptions: []\n":           false,
+		"connections: [{id: vpn}]\n":                     true,
+		"subscriptions: [{id: lokivpn}]\n":               true,
+		"connections: {id: vpn}\n":                       true,
+		"\x00{{ not yaml":                                true,
+	} {
+		if got := FileHasProfiles([]byte(raw)); got != want {
+			t.Errorf("FileHasProfiles(%q) = %t, want %t", raw, got, want)
 		}
 	}
 }

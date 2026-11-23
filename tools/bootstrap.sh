@@ -308,22 +308,49 @@ restore_payload() {
     done
 }
 
-# An older release cannot read the newer schema. Keep the newer file as
-# config.v2.yaml, or under a timestamped name rather than replacing an earlier
-# copy, and install the file the daemon kept for older releases.
+# Print the most recently modified copy the daemon kept for older releases:
+# config.v1.yaml or config.v1.<unix seconds>.yaml.
+newest_kept_config() {
+    newest_kept=
+    for kept in "${config%/*}/config.v1.yaml" "${config%/*}"/config.v1.*.yaml; do
+        [ -f "$kept" ] && [ ! -L "$kept" ] || continue
+        if [ -z "$newest_kept" ] || [ "$kept" -nt "$newest_kept" ]; then newest_kept=$kept; fi
+    done
+    printf '%s' "$newest_kept"
+}
+
+# An older release cannot read the newer schema. Keep a copy of the newer file
+# as config.v2.yaml, or under a timestamped name rather than replacing an
+# earlier copy, then atomically replace the configuration with the kept file.
 switch_config() {
     config_newer="${config%/*}/config.v2.yaml"
     if [ -e "$config_newer" ] || [ -L "$config_newer" ]; then
         config_newer="${config%/*}/config.v2.$(date +%s).yaml"
         [ ! -e "$config_newer" ] && [ ! -L "$config_newer" ] || return 1
     fi
+    config_temp=$(mktemp "${config%/*}/.config.yaml.XXXXXX") || return 1
+    if ! { cp "$config_kept" "$config_temp" && cp -p "$config" "$config_newer"; }; then
+        rm -f "$config_newer"
+        return 1
+    fi
     config_switched=1
-    mv "$config" "$config_newer" && cp "$config_kept" "$config"
+    mv -f "$config_temp" "$config"
+}
+
+# A new daemon can rewrite the configuration as soon as it starts, for example
+# when it resets a v0.10 file. Keep the file so a failed update restores it.
+snapshot_config() {
+    config_snapshot="$work/previous/etc/keenproxy/config.yaml"
+    mkdir -p "${config_snapshot%/*}" && cp -p "$config" "$config_snapshot"
 }
 
 restore_config() {
-    [ "$config_switched" = 1 ] && [ -e "$config_newer" ] || return 0
-    mv -f "$config_newer" "$config"
+    if [ -n "$config_temp" ]; then rm -f "$config_temp"; fi
+    if [ "$config_switched" = 1 ]; then
+        [ ! -e "$config_newer" ] || mv -f "$config_newer" "$config"
+    elif [ -n "$config_snapshot" ] && [ -f "$config_snapshot" ] && ! cmp -s "$config_snapshot" "$config"; then
+        mv -f "$config_snapshot" "$config"
+    fi
 }
 
 # Quote one shell word so a copy-pasted command keeps spaces and quotes.
@@ -480,6 +507,8 @@ work=
 service_lock=
 config_kept=
 config_newer=
+config_temp=
+config_snapshot=
 config_switched=0
 replacing=0
 start_attempted=0
@@ -548,9 +577,9 @@ fi
 chmod 755 "$work/$asset"
 # Dry-run output can contain connection credentials. Keep it off the console.
 if ! "$work/$asset" -dry-run -config "$config_source" >/dev/null 2>&1; then
-    # On a rollback, use the file the daemon kept before its first newer-schema write.
-    config_kept="${config%/*}/config.v1.yaml"
-    [ "$config_source" = "$config" ] && [ -f "$config_kept" ] && [ ! -L "$config_kept" ] &&
+    # On a rollback, use the newest file the daemon kept before newer-schema writes.
+    config_kept=$(newest_kept_config)
+    [ "$config_source" = "$config" ] && [ -n "$config_kept" ] &&
         "$work/$asset" -dry-run -config "$config_kept" >/dev/null 2>&1 ||
         fail 'candidate binary or configuration failed validation'
 fi
@@ -607,6 +636,8 @@ if [ "$changed" = 1 ]; then
     replacing=1
     if [ -n "$config_kept" ]; then
         switch_config || fail 'could not switch to the configuration kept for this release'
+    else
+        snapshot_config || fail 'could not keep a copy of the configuration'
     fi
     install_payload || fail 'could not install staged files'
     start_attempted=1

@@ -704,6 +704,20 @@ func FileSchemaVersion(raw []byte) int {
 	return head.SchemaVersion
 }
 
+// FileHasProfiles reports whether saved YAML lists a connection or a
+// subscription, unlike the installer's placeholder file. Unreadable YAML
+// counts as having them, so callers keep such a file.
+func FileHasProfiles(raw []byte) bool {
+	var head struct {
+		Connections   []yaml.Node `yaml:"connections"`
+		Subscriptions []yaml.Node `yaml:"subscriptions"`
+	}
+	if yaml.Unmarshal(raw, &head) != nil {
+		return true
+	}
+	return len(head.Connections) > 0 || len(head.Subscriptions) > 0
+}
+
 // Marshal serializes configuration as YAML for persistence.
 func (c *Config) Marshal() ([]byte, error) {
 	return yaml.Marshal(c)

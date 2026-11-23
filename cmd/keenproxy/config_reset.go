@@ -16,35 +16,41 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
-// loadOrReset loads the configuration file. A file this release cannot load,
-// such as a v0.10 file with removed sections, is replaced by defaults that
-// keep only the API address, the LAN section and the first valid
-// subscription, so an unattended upgrade keeps the VPN subscription.
+// resetReason replaces the load error in reset messages: that error can quote
+// a share link together with its credentials.
+const resetReason = "an older or unreadable configuration does not load in this release"
+
+// loadOrReset loads the configuration file. A file older releases wrote
+// (schema_version below 2) or whose version cannot be read, and that this
+// release cannot load, such as a v0.10 file with removed sections, is
+// replaced by defaults that keep only the API address, the LAN section and
+// the first valid subscription, so an unattended upgrade keeps the VPN
+// subscription. A schema 2 file that does not load returns the load error.
 //
 // With write, the original bytes are first kept as config.v1.yaml (see
 // daemon.BackupV1Config) and the reset file is then saved in the current
 // schema. Without write nothing is changed and the reset is only reported.
 // A file that cannot be read returns the read error, as model.Load does.
-// Log lines never contain the subscription URL.
+// Reset messages never contain the load error or the subscription URL.
 func loadOrReset(path string, log *slog.Logger, write bool) (*model.Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	cfg, loadErr := model.Parse(raw)
-	if loadErr == nil {
-		return cfg, nil
+	cfg, err := model.Parse(raw)
+	if err == nil || model.FileSchemaVersion(raw) >= model.SchemaVersion {
+		return cfg, err
 	}
 	cfg = resetConfig(raw)
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("%w; reset configuration is also invalid: %w", loadErr, err)
+		return nil, fmt.Errorf("configuration reset: defaults are invalid: %w", err)
 	}
 	kept := ""
 	if len(cfg.Subscriptions) > 0 {
 		kept = cfg.Subscriptions[0].ID
 	}
 	if !write {
-		log.Warn("configuration would be reset after upgrade", "subscription_kept", kept, "err", loadErr)
+		log.Warn("configuration would be reset after upgrade", "reason", resetReason, "subscription_kept", kept)
 		return cfg, nil
 	}
 	data, err := cfg.Marshal()
@@ -53,12 +59,12 @@ func loadOrReset(path string, log *slog.Logger, write bool) (*model.Config, erro
 	}
 	backup, err := daemon.BackupV1Config(path, raw, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("%w; original configuration was not kept: %w", loadErr, err)
+		return nil, fmt.Errorf("configuration reset: original configuration was not kept: %w", err)
 	}
 	if err := replaceFile(path, data); err != nil {
-		return nil, fmt.Errorf("%w; reset configuration was not saved: %w", loadErr, err)
+		return nil, fmt.Errorf("configuration reset: reset configuration was not saved: %w", err)
 	}
-	log.Warn("configuration reset after upgrade", "backup", backup, "subscription_kept", kept, "err", loadErr)
+	log.Warn("configuration reset after upgrade", "reason", resetReason, "backup", backup, "subscription_kept", kept)
 	return cfg, nil
 }
 

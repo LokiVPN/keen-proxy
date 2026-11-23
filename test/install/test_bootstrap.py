@@ -4,12 +4,18 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ACCESS_URL = 'http://192.0.2.10:8086'
 # A release from before schema 2: its dry run rejects files this release writes.
 SCHEMA_1_DRY_RUN = 'if grep -qx "schema_version: 2" "$3"; then exit 1; fi\nexit 0'
+FIXTURE_CONFIG = '"$KEENPROXY_PREFIX/etc/keenproxy/config.yaml"'
+# Start hooks: a release from before schema 2 cannot start on a schema 2 file,
+# and a schema 2 daemon rewrites an older file as soon as it starts.
+SCHEMA_1_START = f'! grep -qx "schema_version: 2" {FIXTURE_CONFIG} || exit 1; '
+RESET_ON_START = f'printf "schema_version: 2\\n" > {FIXTURE_CONFIG}; '
 
 class BootstrapFixture(unittest.TestCase):
     prefix_name = 'opt'
@@ -76,7 +82,7 @@ cp "$FIXTURES/$path" "$out"
         )
 
     def release(self, tag, arch='arm64', lite=False, start=True, dry_run='exit 0',
-                stop='rm -f "$state"', url=None):
+                stop='rm -f "$state"', url=None, on_start=''):
         if url is None:
             url = self.url_boundary(f"echo '{ACCESS_URL}'\nexit 0\n")
         folder = self.mirror / tag
@@ -85,7 +91,7 @@ cp "$FIXTURES/$path" "$out"
         script = (
             '#!/bin/sh\n'
             f'# {tag}\n'
-            f'if [ "$1" = --fixture-start ]; then exit {0 if start else 1}; fi\n'
+            f'if [ "$1" = --fixture-start ]; then {on_start}exit {0 if start else 1}; fi\n'
             'if [ "$1" = --url ]; then\n'
             + url +
             'fi\n'
@@ -436,6 +442,59 @@ done
         self.assertEqual(len(later), 1, later)
         self.assertRegex(later[0].name, r'^config\.v2\.\d+\.yaml$')
         self.assertEqual(later[0].read_text(), changed)
+
+    def test_rollback_uses_the_newest_kept_configuration(self):
+        newer, kept = self.newer_configuration()
+        latest = 'schema_version: 1\n# kept by the latest upgrade\n'
+        backups = {'config.v1.yaml': (kept, 100),
+                   'config.v1.1700000000.yaml': (latest, 10),
+                   'config.v1.1800000000.yaml': ('schema_version: 1\n# oldest\n', 200)}
+        now = time.time()
+        for name, (text, age) in backups.items():
+            self.config.with_name(name).write_text(text)
+            os.utime(self.config.with_name(name), (now - age, now - age))
+        self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN)
+        result = self.install('--version', 'v1.2.3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config.read_text(), latest)
+        self.assertEqual(self.config.with_name('config.v2.yaml').read_text(), newer)
+        for name, (text, _) in backups.items():
+            self.assertEqual(self.config.with_name(name).read_text(), text)
+
+    def test_failed_switch_leaves_the_newer_configuration_in_place(self):
+        newer, kept = self.newer_configuration()
+        current = self.binary.read_bytes()
+        self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN)
+        # Copying the newer file fails after writing part of it.
+        self.command('cp', '''
+for last in "$@"; do :; done
+case "$last" in */config.v2.yaml) printf partial > "$last"; exit 1 ;; esac
+exec /bin/cp "$@"
+''')
+        result = self.install('--version', 'v1.2.3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not switch', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), current)
+        self.assertEqual(self.config.read_text(), newer)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertEqual(sorted(p.name for p in self.config.parent.iterdir()),
+                         ['config.v1.yaml', 'config.yaml'])
+        self.assertTrue((self.prefix / 'running').exists())
+
+    def test_failed_upgrade_restores_the_configuration_the_new_daemon_rewrote(self):
+        first = self.release('v1.2.3', on_start=SCHEMA_1_START)
+        self.assertEqual(self.install().returncode, 0)
+        original = 'schema_version: 1\nfilters: []\n# settings from v0.10\n'
+        self.config.write_text(original)
+        mode = self.config.stat().st_mode & 0o777
+        self.release('v1.2.4', start=False, on_start=RESET_ON_START)
+        result = self.install('--version', 'v1.2.4')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('restoring the previous installation', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), first.read_bytes())
+        self.assertEqual(self.config.read_text(), original)
+        self.assertEqual(self.config.stat().st_mode & 0o777, mode)
+        self.assertTrue((self.prefix / 'running').exists())
 
     def test_failed_rollback_restores_the_newer_configuration(self):
         newer, kept = self.newer_configuration()

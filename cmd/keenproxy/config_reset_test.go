@@ -170,6 +170,69 @@ func TestLoadOrResetInvalidYAML(t *testing.T) {
 	}
 }
 
+// A schema 2 file was written by this release or a newer one. A file of that
+// kind that does not load stays an error instead of being reset.
+func TestLoadOrResetKeepsBrokenV2AsError(t *testing.T) {
+	const body = "schema_version: 2\nfilters: []\n"
+	dir, path := writeConfigFile(t, body)
+	log, logs := bufferLog()
+	if _, err := loadOrReset(path, log, true); err == nil || !strings.Contains(err.Error(), "filters") {
+		t.Fatalf("broken schema 2 file: %v", err)
+	}
+	assertFileBytes(t, path, body)
+	assertDirNames(t, dir, "config.yaml")
+	if logs.Len() != 0 {
+		t.Fatalf("broken schema 2 file logged: %s", logs)
+	}
+	work := t.TempDir()
+	if stdout, stderr, code := runKeenproxy(t, "-dry-run", "-config", path,
+		"-arp", filepath.Join(work, "arp"), "-rule-sets", filepath.Join(work, "rule-sets")); code == 0 {
+		t.Fatalf("dry run accepted a broken schema 2 file: stdout %q stderr %q", stdout, stderr)
+	}
+	assertFileBytes(t, path, body)
+	assertDirNames(t, dir, "config.yaml")
+}
+
+// v1BrokenLink fails strict loading with an error that quotes the share link,
+// including its credentials.
+const v1BrokenLink = `schema_version: 1
+connections:
+  - id: broken
+    name: Broken
+    type: link
+    link: vless://fixture-secret@[bad
+subscriptions:
+  - id: lokivpn
+    url: https://sub.example.net/s/x
+`
+
+func TestResetMessagesOmitTheLoadError(t *testing.T) {
+	if _, err := model.Parse([]byte(v1BrokenLink)); err == nil || !strings.Contains(err.Error(), "fixture-secret") {
+		t.Fatalf("fixture no longer produces an error that quotes the link: %v", err)
+	}
+	dir, path := writeConfigFile(t, v1BrokenLink)
+	work := t.TempDir()
+	stdout, stderr, code := runKeenproxy(t, "-dry-run", "-config", path,
+		"-arp", filepath.Join(work, "arp"), "-rule-sets", filepath.Join(work, "rule-sets"))
+	if code != 0 || !strings.Contains(stderr, "configuration would be reset after upgrade") {
+		t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	log, logs := bufferLog()
+	cfg, err := loadOrReset(path, log, true)
+	if err != nil || len(cfg.Subscriptions) != 1 || len(cfg.Connections) != 0 {
+		t.Fatalf("reset = %+v, %v", cfg, err)
+	}
+	assertFileBytes(t, filepath.Join(dir, "config.v1.yaml"), v1BrokenLink)
+	if !strings.Contains(logs.String(), "configuration reset after upgrade") {
+		t.Fatalf("reset log = %s", logs)
+	}
+	for _, secret := range []string{"fixture-secret", "example.net"} {
+		if strings.Contains(stdout+stderr+logs.String(), secret) {
+			t.Fatalf("%q disclosed: dry run %q %q, log %q", secret, stdout, stderr, logs)
+		}
+	}
+}
+
 func TestLoadOrResetMissingFileFails(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := loadOrReset(filepath.Join(dir, "config.yaml"), slog.New(slog.NewTextHandler(io.Discard, nil)), true); !errors.Is(err, fs.ErrNotExist) {

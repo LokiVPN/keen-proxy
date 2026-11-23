@@ -42,9 +42,11 @@ func BackupV1Config(path string, raw []byte, now time.Time) (string, error) {
 }
 
 // keepV1Config backs up the saved file before the first write in the current
-// schema replaces a file that older releases can read.
+// schema replaces a file that older releases can read. A file without
+// connections or subscriptions, such as the installer's placeholder, has
+// nothing a rollback needs and is not kept.
 func keepV1Config(path string, previous []byte) error {
-	if model.FileSchemaVersion(previous) >= model.SchemaVersion {
+	if model.FileSchemaVersion(previous) >= model.SchemaVersion || !model.FileHasProfiles(previous) {
 		return nil
 	}
 	if _, err := BackupV1Config(path, previous, time.Now()); err != nil {
