@@ -44,6 +44,7 @@ func main() {
 	uiDemo := flag.Bool("ui-demo", false, "serve synthetic UI demo data without changing network state")
 	key := flag.Bool("key", false, "print the current panel token and exit")
 	showURL := flag.Bool("url", false, "print the configured panel URL and exit")
+	keeneticAuth := flag.String("keenetic-auth-origin", os.Getenv("KEENPROXY_KEENETIC_AUTH_ORIGIN"), "enable browser sign-in through the local KeeneticOS HTTP origin")
 	startupProtocol := flag.Bool("startup-state-protocol", false, "print the service readiness protocol version and exit")
 	flag.Parse()
 	if *startupProtocol {
@@ -93,7 +94,7 @@ func main() {
 		os.Exit(1)
 	}
 	if *uiDemo {
-		if err := serveAPI(ctx, cfg, api.NewDemo(cfg), nil, log, nil); err != nil {
+		if err := serveAPI(ctx, cfg, api.NewDemo(cfg), nil, log, "", nil); err != nil {
 			log.Error("web interface", "err", err)
 			os.Exit(1)
 		}
@@ -132,7 +133,7 @@ func main() {
 	go updates.Run(ctx)
 	// A management API failure must not stop the independent routing daemon.
 	go func() {
-		if err := serveAPI(ctx, cfg, d, updates, log, onAPIListening); err != nil {
+		if err := serveAPI(ctx, cfg, d, updates, log, *keeneticAuth, onAPIListening); err != nil {
 			log.Error("web interface failed to start", "err", err)
 		}
 	}()
@@ -205,7 +206,11 @@ func writeStartupState(path, mode string) error {
 
 // serveAPI serves management requests until cancellation, using startup bind
 // and token settings; it does not apply routing changes itself.
-func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, onListening func(context.Context)) error {
+func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, onListening func(context.Context)) error {
+	keenetic, err := api.NewKeeneticAuth(keeneticOrigin, cfg.API.Listen)
+	if err != nil {
+		return err
+	}
 	token, created, err := api.LoadToken(cfg.API.TokenFile)
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
@@ -215,7 +220,7 @@ func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *upd
 	}
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,
-		Handler:           (&api.Server{D: d, Token: token, UI: web.FS(), Log: log, Updates: updates}).Handler(),
+		Handler:           (&api.Server{D: d, Token: token, UI: web.FS(), Log: log, Updates: updates, Keenetic: keenetic}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ln, err := net.Listen("tcp", srv.Addr)

@@ -161,6 +161,7 @@ export interface Session {
   trusted: boolean // Address matches api.no_token_from; no token required.
   network?: string
   ip: string
+  keenetic_url?: string
 }
 
 export interface UpdatePreferences {

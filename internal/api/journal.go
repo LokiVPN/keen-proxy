@@ -85,9 +85,16 @@ func (s *Server) journalStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ping.C:
+			if s.Keenetic != nil && s.keeneticStatus(r) != http.StatusOK {
+				return
+			}
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		case e := <-ch:
+			// Recheck the OS session before exposing another batch of events.
+			if s.Keenetic != nil && s.keeneticStatus(r) != http.StatusOK {
+				return
+			}
 			raw, _ := json.Marshal(e)
 			fmt.Fprintf(w, "data: %s\n\n", raw)
 			// Batch writes to avoid flushing once per entry under load.

@@ -14,15 +14,21 @@ const router = useRouter()
 const token = ref('')
 const error = ref('')
 const loading = ref(false)
+const checked = ref(false)
+const keeneticURL = ref('')
 
 const next = () => (route.query.next as string) || '/'
 
-// Trusted-network sessions can enter the panel without a token.
+// Choose the sign-in action from the active server policy.
 onMounted(async () => {
   try {
-    if ((await store.loadSession()).authed) router.replace(next())
+    const session = await store.loadSession()
+    keeneticURL.value = session.keenetic_url ?? ''
+    if (session.authed) await router.replace(next())
   } catch {
     /* Keep the login screen when the session check fails. */
+  } finally {
+    checked.value = true
   }
 })
 
@@ -45,18 +51,26 @@ async function submit() {
     <NCard class="box" :bordered="false">
       <div class="brand"><span class="logo">K</span><b>keenProxy</b></div>
       <h2>{{ t('login.title') }}</h2>
-      <i18n-t keypath="login.hint" tag="p" class="muted">
-        <template #file><span class="mono">/opt/etc/keenproxy/token</span></template>
-      </i18n-t>
-      <form @submit.prevent="submit">
-        <NInput v-model:value="token" type="password" show-password-on="click" :placeholder="t('login.token')" size="large" autofocus>
-          <template #prefix><KeyRound :size="16" /></template>
-        </NInput>
-        <NAlert v-if="error" type="error" :show-icon="false" style="margin-top: 12px">{{ error }}</NAlert>
-        <NButton type="primary" size="large" block attr-type="submit" :loading="loading" :disabled="!token" style="margin-top: 16px">
-          {{ t('login.submit') }}
+      <template v-if="keeneticURL">
+        <p class="muted">{{ t('login.keeneticHint') }}</p>
+        <NButton tag="a" :href="keeneticURL" type="primary" size="large" block>
+          {{ t('login.openKeenetic') }}
         </NButton>
-      </form>
+      </template>
+      <template v-else-if="checked">
+        <i18n-t keypath="login.hint" tag="p" class="muted">
+          <template #file><span class="mono">/opt/etc/keenproxy/token</span></template>
+        </i18n-t>
+        <form @submit.prevent="submit">
+          <NInput v-model:value="token" type="password" show-password-on="click" :placeholder="t('login.token')" size="large" autofocus>
+            <template #prefix><KeyRound :size="16" /></template>
+          </NInput>
+          <NAlert v-if="error" type="error" :show-icon="false" style="margin-top: 12px">{{ error }}</NAlert>
+          <NButton type="primary" size="large" block attr-type="submit" :loading="loading" :disabled="!token" style="margin-top: 16px">
+            {{ t('login.submit') }}
+          </NButton>
+        </form>
+      </template>
     </NCard>
   </div>
 </template>

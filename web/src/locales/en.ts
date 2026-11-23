@@ -289,6 +289,8 @@ const en: Messages = {
   login: {
     title: 'Sign in to the panel',
     hint: 'The sign-in token is stored on the router in {file}. keenProxy also prints it to its log on first start.',
+    keeneticHint: 'Sign in to KeeneticOS with a management account, then open the KeenProxy card in Applications.',
+    openKeenetic: 'Open KeeneticOS',
     token: 'Token',
     submit: 'Sign in',
   },

@@ -22,7 +22,11 @@ func (s *Server) updateRoutes(mux *http.ServeMux) {
 
 func (s *Server) updateAuthorization(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.tokenOK(r) {
+		if s.Keenetic != nil {
+			if !s.allowKeenetic(w, r) {
+				return
+			}
+		} else if !s.tokenOK(r) {
 			writeError(w, http.StatusForbidden, "panel token required to manage updates")
 			return
 		}

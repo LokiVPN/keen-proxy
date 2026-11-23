@@ -46,6 +46,7 @@ class Scenario:
     role: str = "admin"
     authenticated: bool = True
     status: int | None = None
+    available_components: tuple[str, ...] = ()
 
 
 SCENARIOS = {
@@ -99,6 +100,8 @@ class Fixture:
 
     def rci(self, command):
         self.rci_commands.add(command)
+        if command == "components.list" and self.scenario.available_components:
+            return {"component": {name: {} for name in self.scenario.available_components}}
         restricted_tag = {"readonly": "readonly", "manager": "manager", "demo": "readonly"}
         tags = ["http", "cli"]
         if self.scenario.role in restricted_tag:

@@ -30,7 +30,8 @@ async function send(method: string, path: string, body?: unknown, fileType = 'ap
     body: file ?? (body === undefined ? undefined : JSON.stringify(body)),
   })
   if (!res.ok) {
-    if (res.status === 401 && path !== '/api/login') onUnauthorized()
+    const keeneticDenied = res.status === 403 && res.headers.get('X-KeenProxy-Auth') === 'keenetic'
+    if ((res.status === 401 || keeneticDenied) && path !== '/api/login') onUnauthorized()
     throw httpError(res.status, await res.text())
   }
   return res

@@ -21,6 +21,13 @@ keenproxy --url --config /path/to/config.yaml
 
 The URL follows `api.listen`; wildcard listeners use an address from the configured LAN interface. If that interface has no usable address, no address is guessed. A loopback listener remains accessible only from the router or through a suitable SSH tunnel. See [installation and updates](getting-started.md#install-or-update-from-github).
 
+### Use an existing KeeneticOS session
+
+With [KeeneticOS sign-in enabled](development.md#keenetic-auth), sign in to the
+router with a management account and select **Open panel** on the KeenProxy
+card in **Applications**. Use the router's local IP address. When your session
+ends, the panel returns to a sign-in screen with a link to KeeneticOS.
+
 ## 1. Read the overview
 
 Open **Overview** to see connection health, recent traffic, and the router's CPU and memory usage. The first resource row covers the whole router. The **KeenProxy** row shows its share of total router CPU time and its resident memory (RSS). This includes embedded sing-box. An external TrustTunnel client is measured by the router totals. When a new release is available, follow its notice to **Settings**. Traffic graphs describe observed activity and cannot establish whether traffic leaks.

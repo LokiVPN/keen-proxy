@@ -60,11 +60,12 @@ type Daemon interface {
 
 // Server binds daemon operations, authentication policy, and embedded UI assets.
 type Server struct {
-	D       Daemon
-	Token   string
-	UI      fs.FS
-	Log     *slog.Logger
-	Updates *update.Manager
+	D        Daemon
+	Token    string
+	UI       fs.FS
+	Log      *slog.Logger
+	Updates  *update.Manager
+	Keenetic *KeeneticAuth
 
 	supportBusy  atomic.Bool
 	resourceBusy atomic.Bool
@@ -185,10 +186,14 @@ func (s *Server) trustedNet(r *http.Request) (netip.Prefix, bool) {
 	return netip.Prefix{}, false
 }
 
-// auth accepts trusted-network peers or a valid token before calling the endpoint.
+// auth applies the configured authorization policy before calling the endpoint.
 func (s *Server) auth(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, trusted := s.trustedNet(r); !trusted && !s.tokenOK(r) {
+		if s.Keenetic != nil {
+			if !s.allowKeenetic(w, r) {
+				return
+			}
+		} else if _, trusted := s.trustedNet(r); !trusted && !s.tokenOK(r) {
 			writeError(w, http.StatusUnauthorized, "token login required")
 			return
 		}
@@ -199,6 +204,10 @@ func (s *Server) auth(h http.HandlerFunc) http.Handler {
 // login bounds token input, audits attempts, and issues a 30-day HttpOnly cookie.
 // Failed comparisons incur a fixed delay before the unauthorized response.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if s.Keenetic != nil {
+		writeKeeneticError(w, http.StatusForbidden)
+		return
+	}
 	var req struct {
 		Token string `json:"token"`
 	}
@@ -220,9 +229,18 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// session reports authentication requirements so trusted-network clients
-// can enter the UI without a login prompt.
+// session reports whether the browser can enter and where it should sign in.
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
+	if s.Keenetic != nil {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authed":       s.keeneticStatus(r) == http.StatusOK,
+			"trusted":      false,
+			"ip":           clientIP(r),
+			"keenetic_url": s.Keenetic.applicationsURL(),
+		})
+		return
+	}
 	p, trusted := s.trustedNet(r)
 	out := map[string]any{"authed": trusted || s.tokenOK(r), "trusted": trusted, "ip": clientIP(r)}
 	if trusted {
@@ -249,6 +267,12 @@ func (s *Server) firstTrustedVisit(ip string) bool {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if s.Keenetic != nil {
+		if status := s.Keenetic.logout(r); status != http.StatusOK {
+			writeKeeneticError(w, status)
+			return
+		}
+	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

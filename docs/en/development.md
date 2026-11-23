@@ -150,6 +150,71 @@ python3 -B test/keenetic-webui/orca_fixture.py \
   --firmware /path/to/KN-3812_stable_5.1.10_5.01.C.10.0-0.bin
 ```
 
+### KeenProxy shortcut in Applications
+
+The Applications preview loads a script and a stylesheet from
+`tools/keenetic-webui/` alongside the stock 5.1.10 assets. The card occupies
+the first column of the Applications grid on `/apps` and opens the current
+KeenProxy panel. It follows the stock column layout and stays visible when
+the built-in application list is empty. The default destination is HTTP
+port 8086 on the current host. A different deployment can set
+`data-keenproxy-panel-url` on the script element to an absolute HTTP or HTTPS
+panel URL.
+
+Run the firmware fixture with `--applications-card` to compare the stock
+and extended Applications pages. Add `--panel-url` to override the link in
+the preview, for example to open the demo when `make docs-preview` is running.
+
+```sh
+python3 -B test/keenetic-webui/orca_fixture.py \
+  --firmware /path/to/KN-3812_stable_5.1.10_5.01.C.10.0-0.bin \
+  --applications-card --panel-url http://127.0.0.1:8097/demo/
+```
+
+### Entware package for KN-3812
+
+Build the optional card package with Python 3.
+
+```sh
+python3 tools/keenetic-webui/build-ipk.py .agents-work/keenetic-app-card
+```
+
+Copy the resulting `keenproxy-app-card_0.1.0-1_all.ipk` to the router.
+Run the following command in the Entware shell, using the path to the copy.
+
+```sh
+opkg install /path/to/keenproxy-app-card_0.1.0-1_all.ipk
+```
+
+Open **Applications** at the usual KeeneticOS address and select
+**Open panel** on the KeenProxy card. The link points to the running panel
+on port 8086. The WebUI loads its Angular bundles from the firmware.
+At install and Entware startup the package verifies the KN-3812 stable 5.1.10
+(`5.01.C.10.0-0`) HTML, JavaScript and stylesheet fingerprints, then
+bind-mounts the HTML with the two card assets embedded. When the fingerprints
+change, the router serves its stock page.
+
+Remove the card and restore the stock page with `opkg remove keenproxy-app-card`.
+
+### KeeneticOS sign-in { #keenetic-auth }
+
+Start the KeenProxy service with `-keenetic-auth-origin http://ROUTER_LAN_IP`
+or set `KEENPROXY_KEENETIC_AUTH_ORIGIN` to that origin in its startup
+environment. Use the router's own IPv4 address and its local HTTP
+management port. Open the Applications card from that same IP address.
+This experimental mode targets the LAN HTTP session protocol in KeeneticOS
+5.1.10.
+
+KeenProxy verifies the current session and the account's permissions for
+each protected request. Access requires the Web interface and command-line
+management permissions. Read-only, manager and demo accounts are denied.
+Signing out of either panel ends the router session. An active journal
+stream also checks access before sending more events.
+
+Explicit Bearer tokens are available for API automation. Browser access
+uses the KeeneticOS session policy, including on trusted networks. Remove
+the startup option to use the token sign-in form.
+
 ## GitHub Pages
 
 The **Documentation** workflow builds and checks both outputs on relevant PRs and pushes. It uploads only `site/`, containing generated documentation and the demo. Internal reports, local memories, application source maps, credentials, and Go runtime state are not part of that directory.

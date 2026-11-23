@@ -288,6 +288,8 @@ const ru = {
   login: {
     title: 'Вход в панель',
     hint: 'Токен входа лежит на роутере в файле {file}. Его также печатает журнал keenProxy при первом запуске.',
+    keeneticHint: 'Войдите в KeeneticOS с правами управления и откройте карточку KeenProxy в «Приложениях».',
+    openKeenetic: 'Открыть KeeneticOS',
     token: 'Токен',
     submit: 'Войти',
   },
