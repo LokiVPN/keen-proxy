@@ -135,6 +135,29 @@ func TestRuleOrder(t *testing.T) {
 	}
 }
 
+func TestPausedConfigHasNoSources(t *testing.T) {
+	cfg, err := model.Parse([]byte(testYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Paused = true
+	out, err := Compile(Input{Config: cfg, RuleSetDir: "/var/keenproxy", Neighbors: map[string]netip.Addr{
+		"02:00:00:00:00:10": netip.MustParseAddr("192.168.7.104"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Plan.Sources) != 0 || len(out.Plan.Excluded) != 0 {
+		t.Errorf("paused plan must not intercept: %+v", out.Plan)
+	}
+	if strings.Contains(out.Plan.Render(), "REDIRECT --to-ports 5354") {
+		t.Error("paused plan must not redirect DNS")
+	}
+	if len(cfg.Networks) != 1 || cfg.Networks[0].Mode != model.ModeSplit {
+		t.Error("Compile must not modify the caller's configuration")
+	}
+}
+
 func TestPlanFromModel(t *testing.T) {
 	p := compileTest(t).Plan
 	src := []string{}

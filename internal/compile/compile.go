@@ -95,6 +95,9 @@ func splitFallback(d string) string {
 
 // Compile builds runtime artifacts from a configuration that has passed Validate.
 func Compile(in Input) (Output, error) {
+	if in.Config.Paused {
+		in.Config = pausedConfig(in.Config)
+	}
 	c := in.Config
 	clients, networks, excluded := policies(in)
 
@@ -168,6 +171,21 @@ func Compile(in Input) (Output, error) {
 			Bypass:            bypass,
 		},
 	}, nil
+}
+
+// pausedConfig returns a copy where every network and client is off, so no
+// interception rules are produced while the daemon keeps running.
+func pausedConfig(src *model.Config) *model.Config {
+	c := *src
+	c.Networks = append([]model.Network(nil), c.Networks...)
+	for i := range c.Networks {
+		c.Networks[i].Mode = model.ModeOff
+	}
+	c.Clients = append([]model.Client(nil), c.Clients...)
+	for i := range c.Clients {
+		c.Clients[i].Mode = model.ModeOff
+	}
+	return &c
 }
 
 // policies resolves client inheritance and network rules. Client rules take

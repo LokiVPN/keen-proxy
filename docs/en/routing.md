@@ -77,6 +77,14 @@ networks:
   - {name: Home, cidr: 192.168.7.0/24, mode: split, default: fi}
 ```
 
+## Pause and devices that are off { #pause }
+
+A device whose mode is `off` is not touched by KeenProxy: no routing, no blocking and no DNS interception, so its DNS goes straight to the KeeneticOS resolver. Pausing the router (`paused: true`) does the same for every device while the daemon keeps running; unpausing is a normal Apply. DNS interception and the encrypted-DNS guard apply only to devices that take part in a network or client policy.
+
+```yaml
+paused: true
+```
+
 ## DNS
 
 DNS settings choose upstream resolvers and whether requests travel directly or through a connection. Bootstrap addresses help resolve encrypted resolver hostnames. Failure policy controls whether a failed selected path may use direct DNS. Filter lists and exceptions change DNS answers, not every possible form of application traffic.

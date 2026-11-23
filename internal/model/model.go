@@ -47,7 +47,9 @@ const (
 
 // Config is the persisted schema shared by the compiler, daemon, and API.
 type Config struct {
-	SchemaVersion int                   `yaml:"schema_version" json:"schema_version"`
+	SchemaVersion int `yaml:"schema_version" json:"schema_version"`
+	// Paused turns every policy off: no routing, blocking or DNS interception.
+	Paused        bool                  `yaml:"paused,omitempty" json:"paused,omitempty"`
 	System        System                `yaml:"system,omitempty" json:"system,omitempty"`
 	API           API                   `yaml:"api" json:"api"`
 	LAN           LAN                   `yaml:"lan" json:"lan"`

@@ -304,6 +304,38 @@ if ip netns exec client curl -fsS -m 3 http://198.51.100.3:853/ >/dev/null 2>&1;
 dig +short +time=2 +tries=1 @127.0.0.1 -p 5354 example.test A | grep -q '198.51.100.2' || fail "guard blocked own DNS"
 ok "DNS guard rejects redirected port 853, own resolver works"
 
+# --- Pause and off devices are untouched: no DNS interception, no TCP redirect.
+# .11 has a WAN return route, so direct traffic from it can complete.
+put_config() { # python expression body mutating c
+	api_get config | python3 -c "import json,sys; c=json.load(sys.stdin); $1; print(json.dumps(c))" >/tmp/untouched-config.json
+	curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/untouched-config.json http://127.0.0.1:8086/api/config >/dev/null || fail "apply: $1"
+}
+untouched_probe() { # label; expect direct DNS and direct TCP from .11
+	name="$1.ads.test"
+	a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @198.51.100.3 "$name" A)
+	[ "$a" = "198.51.100.2" ] || fail "$1: DNS was intercepted: '$a'"
+	grep -Fq "query[A] $name from 192.168.77.11" /tmp/dnsmasq.log || fail "$1: DNS did not reach the resolver directly"
+	ip netns exec client curl --interface 192.168.77.11 -s -m 5 -o /dev/null http://198.51.100.3/ || fail "$1: direct HTTP failed"
+	tail -1 /tmp/http.log | grep -q '^192.168.77.11 ' || fail "$1: TCP was redirected"
+}
+intercepted_probe() { # label
+	name="$1.ads.test"
+	a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @198.51.100.3 "$name" A)
+	[ "$a" = "0.0.0.0" ] || fail "$1: DNS not intercepted: '$a'"
+	ip netns exec client curl --interface 192.168.77.11 -s -m 5 -o /dev/null http://198.51.100.3/ || fail "$1: HTTP through keenProxy failed"
+	tail -1 /tmp/http.log | grep -q '^198.51.100.1 ' || fail "$1: TCP was not intercepted"
+}
+intercepted_probe before-pause
+put_config 'c["paused"]=True'
+untouched_probe paused
+put_config 'c.pop("paused",None)'
+intercepted_probe unpaused
+put_config 'c["clients"]=c.get("clients",[])+[{"name":"Off","mac":"02:00:00:00:00:99","ip":"192.168.77.11","mode":"off"}]'
+untouched_probe off-device
+put_config 'c["clients"]=[x for x in c["clients"] if x["name"]!="Off"]'
+intercepted_probe off-removed
+ok "pause and off devices: DNS and TCP untouched; interception returns after unpause"
+
 # --- Activation is applied through the real API without deleting profiles or references.
 # Register cleanup before creating this phase's uniquely owned temporary directory.
 ACTIVATION_TMP=""

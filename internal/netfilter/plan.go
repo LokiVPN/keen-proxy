@@ -89,8 +89,17 @@ func (p Plan) Render() string {
 			w("-A %s %s -s %s -p %s -m %s --dport 53 -j RETURN", ChainDNS, in, src, proto, proto)
 		}
 	}
-	for _, proto := range []string{"udp", "tcp"} {
-		w("-A %s %s -p %s -m %s --dport 53 -j REDIRECT --to-ports %d", ChainDNS, in, proto, proto, p.DNSPort)
+	// DNS is intercepted only for participating sources; off devices and a
+	// paused router keep talking to the KeeneticOS resolver directly.
+	if len(p.Sources) > 0 {
+		for _, e := range p.Excluded {
+			w("-A %s %s -s %s -j RETURN", ChainDNS, in, host(e))
+		}
+		for _, s := range p.Sources {
+			for _, proto := range []string{"udp", "tcp"} {
+				w("-A %s %s -s %s -p %s -m %s --dport 53 -j REDIRECT --to-ports %d", ChainDNS, in, s, proto, proto, p.DNSPort)
+			}
+		}
 	}
 	if len(p.Sources) > 0 {
 		for _, d := range p.Bypass {
@@ -133,10 +142,15 @@ func (p Plan) Render() string {
 	w("*filter")
 	w(":%s - [0:0]", ChainQUIC)
 	w(":%s - [0:0]", ChainDNSGuard)
-	if p.BlockEncryptedDNS {
-		for _, proto := range []string{"tcp", "udp"} {
-			w("-A %s %s -p %s --dport 853 -j REJECT", ChainDNSGuard, in, proto)
-			w("-A %s %s -p %s -m conntrack --ctdir ORIGINAL --ctorigdstport 853 -j REJECT", ChainDNSGuard, in, proto)
+	if p.BlockEncryptedDNS && len(p.Sources) > 0 {
+		for _, e := range p.Excluded {
+			w("-A %s %s -s %s -j RETURN", ChainDNSGuard, in, host(e))
+		}
+		for _, s := range p.Sources {
+			for _, proto := range []string{"tcp", "udp"} {
+				w("-A %s %s -s %s -p %s --dport 853 -j REJECT", ChainDNSGuard, in, s, proto)
+				w("-A %s %s -s %s -p %s -m conntrack --ctdir ORIGINAL --ctorigdstport 853 -j REJECT", ChainDNSGuard, in, s, proto)
+			}
 		}
 	}
 	for _, e := range p.Excluded {

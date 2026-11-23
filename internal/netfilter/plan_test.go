@@ -21,8 +21,9 @@ func TestRenderTProxy(t *testing.T) {
 	want := `*nat
 :KEENPROXY_DNS - [0:0]
 :KEENPROXY_TCP - [0:0]
--A KEENPROXY_DNS -i br0 -p udp -m udp --dport 53 -j REDIRECT --to-ports 5354
--A KEENPROXY_DNS -i br0 -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 5354
+-A KEENPROXY_DNS -i br0 -s 192.168.7.88/32 -j RETURN
+-A KEENPROXY_DNS -i br0 -s 192.168.7.104/32 -p udp -m udp --dport 53 -j REDIRECT --to-ports 5354
+-A KEENPROXY_DNS -i br0 -s 192.168.7.104/32 -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 5354
 -A KEENPROXY_TCP -d 192.168.0.0/16 -j RETURN
 -A KEENPROXY_TCP -s 192.168.7.88/32 -j RETURN
 -A KEENPROXY_TCP -i br0 -s 192.168.7.104/32 -p tcp -j REDIRECT --to-ports 7901
@@ -83,14 +84,40 @@ func TestRenderRedirectHasNoMangle(t *testing.T) {
 	}
 }
 
-func TestRenderNoSourcesKeepsDNSOnly(t *testing.T) {
+func TestRenderDNSOnlyForSources(t *testing.T) {
 	p := testPlan(model.InterceptTProxy)
 	p.Sources = nil
+	p.BlockEncryptedDNS = true
 	got := p.Render()
-	if strings.Contains(got, "REDIRECT --to-ports 7901") || strings.Contains(got, "TPROXY") || strings.Contains(got, "REJECT") {
-		t.Errorf("traffic must not be intercepted without participants:\n%s", got)
+	for _, bad := range []string{"REDIRECT", "TPROXY", "REJECT"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("nothing may be touched without participants (%s):\n%s", bad, got)
+		}
 	}
-	if !strings.Contains(got, "--dport 53 -j REDIRECT --to-ports 5354") {
-		t.Errorf("DNS must always be intercepted:\n%s", got)
+}
+
+func TestRenderExcludedSkipsDNS(t *testing.T) {
+	got := testPlan(model.InterceptTProxy).Render()
+	ret := "-A KEENPROXY_DNS -i br0 -s 192.168.7.88/32 -j RETURN"
+	redir := "-A KEENPROXY_DNS -i br0 -s 192.168.7.104/32 -p udp -m udp --dport 53 -j REDIRECT --to-ports 5354"
+	if !strings.Contains(got, ret) || !strings.Contains(got, redir) || strings.Index(got, ret) > strings.Index(got, redir) {
+		t.Errorf("excluded RETURN must precede per-source DNS redirect:\n%s", got)
+	}
+	if strings.Contains(got, "-A KEENPROXY_DNS -i br0 -p ") {
+		t.Errorf("DNS redirect must not be LAN-wide:\n%s", got)
+	}
+}
+
+func TestRenderDNSGuardPerSource(t *testing.T) {
+	p := testPlan(model.InterceptTProxy)
+	p.BlockEncryptedDNS = true
+	got := p.Render()
+	ret := "-A KEENPROXY_DNS_GUARD -i br0 -s 192.168.7.88/32 -j RETURN"
+	rej := "-A KEENPROXY_DNS_GUARD -i br0 -s 192.168.7.104/32 -p tcp --dport 853 -j REJECT"
+	if !strings.Contains(got, ret) || !strings.Contains(got, rej) || strings.Index(got, ret) > strings.Index(got, rej) {
+		t.Errorf("guard must be per source with excluded RETURN first:\n%s", got)
+	}
+	if strings.Contains(got, "-A KEENPROXY_DNS_GUARD -i br0 -p ") {
+		t.Errorf("guard must not be LAN-wide:\n%s", got)
 	}
 }

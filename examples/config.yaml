@@ -1,3 +1,4 @@
+# paused: true  # leave every device untouched (no routing, blocking or DNS interception)
 lan: {interface: br0, wan: eth3}
 dns: {upstreams: ["https://1.1.1.1/dns-query"]}
 intercept: {mode: tproxy}
