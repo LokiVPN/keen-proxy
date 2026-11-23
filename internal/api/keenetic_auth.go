@@ -313,20 +313,22 @@ func (a *KeeneticAuth) applicationsURL() string {
 	return "http://" + a.router.Host + "/apps"
 }
 
-// keeneticStatus verifies the browser's KeeneticOS session; no other
-// credential grants KeeneticOS authority.
-func (s *Server) keeneticStatus(r *http.Request) (Role, int) {
-	return s.Keenetic.verify(r)
+// keeneticRefusal maps a refusal of the KeeneticOS check to the status and
+// reason shown to the client; anything but 401 and 403 means the check itself
+// is unavailable.
+func keeneticRefusal(status int) (int, string) {
+	switch status {
+	case http.StatusUnauthorized:
+		return status, "KeeneticOS sign-in required"
+	case http.StatusForbidden:
+		return status, "KeeneticOS management access denied"
+	default:
+		return http.StatusServiceUnavailable, "KeeneticOS session check unavailable"
+	}
 }
 
 func writeKeeneticError(w http.ResponseWriter, status int) {
 	w.Header().Set("X-KeenProxy-Auth", "keenetic")
-	switch status {
-	case http.StatusUnauthorized:
-		writeError(w, status, "KeeneticOS sign-in required")
-	case http.StatusForbidden:
-		writeError(w, status, "KeeneticOS management access denied")
-	default:
-		writeError(w, http.StatusServiceUnavailable, "KeeneticOS session check unavailable")
-	}
+	status, reason := keeneticRefusal(status)
+	writeError(w, status, reason)
 }

@@ -61,14 +61,17 @@ type route struct {
 	h       http.Handler
 }
 
-// publicRoutes are the only API patterns that skip authorization: they decide
-// for themselves what to reveal (the session probe) or only drop a session.
+// publicRoutes are the only exact method and path pairs that skip
+// authorization: they decide for themselves what to reveal (the session
+// probe) or only drop a session. Stage 4 adds the sign-in page and a static
+// asset prefix here.
 var publicRoutes = map[string]bool{
 	"GET /api/session": true,
 	"POST /api/logout": true,
 }
 
-// routes lists every API endpoint; Handler registers exactly this list.
+// routes lists every endpoint and the two catch-alls; Handler registers
+// exactly this list.
 func (s *Server) routes() []route {
 	return append([]route{
 		{"POST /api/diagnostics/check", http.HandlerFunc(s.diagnosticCheck)},
@@ -91,19 +94,20 @@ func (s *Server) routes() []route {
 		{"GET /api/stats", http.HandlerFunc(s.stats)},
 		{"GET /api/stats/hosts", http.HandlerFunc(s.hosts)},
 		{"GET /api/journal/{kind}", http.HandlerFunc(s.journalPage)},
-	}, s.updateRoutes()...)
+	}, append(s.updateRoutes(),
+		route{"/api/", http.NotFoundHandler()},
+		route{"/", http.HandlerFunc(rebuildingUI)},
+	)...)
 }
 
 // Handler builds the routes. The peer-address guard runs first, then the
-// authorization middleware, so a new route is protected unless it is listed
+// authorization middleware, so every path is protected unless it is listed
 // in publicRoutes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, rt := range s.routes() {
 		mux.Handle(rt.pattern, rt.h)
 	}
-	mux.Handle("/api/", http.NotFoundHandler())
-	mux.HandleFunc("/", rebuildingUI)
 	return s.lanOnly(s.authorize(mux))
 }
 
@@ -141,65 +145,87 @@ func loopbackHost(hostport string) bool {
 	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
-// authorize is the single place that decides access. It authorizes every
-// request except publicRoutes and non-API paths (the placeholder page serves no
-// data), stores the role in the context, and passes the derived request on.
+// isAPI reports whether path belongs to the control API, which answers in
+// JSON; every other path is a page.
+func isAPI(path string) bool {
+	return path == "/api" || strings.HasPrefix(path, "/api/")
+}
+
+// verdict is the access decision for one request: the role it grants, or the
+// refusal status and the reason shown to the client.
+type verdict struct {
+	role   Role
+	status int    // http.StatusOK when granted
+	reason string // empty when granted
+}
+
+// authorize is the single place that decides access. Every request except
+// publicRoutes gets a verdict; a granted one carries its role in the context
+// (see RoleFrom), a refused one gets the refusal as JSON under /api and as
+// short text elsewhere, where stage 4 renders the sign-in screens. Nothing it
+// passes on or refuses may be cached.
 func (s *Server) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if publicRoutes[r.Method+" "+r.URL.Path] || !strings.HasPrefix(r.URL.Path, "/api/") {
+		w.Header().Set("Cache-Control", "no-store")
+		if publicRoutes[r.Method+" "+r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
-		role, ok := s.authorizeRole(w, r)
-		if !ok {
+		v := s.decide(r)
+		if v.status != http.StatusOK {
+			if isAPI(r.URL.Path) {
+				writeError(w, v.status, v.reason)
+			} else {
+				http.Error(w, v.reason, v.status)
+			}
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), roleKey{}, role)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), roleKey{}, v.role)))
 	})
 }
 
-// authorizeRole applies the access policy: trusted loopback requests get
-// RoleManage, other peers need a verified KeeneticOS session, and without that
-// mode they are refused. Writes need RoleManage. It writes any refusal itself.
-func (s *Server) authorizeRole(w http.ResponseWriter, r *http.Request) (Role, bool) {
+// decide applies the access policy: trusted loopback requests manage
+// everything, other peers need a verified KeeneticOS session, and without
+// that mode they are refused. Writes (methods other than GET and HEAD) need
+// RoleManage.
+func (s *Server) decide(r *http.Request) verdict {
 	if isLoopback(r) {
-		return RoleManage, true
+		return verdict{role: RoleManage, status: http.StatusOK}
 	}
 	if s.Unavailable {
-		writeError(w, http.StatusServiceUnavailable, "web interface unavailable; use an SSH tunnel to 127.0.0.1")
-		return RoleDeny, false
+		return verdict{status: http.StatusServiceUnavailable, reason: "web interface unavailable; use an SSH tunnel to 127.0.0.1"}
 	}
 	if s.Keenetic == nil {
-		writeError(w, http.StatusForbidden, "local access only")
-		return RoleDeny, false
+		return verdict{status: http.StatusForbidden, reason: "local access only"}
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	role, status := s.keeneticStatus(r)
+	role, status := s.Keenetic.verify(r)
+	if status == http.StatusOK && role != RoleManage && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		status = http.StatusForbidden
+	}
 	if status != http.StatusOK {
-		writeKeeneticError(w, status)
-		return RoleDeny, false
+		status, reason := keeneticRefusal(status)
+		return verdict{status: status, reason: reason}
 	}
-	if role != RoleManage && r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeKeeneticError(w, http.StatusForbidden)
-		return RoleDeny, false
-	}
-	return role, true
+	return verdict{role: role, status: http.StatusOK}
 }
 
 // session reports whether the caller has access and, in KeeneticOS mode,
 // where to sign in.
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	if s.Keenetic != nil {
-		w.Header().Set("Cache-Control", "no-store")
-		_, status := s.keeneticStatus(r)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"authed":       isLoopback(r) || status == http.StatusOK,
-			"ip":           clientIP(r),
-			"keenetic_url": s.Keenetic.applicationsURL(),
-		})
+	authed := isLoopback(r)
+	if s.Keenetic == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"authed": authed, "ip": clientIP(r)})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"authed": isLoopback(r), "ip": clientIP(r)})
+	if !authed {
+		_, status := s.Keenetic.verify(r)
+		authed = status == http.StatusOK
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authed":       authed,
+		"ip":           clientIP(r),
+		"keenetic_url": s.Keenetic.applicationsURL(),
+	})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {

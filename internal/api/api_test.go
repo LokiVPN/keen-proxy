@@ -360,27 +360,104 @@ func TestSessionReportsLoopbackAccessInKeeneticMode(t *testing.T) {
 	}
 }
 
-// Every registered route except the explicit public ones must refuse a LAN
-// peer without a session, whether or not KeeneticOS sign-in is enabled.
+// routeMethod splits a registered pattern into its method and path; the
+// catch-alls have no method.
+func routeMethod(pattern string) (method, path string) {
+	if method, path, ok := strings.Cut(pattern, " "); ok {
+		return method, path
+	}
+	return "", pattern
+}
+
+// routePaths turns a pattern into request paths: {id} gets a sample value,
+// {kind} every journal kind, and a catch-all also a path below it.
+func routePaths(pattern string) []string {
+	_, path := routeMethod(pattern)
+	switch {
+	case strings.Contains(path, "{kind}"):
+		var out []string
+		for _, kind := range journal.Kinds {
+			out = append(out, strings.Replace(path, "{kind}", string(kind), 1))
+		}
+		return out
+	case strings.HasSuffix(path, "/"):
+		return []string{path, path + "nothing-here"}
+	}
+	return []string{strings.ReplaceAll(path, "{id}", "loki")}
+}
+
+// lanRequest is a browser request from a LAN peer to the panel address.
+// Writes carry the same-origin Origin header a browser sends.
+func lanRequest(method, path string) *http.Request {
+	r := httptest.NewRequest(method, path, strings.NewReader("{}"))
+	r.RemoteAddr, r.Host = lan, "192.168.7.1:8086"
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+	default:
+		r.Header.Set("Origin", "http://192.168.7.1:8086")
+	}
+	return r
+}
+
+// A LAN peer without a session gets an exact refusal on every path: each
+// registered route with its own method, HEAD and OPTIONS, both catch-alls
+// and a page path. Only the public routes answer, with their own method.
 func TestEveryRouteRejectsLANPeers(t *testing.T) {
 	plain, _ := newServer()
 	keenetic, _, _ := keeneticFixtureTags(t, []string{"http", "cli"})
+	unavailable, _ := newServer()
+	unavailable.Unavailable = true
+	type request struct {
+		method, path string
+		public       bool
+	}
+	var requests []request
 	seen := map[string]bool{}
 	for _, rt := range plain.routes() {
 		seen[rt.pattern] = true
-		if publicRoutes[rt.pattern] {
-			continue
+		method, _ := routeMethod(rt.pattern)
+		methods := []string{method}
+		if method == "" {
+			methods = []string{http.MethodGet, http.MethodPost}
 		}
-		method, path, _ := strings.Cut(rt.pattern, " ")
-		path = strings.NewReplacer("{id}", "x", "{kind}", "routes").Replace(path)
-		for name, srv := range map[string]*Server{"plain": plain, "keeneticos": keenetic} {
-			r := httptest.NewRequest(method, path, strings.NewReader("{}"))
-			r.RemoteAddr = lan
-			r.Host = "192.168.7.1:8086"
-			w := httptest.NewRecorder()
-			srv.Handler().ServeHTTP(w, r)
-			if w.Code/100 == 2 {
-				t.Errorf("%s: %s answered a LAN peer with %d", name, rt.pattern, w.Code)
+		for _, path := range routePaths(rt.pattern) {
+			for _, m := range append(methods, http.MethodHead, http.MethodOptions) {
+				requests = append(requests, request{m, path, m == method && publicRoutes[rt.pattern]})
+			}
+		}
+	}
+	for _, path := range []string{"/", "/connections", "/api/", "/api/nothing-here", "/api"} {
+		for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodHead, http.MethodOptions} {
+			requests = append(requests, request{m, path, false})
+		}
+	}
+	type refusal struct {
+		status int
+		reason string
+	}
+	for _, mode := range []struct {
+		name      string
+		srv       *Server
+		api, page refusal
+	}{
+		{"sign-in off", plain, refusal{http.StatusForbidden, "local access only"}, refusal{http.StatusForbidden, "local access only"}},
+		{"keeneticos", keenetic, refusal{http.StatusUnauthorized, "KeeneticOS sign-in required"}, refusal{http.StatusUnauthorized, "KeeneticOS sign-in required"}},
+		{"unavailable", unavailable, refusal{http.StatusServiceUnavailable, "use an SSH tunnel"}, refusal{http.StatusServiceUnavailable, "use an SSH tunnel"}},
+	} {
+		for _, rq := range requests {
+			w := serve(mode.srv, lanRequest(rq.method, rq.path))
+			if rq.public {
+				if w.Code != http.StatusOK {
+					t.Errorf("%s: public %s %s from LAN: %d %q", mode.name, rq.method, rq.path, w.Code, w.Body)
+				}
+				continue
+			}
+			want := mode.page
+			if rq.path == "/api" || strings.HasPrefix(rq.path, "/api/") {
+				want = mode.api
+			}
+			if w.Code != want.status || (rq.method != http.MethodHead && !strings.Contains(w.Body.String(), want.reason)) {
+				t.Errorf("%s: %s %s from LAN: %d %q, want %d %q", mode.name, rq.method, rq.path, w.Code, w.Body, want.status, want.reason)
 			}
 		}
 	}
@@ -389,8 +466,51 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 			t.Errorf("public pattern %q is not a registered route", p)
 		}
 	}
-	// An unknown API path reveals nothing to a LAN peer.
-	if c := do(t, plain.Handler(), "GET", "/api/nothing-here", "", "", lan).Code; c != http.StatusForbidden {
-		t.Errorf("unknown API path from LAN: %d, want 403", c)
+}
+
+// Pages are authorized like the API: a KeeneticOS session reaches them (the
+// placeholder for now), a view account may not write, and refusals are short
+// text instead of JSON.
+func TestPagesFollowTheKeeneticSession(t *testing.T) {
+	const placeholder = "KeenProxy interface is being rebuilt"
+	for _, tc := range []struct {
+		name    string
+		tags    []string
+		method  string
+		session bool
+		host    string
+		want    int
+		body    string
+	}{
+		{"no session", []string{"http", "cli"}, "GET", false, "", http.StatusUnauthorized, "KeeneticOS sign-in required"},
+		{"manage reads", []string{"http", "cli"}, "GET", true, "", http.StatusServiceUnavailable, placeholder},
+		{"manage writes", []string{"http", "cli"}, "POST", true, "", http.StatusServiceUnavailable, placeholder},
+		{"view reads", []string{"http", "readonly"}, "GET", true, "", http.StatusServiceUnavailable, placeholder},
+		{"view cannot write", []string{"http", "readonly"}, "POST", true, "", http.StatusForbidden, "KeeneticOS management access denied"},
+		{"foreign host", []string{"http", "cli"}, "GET", true, "evil.example:8086", http.StatusForbidden, "KeeneticOS management access denied"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := keeneticFixtureTags(t, tc.tags)
+			r := keeneticRequest(tc.method, "/connections", "", tc.session)
+			if tc.method == "POST" {
+				r.Header.Set("Origin", keeneticPanel)
+			}
+			if tc.host != "" {
+				r.Host = tc.host
+			}
+			w := serve(s, r)
+			if w.Code != tc.want || strings.TrimSpace(w.Body.String()) != tc.body {
+				t.Fatalf("%d %q, want %d %q", w.Code, w.Body, tc.want, tc.body)
+			}
+			if tc.want != http.StatusServiceUnavailable && !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+				t.Errorf("page refusal Content-Type %q", w.Header().Get("Content-Type"))
+			}
+		})
+	}
+	s, _, mode := keeneticFixture(t)
+	mode.Store(3)
+	if w := serve(s, keeneticRequest("GET", "/", "", true)); w.Code != http.StatusServiceUnavailable ||
+		strings.TrimSpace(w.Body.String()) != "KeeneticOS session check unavailable" {
+		t.Fatalf("router unreachable: %d %q", w.Code, w.Body)
 	}
 }

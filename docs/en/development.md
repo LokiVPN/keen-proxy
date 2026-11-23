@@ -235,8 +235,9 @@ is treated like a LAN client. The memory gate
 local scripts on the router rely on this; the installer does not call the API.
 Any `Authorization` header a client still sends is ignored. Other
 clients need a KeeneticOS session when KeeneticOS sign-in is enabled
-(default on Keenetic; see `-keenetic-auth-origin`) and otherwise receive `403 local access only`. Every route except
-`GET /api/session` and `POST /api/logout` is authorized in one middleware.
+(default on Keenetic; see `-keenetic-auth-origin`) and otherwise receive
+`403 local access only`. One middleware authorizes every path, pages
+included; only `GET /api/session` and `POST /api/logout` skip it.
 
 Residual risk: a forward proxy running on the router (tinyproxy, xray and the
 like) that connects from `127.0.0.1` with `Host: 127.0.0.1:<port>` is trusted.
@@ -244,9 +245,11 @@ Do not run open local proxies next to KeenProxy.
 
 The panel token, the `-key` option, trusted networks and `POST /api/login` are
 removed; `api.token_file` and `api.no_token_from` are accepted and ignored. The
-Vue panel and demo mode are removed too. `GET /` and other non-`/api/` paths
-return `503 KeenProxy interface is being rebuilt` until the server-rendered UI
-arrives. The journal stays internal (`GET /api/journal/{kind}` on loopback and
+Vue panel and demo mode are removed too. Until the server-rendered UI
+arrives, `GET /` and other non-`/api/` paths return
+`503 KeenProxy interface is being rebuilt` to trusted loopback clients and
+signed-in KeeneticOS accounts; other clients get the same refusal as the API
+(`401`, `403` or `503`) as short text. The journal stays internal (`GET /api/journal/{kind}` on loopback and
 the support ZIP); the journal stream and export, presets, resource exchange,
 ad filter lists, GeoIP lookup, domain preview, YAML import/export and the DNS
 check endpoint are removed.
