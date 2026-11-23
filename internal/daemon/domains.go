@@ -19,17 +19,6 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
-// DomainStatus reports cached DNS routes and file-write status, without certifying
-// that the engine has reloaded those files.
-type DomainStatus struct {
-	Records     []domaincache.Record `json:"records"`
-	Conflicts   map[string][]string  `json:"conflicts"`
-	Limited     bool                 `json:"limited"`
-	Error       string               `json:"error,omitempty"`
-	WrittenAt   time.Time            `json:"written_at"`
-	Application string               `json:"application"`
-}
-
 // observeDomain retains device DNS answers only for currently configured domains.
 func (d *Daemon) observeDomain(name string, m *dns.Msg) {
 	cfg := d.live.Load()
@@ -55,20 +44,6 @@ func (d *Daemon) domainRecords() []domaincache.Record {
 	return out
 }
 
-// Domains returns cache records, shared-IP conflicts, and the latest write status.
-func (d *Daemon) Domains() DomainStatus {
-	records := d.domainRecords()
-	st := DomainStatus{Records: records, Conflicts: map[string][]string{}, Limited: d.domains.Limited(), Application: "files_written_reload_pending"}
-	st.Conflicts = domainConflicts(d.live.Load(), records)
-	for _, r := range records {
-		st.Limited = st.Limited || r.Limited
-	}
-	d.domainMu.Lock()
-	st.WrittenAt = d.domainWritten
-	st.Error = d.domainError
-	d.domainMu.Unlock()
-	return st
-}
 func recordsMap(records []domaincache.Record) map[string][]string {
 	out := map[string][]string{}
 	for _, r := range records {
@@ -109,7 +84,6 @@ func (d *Daemon) writeDNSLocked() {
 		}
 	}
 	d.domainFingerprint = fingerprint
-	d.domainWritten = time.Now()
 	d.domainError = ""
 }
 
@@ -128,9 +102,9 @@ func (d *Daemon) resetDomainGeneration() {
 	}
 }
 
-// RefreshDomains resolves up to 100 names with bounded concurrency. Names must
-// belong to the live configuration.
-func (d *Daemon) RefreshDomains(ctx context.Context, names []string) (DomainStatus, error) {
+// RefreshDomains resolves up to 100 names with bounded concurrency and writes
+// the changed DNS rule sets. Names must belong to the live configuration.
+func (d *Daemon) RefreshDomains(ctx context.Context, names []string) error {
 	if g := d.domainGeneration.Load(); g != nil {
 		cctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -140,11 +114,11 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string) (DomainStat
 	}
 
 	if len(names) == 0 || len(names) > 100 {
-		return DomainStatus{}, fmt.Errorf("between 1 and 100 domains required")
+		return fmt.Errorf("between 1 and 100 domains required")
 	}
 	cfg := d.live.Load()
 	if cfg == nil {
-		return DomainStatus{}, fmt.Errorf("daemon is not running")
+		return fmt.Errorf("daemon is not running")
 	}
 	matcher := compile.NewDomainMatcher(cfg)
 	clean := make([]string, 0, len(names))
@@ -152,10 +126,10 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string) (DomainStat
 	for _, name := range names {
 		e, err := model.ParseEntry(name)
 		if err != nil || e.Kind != model.EntryDomain {
-			return DomainStatus{}, fmt.Errorf("invalid domain: %s", name)
+			return fmt.Errorf("invalid domain: %s", name)
 		}
 		if !matcher.Match(e.Domain) {
-			return DomainStatus{}, fmt.Errorf("domain is not in the applied list: %s", e.Domain)
+			return fmt.Errorf("domain is not in the applied list: %s", e.Domain)
 		}
 		if !seen[e.Domain] {
 			clean = append(clean, e.Domain)
@@ -171,13 +145,13 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string) (DomainStat
 	for _, name := range clean {
 		if d.live.Load() != cfg {
 			wg.Wait()
-			return DomainStatus{}, fmt.Errorf("configuration changed")
+			return fmt.Errorf("configuration changed")
 		}
 		select {
 		case d.domainSlots <- struct{}{}:
 		case <-ctx.Done():
 			wg.Wait()
-			return DomainStatus{}, ctx.Err()
+			return ctx.Err()
 		}
 		wg.Add(1)
 		go func(name string) {
@@ -197,10 +171,10 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string) (DomainStat
 	}
 	wg.Wait()
 	if ctx.Err() != nil {
-		return DomainStatus{}, ctx.Err()
+		return ctx.Err()
 	}
 	d.flushDomains()
-	return d.Domains(), nil
+	return nil
 }
 
 // runDomains flushes cache expiry each second and schedules nonoverlapping refresh
@@ -255,7 +229,7 @@ func (d *Daemon) runDomains(ctx context.Context) {
 				}
 			}
 			if len(due) > 0 {
-				_, _ = d.RefreshDomains(ctx, due)
+				_ = d.RefreshDomains(ctx, due)
 			}
 		}()
 	}

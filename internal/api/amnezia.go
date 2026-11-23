@@ -14,7 +14,7 @@ func (s *Server) amneziaImport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URI string `json:"uri"`
 	}
-	if err := decodeFeatureRequest(w, r, &req); err != nil {
+	if err := decodeImportRequest(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, amnezia.ErrInvalidProfile.Error())
 		return
 	}

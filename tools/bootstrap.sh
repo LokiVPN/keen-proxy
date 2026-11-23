@@ -353,14 +353,6 @@ restore_config() {
     fi
 }
 
-# Quote one shell word so a copy-pasted command keeps spaces and quotes.
-shell_quote() {
-    printf '%s\n' "$1" | awk 'BEGIN { q = sprintf("%c", 39) } {
-        gsub(q, q "\"" q "\"" q)
-        printf "%s%s%s", q, $0, q
-    }'
-}
-
 # The installed binary discovers the panel URL. A missing flag, empty result, or
 # undiscoverable interface must not undo the install or reveal command stderr.
 print_panel_access() {

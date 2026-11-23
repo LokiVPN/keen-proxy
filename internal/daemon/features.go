@@ -16,17 +16,6 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
-// DNSInfo summarizes the latest DNS route and cumulative fallback and block counts.
-type DNSInfo struct {
-	Route     string    `json:"route"`
-	Checked   time.Time `json:"checked"`
-	Fallbacks uint64    `json:"fallbacks"`
-	Blocked   uint64    `json:"blocked"`
-}
-
-// DNSInfo returns the last resolver check under the feature-state lock.
-func (d *Daemon) DNSInfo() DNSInfo { d.featureMu.Lock(); defer d.featureMu.Unlock(); return d.dnsInfo }
-
 // managedConn releases dial-context resources exactly once when closed.
 type managedConn struct {
 	net.Conn
@@ -99,16 +88,12 @@ func (d *Daemon) dnsConfig(cfg model.DNS) dnsfront.Config {
 	return c
 }
 
-// recordDNSRoute updates counters and journals transitions into or out of direct fallback.
+// recordDNSRoute journals transitions into or out of direct fallback.
 func (d *Daemon) recordDNSRoute(route string) {
-	d.featureMu.Lock()
-	prev := d.dnsInfo.Route
-	d.dnsInfo.Route = route
-	d.dnsInfo.Checked = time.Now()
-	if route == "direct-fallback" {
-		d.dnsInfo.Fallbacks++
-	}
-	d.featureMu.Unlock()
+	d.dnsRouteMu.Lock()
+	prev := d.dnsRoute
+	d.dnsRoute = route
+	d.dnsRouteMu.Unlock()
 	if prev != route && route == "direct-fallback" {
 		d.audit("dns", "Direct DNS fallback", "dns", "warn", "DNS tunnel did not respond: requests went directly to the encrypted resolver")
 	}
@@ -117,10 +102,7 @@ func (d *Daemon) recordDNSRoute(route string) {
 	}
 }
 
-// recordDNSBlock counts and journals a blocked client DNS request.
+// recordDNSBlock journals a blocked client DNS request.
 func (d *Daemon) recordDNSBlock(name, client, source string) {
-	d.featureMu.Lock()
-	d.dnsInfo.Blocked++
-	d.featureMu.Unlock()
 	d.journals[journal.Routes].Add(journal.Entry{Host: name, Client: client, Network: "dns", Outbound: "block", Source: source, Rule: "DNS: " + source})
 }

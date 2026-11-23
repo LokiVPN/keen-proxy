@@ -65,13 +65,12 @@ type Options struct {
 // Daemon owns runtime components and coordinates serialized configuration changes.
 type Daemon struct {
 	domainGeneration  atomic.Pointer[domainGeneration]
-	featureMu         sync.Mutex
-	dnsInfo           DNSInfo
+	dnsRouteMu        sync.Mutex
+	dnsRoute          string // latest DNS route, to journal fallback transitions
 	domains           *domaincache.Cache
 	domainSlots       chan struct{}
 	domainMu          sync.Mutex
 	domainError       string
-	domainWritten     time.Time
 	domainFingerprint []byte
 	opt               Options
 	log               *slog.Logger

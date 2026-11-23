@@ -24,7 +24,7 @@ func TestDomainsObserveAndReconcile(t *testing.T) {
 	m.Answer = []dns.RR{rr}
 	d.observeDomain("www.example.com.", m)
 	d.flushDomains()
-	if len(d.Domains().Records) != 1 {
+	if len(d.domainRecords()) != 1 {
 		t.Fatal("observation lost")
 	}
 	raw, err := os.ReadFile(filepath.Join(d.opt.RuleSetDir, compile.DomainTag(cfg.Groups[0])+".json"))
@@ -35,10 +35,10 @@ func TestDomainsObserveAndReconcile(t *testing.T) {
 	d.live.Store(changed)
 	d.cfg = changed
 	d.flushDomains()
-	if len(d.Domains().Records) != 0 {
+	if len(d.domainRecords()) != 0 {
 		t.Fatal("old group observations exposed")
 	}
-	if _, err = d.RefreshDomains(context.Background(), []string{"example.com"}); err == nil {
+	if err := d.RefreshDomains(context.Background(), []string{"example.com"}); err == nil {
 		t.Fatal("refresh of removed domain accepted")
 	}
 }
@@ -92,8 +92,7 @@ func TestDomainResolutionInFlightCancellation(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := d.RefreshDomains(ctx, []string{"one.test", "two.test", "three.test", "four.test"})
-		done <- err
+		done <- d.RefreshDomains(ctx, []string{"one.test", "two.test", "three.test", "four.test"})
 	}()
 	select {
 	case <-received:

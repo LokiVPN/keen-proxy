@@ -65,7 +65,7 @@ func TestDisabledDomainsLeaveCacheRefreshAndConflicts(t *testing.T) {
 	}
 	d := New(Options{})
 	d.live.Store(cfg)
-	if _, err := d.RefreshDomains(context.Background(), []string{"off.example"}); err == nil {
+	if err := d.RefreshDomains(context.Background(), []string{"off.example"}); err == nil {
 		t.Fatal("inactive domain accepted for live refresh")
 	}
 	if got := domainConflicts(cfg, records); len(got) != 0 {

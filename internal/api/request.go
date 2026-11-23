@@ -6,8 +6,9 @@ import (
 	"net/http"
 )
 
-// decodeFeatureRequest accepts one JSON value up to 2 MiB and rejects unknown fields.
-func decodeFeatureRequest(w http.ResponseWriter, r *http.Request, v any) error {
+// decodeImportRequest reads a profile import request: one JSON value up to
+// 2 MiB, room for an exported vpn:// URI, with unknown fields rejected.
+func decodeImportRequest(w http.ResponseWriter, r *http.Request, v any) error {
 	return decodeJSONRequest(w, r, 2<<20, v)
 }
 

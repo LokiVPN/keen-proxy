@@ -25,7 +25,7 @@ func TestApplyGenerationCancelsDomainResolution(t *testing.T) {
 	cfg.Groups = []model.Group{{Target: "direct", Entries: []string{"one.test"}}}
 	d.live.Store(cfg)
 	done := make(chan error, 1)
-	go func() { _, err := d.RefreshDomains(context.Background(), []string{"one.test"}); done <- err }()
+	go func() { done <- d.RefreshDomains(context.Background(), []string{"one.test"}) }()
 	<-received
 	d.resetDomainGeneration()
 	select {
