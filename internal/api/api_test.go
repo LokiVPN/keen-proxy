@@ -316,13 +316,14 @@ func TestDNSBypassSourcesApply(t *testing.T) {
 
 func TestLoopbackRequiresLoopbackHost(t *testing.T) {
 	s, _ := newServer()
-	get := func(srv *Server, remote, host string) int {
-		r := httptest.NewRequest("GET", "/api/status", nil)
+	getPath := func(srv *Server, path, remote, host string) int {
+		r := httptest.NewRequest("GET", path, nil)
 		r.RemoteAddr, r.Host = remote, host
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, r)
 		return w.Code
 	}
+	get := func(srv *Server, remote, host string) int { return getPath(srv, "/api/status", remote, host) }
 	for _, tc := range []struct{ remote, host string }{
 		{"127.0.0.1:5000", "127.0.0.1:8086"},
 		{"127.0.0.1:5000", "localhost:8086"},
@@ -340,10 +341,17 @@ func TestLoopbackRequiresLoopbackHost(t *testing.T) {
 	}
 	k, _, _ := keeneticFixtureTags(t, []string{"http", "cli"})
 	if c := get(k, "127.0.0.1:5000", "name.keenetic.pro"); c != http.StatusForbidden {
-		t.Errorf("foreign Host with KeeneticOS: %d, want 403 (host not accepted, treated as a LAN peer)", c)
+		t.Errorf("foreign Host with KeeneticOS: %d, want 403 (a LAN peer never reaches /api)", c)
 	}
 	if c := get(k, "127.0.0.1:5000", "127.0.0.1:8086"); c != http.StatusOK {
 		t.Errorf("loopback Host with KeeneticOS: %d, want 200", c)
+	}
+	// A proxied request to a page goes through sign-in like any LAN peer.
+	if c := getPath(k, "/", "127.0.0.1:5000", "name.keenetic.pro"); c != http.StatusForbidden {
+		t.Errorf("proxied page with a foreign Host: %d, want 403", c)
+	}
+	if c := getPath(k, "/", "127.0.0.1:5000", "192.168.7.1:8086"); c != http.StatusUnauthorized {
+		t.Errorf("proxied page with the panel Host and no session: %d, want 401", c)
 	}
 }
 
