@@ -4,10 +4,14 @@ import (
 	"net/netip"
 )
 
+// SchemaVersion is the configuration schema this release writes. Version 1
+// files from older releases still load; those releases reject version 2.
+const SchemaVersion = 2
+
 // validateFeatures checks schema and DNS route safety.
 func (c *Config) validateFeatures(add func(string, ...any)) {
-	if c.SchemaVersion != 1 {
-		add("schema_version: version 1 is supported, got %d", c.SchemaVersion)
+	if c.SchemaVersion != 1 && c.SchemaVersion != SchemaVersion {
+		add("schema_version: versions 1 and %d are supported, got %d", SchemaVersion, c.SchemaVersion)
 	}
 	d := c.DNS
 	for i, source := range d.BypassSources {

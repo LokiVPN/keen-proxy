@@ -280,6 +280,8 @@ func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
 	}
+	// Apply saves the configuration, and saves use the current schema.
+	cfg.SchemaVersion = model.SchemaVersion
 	// Compile first so protocol errors do not disturb the running configuration.
 	if _, err := compile.Compile(compile.Input{Config: cfg, RuleSetDir: d.opt.RuleSetDir}); err != nil {
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
@@ -428,6 +430,9 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 		return err
 	}
 	if previous, err := os.ReadFile(d.opt.ConfigPath); err == nil {
+		if err := keepV1Config(d.opt.ConfigPath, previous); err != nil {
+			return err
+		}
 		if recovery {
 			return persistRecoveryConfig(d.opt.ConfigPath, previous, raw)
 		}

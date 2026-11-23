@@ -8,6 +8,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ACCESS_URL = 'http://192.0.2.10:8086'
+# A release from before schema 2: its dry run rejects files this release writes.
+SCHEMA_1_DRY_RUN = 'if grep -qx "schema_version: 2" "$3"; then exit 1; fi\nexit 0'
 
 class BootstrapFixture(unittest.TestCase):
     prefix_name = 'opt'
@@ -398,6 +400,54 @@ done
         self.assertEqual((self.prefix / 'url-invocations').read_text(), before)
         self.assertEqual(self.binary.read_bytes(), first.read_bytes())
         self.assert_release('v1.2.3')
+        self.assertTrue((self.prefix / 'running').exists())
+
+    def newer_configuration(self):
+        """Install a schema 2 release whose daemon kept the older file as config.v1.yaml."""
+        self.release('v1.2.4')
+        self.publish_latest('v1.2.4')
+        self.assertEqual(self.install().returncode, 0)
+        newer = 'schema_version: 2\n# newer settings\n'
+        kept = 'schema_version: 1\n# kept for older releases\n'
+        self.config.write_text(newer)
+        self.config.with_name('config.v1.yaml').write_text(kept)
+        return newer, kept
+
+    def test_rollback_restores_the_configuration_kept_for_older_releases(self):
+        newer, kept = self.newer_configuration()
+        older = self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN)
+        result = self.install('--version', 'v1.2.3')
+        self.assert_panel_access(result)
+        self.assertEqual(self.binary.read_bytes(), older.read_bytes())
+        self.assertEqual(self.config.read_text(), kept)
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertEqual(self.config.with_name('config.v2.yaml').read_text(), newer)
+
+        # A second rollback keeps the earlier newer copy and adds a timestamped one.
+        self.assertEqual(self.install('--version', 'v1.2.4').returncode, 0)
+        changed = 'schema_version: 2\n# changed after the upgrade\n'
+        self.config.write_text(changed)
+        result = self.install('--version', 'v1.2.3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config.read_text(), kept)
+        self.assertEqual(self.config.with_name('config.v2.yaml').read_text(), newer)
+        later = list(self.config.parent.glob('config.v2.*.yaml'))
+        self.assertEqual(len(later), 1, later)
+        self.assertRegex(later[0].name, r'^config\.v2\.\d+\.yaml$')
+        self.assertEqual(later[0].read_text(), changed)
+
+    def test_failed_rollback_restores_the_newer_configuration(self):
+        newer, kept = self.newer_configuration()
+        current = self.binary.read_bytes()
+        self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN, start=False)
+        result = self.install('--version', 'v1.2.3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('restoring the previous installation', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), current)
+        self.assertEqual(self.config.read_text(), newer)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertFalse(self.config.with_name('config.v2.yaml').exists())
         self.assertTrue((self.prefix / 'running').exists())
 
     def test_expected_release_guards_updates_and_downgrades(self):

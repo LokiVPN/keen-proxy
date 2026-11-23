@@ -82,7 +82,7 @@ func main() {
 	}()
 	log := slog.New(journal.NewHandler(slog.NewTextHandler(os.Stderr, nil), journals[journal.System]))
 
-	cfg, err := model.Load(*configPath)
+	cfg, err := loadOrReset(*configPath, log, true)
 	if err != nil {
 		log.Error("configuration", "err", err)
 		os.Exit(1)
@@ -226,8 +226,10 @@ func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *upd
 }
 
 // printDryRun renders derived settings without enabling interception; output may contain secrets.
+// A file that the daemon would reset at startup is reported on stderr and
+// rendered as reset, without changing any file.
 func printDryRun(configPath, arpPath, ruleSetDir string) error {
-	cfg, err := model.Load(configPath)
+	cfg, err := loadOrReset(configPath, slog.New(slog.NewTextHandler(os.Stderr, nil)), false)
 	if err != nil {
 		return err
 	}

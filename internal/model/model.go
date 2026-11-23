@@ -307,7 +307,7 @@ type Client struct {
 // Defaults fills unset fields and normalizes country codes before validation.
 func (c *Config) Defaults() {
 	if c.SchemaVersion == 0 {
-		c.SchemaVersion = 1
+		c.SchemaVersion = SchemaVersion
 	}
 	c.GeoIP.defaults()
 	for i := range c.Groups {
@@ -689,6 +689,19 @@ func Parse(raw []byte) (*Config, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// FileSchemaVersion reads schema_version from saved YAML without validating
+// the rest. It returns 0 when the field is absent or the YAML is unreadable,
+// as in files that older releases read as version 1.
+func FileSchemaVersion(raw []byte) int {
+	var head struct {
+		SchemaVersion int `yaml:"schema_version"`
+	}
+	if yaml.Unmarshal(raw, &head) != nil {
+		return 0
+	}
+	return head.SchemaVersion
 }
 
 // Marshal serializes configuration as YAML for persistence.

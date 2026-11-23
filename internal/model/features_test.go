@@ -15,7 +15,7 @@ func TestSchemaAndDNSPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.SchemaVersion != 1 {
+	if c.SchemaVersion != 2 {
 		t.Fatal(c.SchemaVersion)
 	}
 	c.DNS.Route = "connection"
@@ -33,6 +33,32 @@ func TestSchemaAndDNSPolicy(t *testing.T) {
 	c.DNS.Bootstrap = map[string]string{"dns.google": "8.8.8.8"}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Files written by older releases keep loading as version 1; this release
+// writes version 2 and rejects versions it does not know.
+func TestSchemaVersionsOneAndTwoLoad(t *testing.T) {
+	for raw, want := range map[string]int{"schema_version: 1": 1, "schema_version: 2": 2} {
+		c, err := Parse([]byte(raw))
+		if err != nil || c.SchemaVersion != want {
+			t.Fatalf("Parse(%q) = %v, %v; want version %d", raw, c, err, want)
+		}
+	}
+	for _, raw := range []string{"schema_version: 3", "schema_version: -1"} {
+		if _, err := Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "schema_version") {
+			t.Fatalf("Parse(%q) error = %v", raw, err)
+		}
+	}
+	for raw, want := range map[string]int{
+		"schema_version: 1\n# operator note\n":   1,
+		"schema_version: 2\nfilters: [legacy]\n": 2,
+		"api: {listen: 127.0.0.1:8086}\n":        0,
+		"\x00{{ not yaml":                        0,
+	} {
+		if got := FileSchemaVersion([]byte(raw)); got != want {
+			t.Errorf("FileSchemaVersion(%q) = %d, want %d", raw, got, want)
+		}
 	}
 }
 

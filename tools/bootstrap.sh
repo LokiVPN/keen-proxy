@@ -308,6 +308,24 @@ restore_payload() {
     done
 }
 
+# An older release cannot read the newer schema. Keep the newer file as
+# config.v2.yaml, or under a timestamped name rather than replacing an earlier
+# copy, and install the file the daemon kept for older releases.
+switch_config() {
+    config_newer="${config%/*}/config.v2.yaml"
+    if [ -e "$config_newer" ] || [ -L "$config_newer" ]; then
+        config_newer="${config%/*}/config.v2.$(date +%s).yaml"
+        [ ! -e "$config_newer" ] && [ ! -L "$config_newer" ] || return 1
+    fi
+    config_switched=1
+    mv "$config" "$config_newer" && cp "$config_kept" "$config"
+}
+
+restore_config() {
+    [ "$config_switched" = 1 ] && [ -e "$config_newer" ] || return 0
+    mv -f "$config_newer" "$config"
+}
+
 # Quote one shell word so a copy-pasted command keeps spaces and quotes.
 shell_quote() {
     printf '%s\n' "$1" | awk 'BEGIN { q = sprintf("%c", 39) } {
@@ -361,8 +379,11 @@ finish() {
         if [ "$platform" = openwrt ] && [ "$autostart_saved" = 0 ] && [ -f "$service" ]; then
             service_action disable || { keep_work=1; result=1; }
         fi
-        if { [ "$start_attempted" = 1 ] && ! service_action stop; } || ! restore_payload; then
+        if { [ "$start_attempted" = 1 ] && ! service_action stop; } || ! restore_payload || ! restore_config; then
             echo "KeenProxy: rollback failed; recovery files retained at $work" >&2
+            if [ "$config_switched" = 1 ] && [ -e "$config_newer" ]; then
+                echo "KeenProxy: newer configuration kept in $config_newer" >&2
+            fi
             keep_work=1
             result=1
         fi
@@ -457,6 +478,9 @@ lock="$prefix/var/lock/keenproxy-install.lock"
 mkdir "$lock" 2>/dev/null || fail 'another installer is active or an interrupted run left a lock'
 work=
 service_lock=
+config_kept=
+config_newer=
+config_switched=0
 replacing=0
 start_attempted=0
 was_running=0
@@ -523,7 +547,13 @@ if [ ! -f "$config" ]; then
 fi
 chmod 755 "$work/$asset"
 # Dry-run output can contain connection credentials. Keep it off the console.
-"$work/$asset" -dry-run -config "$config_source" >/dev/null 2>&1 || fail 'candidate binary or configuration failed validation'
+if ! "$work/$asset" -dry-run -config "$config_source" >/dev/null 2>&1; then
+    # On a rollback, use the file the daemon kept before its first newer-schema write.
+    config_kept="${config%/*}/config.v1.yaml"
+    [ "$config_source" = "$config" ] && [ -f "$config_kept" ] && [ ! -L "$config_kept" ] &&
+        "$work/$asset" -dry-run -config "$config_kept" >/dev/null 2>&1 ||
+        fail 'candidate binary or configuration failed validation'
+fi
 
 if [ -e "$service" ] || [ -L "$service" ]; then
     managed_service || fail 'existing init script is not managed by this installer'
@@ -558,6 +588,7 @@ for path in $payload; do
         bin/*|usr/bin/*|etc/init.d/*) if [ ! -x "$prefix/$path" ]; then changed=1; fi ;;
     esac
 done
+if [ -n "$config_kept" ]; then changed=1; fi
 if [ "$config_source" != "$config" ]; then
     mkdir -p "${config%/*}"
     # Avoid overwriting a configuration created while the release was downloading.
@@ -574,6 +605,9 @@ if [ "$changed" = 1 ]; then
         service_action stop || fail 'previous service did not stop cleanly'
     fi
     replacing=1
+    if [ -n "$config_kept" ]; then
+        switch_config || fail 'could not switch to the configuration kept for this release'
+    fi
     install_payload || fail 'could not install staged files'
     start_attempted=1
     start_release || fail 'new service failed to start with routing'
@@ -586,6 +620,9 @@ elif [ "$was_running" = 0 ] || [ "$held4$held6" != 00 ]; then
     start_release || fail 'service failed to start with routing'
 fi
 release_forwarding || fail 'could not release forwarding guard'
+if [ "$config_switched" = 1 ]; then
+    printf 'KeenProxy: restored %s for this release; newer configuration kept in %s\n' "$config_kept" "$config_newer"
+fi
 printf 'KeenProxy %s (%s) installed. Configuration: %s\n' "$tag" "$asset" "$config"
 print_panel_access
 )
