@@ -102,19 +102,30 @@ func isLoopback(r *http.Request) bool {
 	return err == nil && a.Unmap().IsLoopback()
 }
 
-// authorized applies the access policy: loopback peers are trusted, other
-// peers need a verified KeeneticOS session, and without that mode they are
-// refused. It writes the refusal itself.
+// authorized applies the access policy: loopback peers are trusted with
+// RoleManage, other peers need a verified KeeneticOS session, and without that
+// mode they are refused. Writes need RoleManage. It stores the decided role in
+// the request context and writes any refusal itself.
 func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
-	switch {
-	case isLoopback(r):
-		return true
-	case s.Keenetic != nil:
-		return s.allowKeenetic(w, r)
-	default:
-		writeError(w, http.StatusForbidden, "local access only")
-		return false
+	role := RoleManage
+	if !isLoopback(r) {
+		if s.Keenetic == nil {
+			writeError(w, http.StatusForbidden, "local access only")
+			return false
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		var status int
+		if role, status = s.keeneticStatus(r); status != http.StatusOK {
+			writeKeeneticError(w, status)
+			return false
+		}
+		if role != RoleManage && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeKeeneticError(w, http.StatusForbidden)
+			return false
+		}
 	}
+	*r = *r.WithContext(context.WithValue(r.Context(), roleKey{}, role))
+	return true
 }
 
 // auth applies the access policy before calling the endpoint.
@@ -131,8 +142,9 @@ func (s *Server) auth(h http.HandlerFunc) http.Handler {
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	if s.Keenetic != nil {
 		w.Header().Set("Cache-Control", "no-store")
+		_, status := s.keeneticStatus(r)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"authed":       s.keeneticStatus(r) == http.StatusOK,
+			"authed":       status == http.StatusOK,
 			"ip":           clientIP(r),
 			"keenetic_url": s.Keenetic.applicationsURL(),
 		})

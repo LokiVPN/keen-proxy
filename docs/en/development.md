@@ -197,8 +197,10 @@ This experimental mode targets the LAN HTTP session protocol in KeeneticOS
 5.1.10.
 
 KeenProxy verifies the current session and the account's permissions for
-each protected request. Access requires the Web interface and command-line
-management permissions. Read-only, manager and demo accounts are denied.
+each protected request. An administrator (Web interface and command-line
+permissions) can read and change settings. Read-only and manager accounts can
+only view: writes get `403 KeeneticOS management access denied`. Other
+accounts and demo mode are denied.
 Signing out of either panel ends the router session.
 
 This is the only non-loopback way in: without it, other clients get

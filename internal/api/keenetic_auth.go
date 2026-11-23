@@ -204,35 +204,68 @@ func (a *KeeneticAuth) getJSON(ctx context.Context, path, user string, cookie *h
 	return http.StatusOK
 }
 
-// verify requires the current OS identity and permissions on every request.
-// The current account's role is fetched by name instead of loading all users.
-func (a *KeeneticAuth) verify(r *http.Request) int {
+// Role is the authority an authenticated caller holds over the daemon.
+type Role int
+
+const (
+	RoleDeny   Role = iota // no access
+	RoleView               // read-only access
+	RoleManage             // read and write access
+)
+
+type roleKey struct{}
+
+// RoleFrom returns the role decided by the access policy for this request;
+// a request that never passed it is denied.
+func RoleFrom(ctx context.Context) Role {
+	role, _ := ctx.Value(roleKey{}).(Role)
+	return role
+}
+
+// roleFromTags maps KeeneticOS account tags to a role. Administrators carry
+// http and cli; read-only and manager accounts may only view.
+func roleFromTags(tags []string) Role {
+	if !slices.Contains(tags, "http") {
+		return RoleDeny
+	}
+	if slices.Contains(tags, "readonly") || slices.Contains(tags, "manager") {
+		return RoleView
+	}
+	if slices.Contains(tags, "cli") {
+		return RoleManage
+	}
+	return RoleDeny
+}
+
+// verify requires the current OS identity and permissions on every request and
+// returns the account's role with status 200, or RoleDeny with the refusal
+// status. The role is fetched by name instead of loading all users.
+func (a *KeeneticAuth) verify(r *http.Request) (Role, int) {
 	cookie, status := a.browserCookie(r)
 	if status != http.StatusOK {
-		return status
+		return RoleDeny, status
 	}
 	var identity struct {
 		User string `json:"user"`
 		Demo bool   `json:"demo-mode"`
 	}
 	if status := a.getJSON(r.Context(), "/rci/whoami", "", cookie, &identity); status != http.StatusOK {
-		return status
+		return RoleDeny, status
 	}
 	if identity.Demo || strings.TrimSpace(identity.User) == "" || len(identity.User) > 128 {
-		return http.StatusForbidden
+		return RoleDeny, http.StatusForbidden
 	}
 	var users map[string]struct {
 		Tag []string `json:"tag"`
 	}
 	if status := a.getJSON(r.Context(), "/rci/show/sc/user", identity.User, cookie, &users); status != http.StatusOK {
-		return status
+		return RoleDeny, status
 	}
-	tags := users[identity.User].Tag
-	if len(users) != 1 || !slices.Contains(tags, "http") || !slices.Contains(tags, "cli") ||
-		slices.Contains(tags, "readonly") || slices.Contains(tags, "manager") {
-		return http.StatusForbidden
+	role := roleFromTags(users[identity.User].Tag)
+	if len(users) != 1 || role == RoleDeny {
+		return RoleDeny, http.StatusForbidden
 	}
-	return http.StatusOK
+	return role, http.StatusOK
 }
 
 func (a *KeeneticAuth) logout(r *http.Request) int {
@@ -262,18 +295,8 @@ func (a *KeeneticAuth) applicationsURL() string {
 
 // keeneticStatus verifies the browser's KeeneticOS session; no other
 // credential grants KeeneticOS authority.
-func (s *Server) keeneticStatus(r *http.Request) int {
+func (s *Server) keeneticStatus(r *http.Request) (Role, int) {
 	return s.Keenetic.verify(r)
-}
-
-func (s *Server) allowKeenetic(w http.ResponseWriter, r *http.Request) bool {
-	w.Header().Set("Cache-Control", "no-store")
-	status := s.keeneticStatus(r)
-	if status != http.StatusOK {
-		writeKeeneticError(w, status)
-		return false
-	}
-	return true
 }
 
 func writeKeeneticError(w http.ResponseWriter, status int) {

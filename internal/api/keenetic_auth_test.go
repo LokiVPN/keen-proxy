@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,13 @@ const (
 
 // The authority returns the wire format observed on KeeneticOS 5.1.
 func keeneticFixture(t *testing.T) (*Server, *fakeDaemon, *atomic.Int32) {
+	t.Helper()
+	return keeneticFixtureTags(t, nil)
+}
+
+// keeneticFixtureTags is keeneticFixture with the account's tags fixed when
+// tags is non-nil; mode 1 still adds readonly to the default tags.
+func keeneticFixtureTags(t *testing.T, accountTags []string) (*Server, *fakeDaemon, *atomic.Int32) {
 	t.Helper()
 	var mode atomic.Int32
 	authority := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +63,9 @@ func keeneticFixture(t *testing.T) (*Server, *fakeDaemon, *atomic.Int32) {
 				t.Error("roles must be scoped to the authenticated account")
 			}
 			tags := []string{"http", "cli"}
-			if mode.Load() == 1 {
+			if accountTags != nil {
+				tags = accountTags
+			} else if mode.Load() == 1 {
 				tags = append(tags, "readonly")
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"operator": map[string]any{"tag": tags}})
@@ -121,7 +131,7 @@ func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
 	}
 
 	mode.Store(1)
-	call(keeneticRequest("GET", "/api/config", "", true), http.StatusForbidden)
+	call(keeneticRequest("GET", "/api/config", "", true), http.StatusOK)
 	mode.Store(3)
 	call(keeneticRequest("GET", "/api/config", "", true), http.StatusServiceUnavailable)
 	mode.Store(2)
@@ -160,5 +170,77 @@ func TestKeeneticLogoutRevokesSession(t *testing.T) {
 	s.Handler().ServeHTTP(w, keeneticRequest("GET", "/api/status", "", true))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("the old session still opens the API: HTTP %d", w.Code)
+	}
+}
+
+const roleConfig = `{"groups":[{"name":"test","target":"direct","entries":["example.com"]}]}`
+
+func roleWrite() *http.Request {
+	r := keeneticRequest("PUT", "/api/config", roleConfig, true)
+	r.Header.Set("Origin", keeneticPanel)
+	return r
+}
+
+func serve(s *Server, r *http.Request) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	return w
+}
+
+func checkViewOnly(t *testing.T, tags []string) {
+	t.Helper()
+	s, d, _ := keeneticFixtureTags(t, tags)
+	if w := serve(s, keeneticRequest("GET", "/api/status", "", true)); w.Code != http.StatusOK {
+		t.Fatalf("read: got %d (%s)", w.Code, w.Body)
+	}
+	w := serve(s, roleWrite())
+	if w.Code != http.StatusForbidden || strings.TrimSpace(w.Body.String()) != `{"error":"KeeneticOS management access denied"}` {
+		t.Fatalf("write: got %d %s", w.Code, w.Body)
+	}
+	if d.applied != nil {
+		t.Fatal("a view role applied settings")
+	}
+}
+
+func TestReadOnlyAccountCanReadButNotWrite(t *testing.T) {
+	checkViewOnly(t, []string{"http", "readonly"})
+}
+
+func TestManagerAccountIsViewOnly(t *testing.T) {
+	checkViewOnly(t, []string{"http", "cli", "manager"})
+}
+
+func TestAdministratorCanWrite(t *testing.T) {
+	s, d, _ := keeneticFixtureTags(t, []string{"http", "cli"})
+	if w := serve(s, roleWrite()); w.Code != http.StatusOK || d.applied == nil {
+		t.Fatalf("write: got %d (%s)", w.Code, w.Body)
+	}
+}
+
+func TestUnknownTagsAreDenied(t *testing.T) {
+	s, _, _ := keeneticFixtureTags(t, []string{"http"})
+	if w := serve(s, keeneticRequest("GET", "/api/status", "", true)); w.Code != http.StatusForbidden {
+		t.Fatalf("got %d (%s)", w.Code, w.Body)
+	}
+}
+
+func TestRoleFromReportsTheAuthorizedRole(t *testing.T) {
+	if RoleFrom(context.Background()) != RoleDeny {
+		t.Fatal("a request without a decision must be denied")
+	}
+	probe := func(s *Server, r *http.Request) Role {
+		var got Role
+		serve := s.auth(func(w http.ResponseWriter, r *http.Request) { got = RoleFrom(r.Context()) })
+		serve.ServeHTTP(httptest.NewRecorder(), r)
+		return got
+	}
+	s, _, _ := keeneticFixtureTags(t, []string{"http", "readonly"})
+	if got := probe(s, keeneticRequest("GET", "/x", "", true)); got != RoleView {
+		t.Fatalf("session role %v", got)
+	}
+	local := keeneticRequest("GET", "/x", "", false)
+	local.RemoteAddr = "127.0.0.1:5000"
+	if got := probe(s, local); got != RoleManage {
+		t.Fatalf("loopback role %v", got)
 	}
 }
