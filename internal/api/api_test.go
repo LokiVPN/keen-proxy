@@ -514,3 +514,59 @@ func TestPagesFollowTheKeeneticSession(t *testing.T) {
 		t.Fatalf("router unreachable: %d %q", w.Code, w.Body)
 	}
 }
+
+// Ruling R15: while an SSH tunnel is open, a page the admin visits must not
+// drive the loopback control API. Every write from a cross-origin browser
+// context is refused before trust is decided; same-origin pages and clients
+// without browser headers (curl, the integration and memory gates) still work.
+func TestCrossOriginWritesAreRefusedEvenFromLoopback(t *testing.T) {
+	s, d := newServer()
+	for _, rt := range s.routes() {
+		method, _ := routeMethod(rt.pattern)
+		methods := []string{method}
+		if method == "" {
+			methods = []string{http.MethodPost, http.MethodPut, http.MethodDelete}
+		}
+		for _, m := range methods {
+			if m == http.MethodGet {
+				continue
+			}
+			for _, path := range routePaths(rt.pattern) {
+				for _, headers := range []map[string]string{
+					{"Origin": "https://evil.example"},
+					{"Sec-Fetch-Site": "cross-site"},
+					{"Sec-Fetch-Site": "same-site", "Origin": "http://127.0.0.1:3000"},
+					{"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+				} {
+					r := httptest.NewRequest(m, "http://127.0.0.1:8086"+path, strings.NewReader(roleConfig))
+					r.RemoteAddr, r.Host = local, "127.0.0.1:8086"
+					r.Header.Set("Content-Type", "text/plain")
+					for k, v := range headers {
+						r.Header.Set(k, v)
+					}
+					if w := serve(s, r); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "cross-origin request denied") {
+						t.Errorf("%s %s with %v: %d %q", m, path, headers, w.Code, w.Body)
+					}
+				}
+			}
+		}
+	}
+	if d.applied != nil {
+		t.Fatal("a cross-origin write applied settings")
+	}
+	for _, headers := range []map[string]string{
+		nil,
+		{"Origin": "http://127.0.0.1:8086"},
+		{"Sec-Fetch-Site": "same-origin", "Origin": "http://127.0.0.1:8086"},
+	} {
+		d.applied = nil
+		r := httptest.NewRequest("PUT", "/api/config", strings.NewReader(roleConfig))
+		r.RemoteAddr, r.Host = local, "127.0.0.1:8086"
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		if w := serve(s, r); w.Code != http.StatusOK || d.applied == nil {
+			t.Errorf("loopback PUT /api/config with %v: %d %s", headers, w.Code, w.Body)
+		}
+	}
+}

@@ -160,19 +160,31 @@ type verdict struct {
 	reason string // empty when granted
 }
 
-// authorize is the single place that decides access. Every request except
-// publicRoutes gets a verdict; a granted one carries its role in the context
-// (see RoleFrom), a refused one gets the refusal as JSON under /api and as
-// short text elsewhere, where stage 4 renders the sign-in screens. Nothing it
-// passes on or refuses may be cached.
+// browserOrigin refuses writes (methods other than GET, HEAD and OPTIONS)
+// that a browser marks as cross-origin through Sec-Fetch-Site or Origin.
+// Requests without those headers, such as curl and the test gates, pass.
+var browserOrigin = http.NewCrossOriginProtection()
+
+// authorize is the single place that decides access. A cross-origin write is
+// refused first, before any trust decision, so a page the admin visits can
+// drive neither an SSH tunnel to loopback nor a KeeneticOS session (ruling
+// R15). Every other request except publicRoutes gets a verdict; a granted one
+// carries its role in the context (see RoleFrom), a refused one gets the
+// refusal as JSON under /api and as short text elsewhere, where stage 4
+// renders the sign-in screens. Nothing it passes on or refuses may be cached.
 func (s *Server) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if publicRoutes[r.Method+" "+r.URL.Path] {
+		var v verdict
+		switch {
+		case browserOrigin.Check(r) != nil:
+			v = verdict{status: http.StatusForbidden, reason: "cross-origin request denied"}
+		case publicRoutes[r.Method+" "+r.URL.Path]:
 			next.ServeHTTP(w, r)
 			return
+		default:
+			v = s.decide(r)
 		}
-		v := s.decide(r)
 		if v.status != http.StatusOK {
 			if isAPI(r.URL.Path) {
 				writeError(w, v.status, v.reason)

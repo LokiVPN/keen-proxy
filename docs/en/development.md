@@ -243,6 +243,14 @@ session (`503` while sign-in is unavailable); only `GET /api/session` and
 receives subscription URLs, keys or journal entries. One middleware
 authorizes every path, pages included; only those two routes skip it.
 
+Before it decides on trust, the middleware refuses cross-origin writes with
+`403 cross-origin request denied`: any method other than `GET`, `HEAD` and
+`OPTIONS` whose `Sec-Fetch-Site` is not `same-origin` or `none`, or whose
+`Origin` does not match `Host`. This applies to loopback and KeeneticOS
+sessions alike, so a page you visit while an SSH tunnel is open cannot change
+settings through it. Clients that send neither header, such as curl and the
+test gates, are not affected.
+
 Residual risk: a forward proxy running on the router (tinyproxy, xray and the
 like) that connects from `127.0.0.1` with `Host: 127.0.0.1:<port>` is trusted.
 Do not run open local proxies next to KeenProxy.

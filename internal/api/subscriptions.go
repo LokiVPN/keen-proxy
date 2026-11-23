@@ -30,9 +30,7 @@ func (s *Server) subscriptionStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) subscriptionPreview(w http.ResponseWriter, r *http.Request) {
-	if !allowSubscriptionPost(w, r) {
-		return
-	}
+	w.Header().Set("Cache-Control", "no-store")
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/json" {
 		writeError(w, http.StatusUnsupportedMediaType, "subscription preview requires application/json")
@@ -56,9 +54,7 @@ func (s *Server) subscriptionPreview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) subscriptionRefresh(w http.ResponseWriter, r *http.Request) {
-	if !allowSubscriptionPost(w, r) {
-		return
-	}
+	w.Header().Set("Cache-Control", "no-store")
 	d, ok := s.D.(subscriptionDaemon)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "subscription refresh requires a live backend")
@@ -74,9 +70,7 @@ func (s *Server) subscriptionRefresh(w http.ResponseWriter, r *http.Request) {
 // subscriptionCheck accepts an applied node identity, or an empty object for
 // the whole saved catalog. Probe destinations come from the router settings.
 func (s *Server) subscriptionCheck(w http.ResponseWriter, r *http.Request) {
-	if !allowSubscriptionPost(w, r) {
-		return
-	}
+	w.Header().Set("Cache-Control", "no-store")
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/json" {
 		writeError(w, http.StatusUnsupportedMediaType, "subscription check requires application/json")
@@ -100,16 +94,4 @@ func (s *Server) subscriptionCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
-}
-
-// allowSubscriptionPost rejects cross-origin browser requests, such as another
-// page posting with a signed-in KeeneticOS session, before a preview, refresh
-// or check can contact the provider and register the router's HWID.
-func allowSubscriptionPost(w http.ResponseWriter, r *http.Request) bool {
-	w.Header().Set("Cache-Control", "no-store")
-	if err := browserOrigin.Check(r); err != nil {
-		writeError(w, http.StatusForbidden, "cross-origin subscription request denied")
-		return false
-	}
-	return true
 }
