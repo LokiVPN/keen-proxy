@@ -205,14 +205,17 @@ explicit origin fails the startup of the web interface. The mode targets the LAN
 KeeneticOS 5.1.10.
 
 KeenProxy verifies the current session and the account's permissions for
-each protected request. An administrator (Web interface and command-line
-permissions) can read and change settings. Read-only and manager accounts can
+each page request. An administrator (Web interface and command-line
+permissions) can view and change settings. Read-only and manager accounts can
 only view: writes get `403 KeeneticOS management access denied`. Other
 accounts and demo mode are denied.
 Signing out of either panel ends the router session.
 
-This is the only non-loopback way in: without it, other clients get
-`403 local access only`. See the [control API](#control-api).
+A session opens pages only. Under `/api` it reaches nothing but
+`GET /api/session` and `POST /api/logout`: configuration, keys and journals
+stay with the loopback [control API](#control-api), and the pages will show
+them server-side once they arrive. Sign-in is the only non-loopback way in:
+without it, other clients get `403 local access only`.
 
 Recovery and non-Keenetic systems: forward the panel through SSH and open it
 on loopback, which is always trusted:
@@ -233,11 +236,12 @@ The HTTP API is a control API, not a browser session API. A request whose
 is treated like a LAN client. The memory gate
 (`test/memory/scenario.py`), `make integration` (`test/netns/run.sh`) and
 local scripts on the router rely on this; the installer does not call the API.
-Any `Authorization` header a client still sends is ignored. Other
-clients need a KeeneticOS session when KeeneticOS sign-in is enabled
-(default on Keenetic; see `-keenetic-auth-origin`) and otherwise receive
-`403 local access only`. One middleware authorizes every path, pages
-included; only `GET /api/session` and `POST /api/logout` skip it.
+Any `Authorization` header a client still sends is ignored. Every other
+client gets `403 local access only` on `/api`, with or without a KeeneticOS
+session (`503` while sign-in is unavailable); only `GET /api/session` and
+`POST /api/logout` answer browsers, so a signed-in read-only account never
+receives subscription URLs, keys or journal entries. One middleware
+authorizes every path, pages included; only those two routes skip it.
 
 Residual risk: a forward proxy running on the router (tinyproxy, xray and the
 like) that connects from `127.0.0.1` with `Host: 127.0.0.1:<port>` is trusted.

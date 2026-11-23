@@ -1,10 +1,11 @@
 // Package api serves the keenProxy HTTP API and web interface.
 //
-// The HTTP API is a control API for local processes: it trusts only loopback
-// peers that also address a loopback Host. Other peers reach it only through a
-// verified KeeneticOS session when that sign-in mode is enabled. A separate
-// address guard restricts access to private, loopback, and link-local peers
-// even when the listening port is exposed.
+// The HTTP API under /api is a control API for local processes: it trusts
+// only loopback peers that also address a loopback Host, and a KeeneticOS
+// session opens nothing there but the session probe and sign-out. Pages
+// (other paths) also admit verified KeeneticOS sessions when that sign-in mode
+// is enabled. A separate address guard restricts access to private, loopback,
+// and link-local peers even when the listening port is exposed.
 package api
 
 import (
@@ -185,9 +186,10 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 }
 
 // decide applies the access policy: trusted loopback requests manage
-// everything, other peers need a verified KeeneticOS session, and without
-// that mode they are refused. Writes (methods other than GET and HEAD) need
-// RoleManage.
+// everything. The control API under /api serves nobody else, so a KeeneticOS
+// session never reads configuration, keys or journals there (ruling R14).
+// Pages need a verified KeeneticOS session, and without that mode other peers
+// are refused. Writes (methods other than GET and HEAD) need RoleManage.
 func (s *Server) decide(r *http.Request) verdict {
 	if isLoopback(r) {
 		return verdict{role: RoleManage, status: http.StatusOK}
@@ -195,7 +197,7 @@ func (s *Server) decide(r *http.Request) verdict {
 	if s.Unavailable {
 		return verdict{status: http.StatusServiceUnavailable, reason: "web interface unavailable; use an SSH tunnel to 127.0.0.1"}
 	}
-	if s.Keenetic == nil {
+	if s.Keenetic == nil || isAPI(r.URL.Path) {
 		return verdict{status: http.StatusForbidden, reason: "local access only"}
 	}
 	role, status := s.Keenetic.verify(r)

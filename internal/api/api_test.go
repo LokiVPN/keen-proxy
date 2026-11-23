@@ -441,7 +441,7 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 		api, page refusal
 	}{
 		{"sign-in off", plain, refusal{http.StatusForbidden, "local access only"}, refusal{http.StatusForbidden, "local access only"}},
-		{"keeneticos", keenetic, refusal{http.StatusUnauthorized, "KeeneticOS sign-in required"}, refusal{http.StatusUnauthorized, "KeeneticOS sign-in required"}},
+		{"keeneticos", keenetic, refusal{http.StatusForbidden, "local access only"}, refusal{http.StatusUnauthorized, "KeeneticOS sign-in required"}},
 		{"unavailable", unavailable, refusal{http.StatusServiceUnavailable, "use an SSH tunnel"}, refusal{http.StatusServiceUnavailable, "use an SSH tunnel"}},
 	} {
 		for _, rq := range requests {

@@ -10,6 +10,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/ordo-systems/keen-proxy/internal/journal"
+	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 const (
@@ -93,23 +97,21 @@ func keeneticRequest(method, path, body string, withSession bool) *http.Request 
 	return r
 }
 
-func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
+// A KeeneticOS session opens pages, never the control API, and losing the
+// router session closes the pages again.
+func TestKeeneticSessionOpensPagesNotTheControlAPI(t *testing.T) {
 	s, d, mode := keeneticFixture(t)
-	h := s.Handler()
-	call := func(r *http.Request, status int) *httptest.ResponseRecorder {
+	call := func(r *http.Request, status int, body string) {
 		t.Helper()
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		if w.Code != status {
-			t.Fatalf("%s %s: got %d, want %d (%s)", r.Method, r.URL.Path, w.Code, status, w.Body)
+		if w := serve(s, r); w.Code != status || !strings.Contains(w.Body.String(), body) {
+			t.Fatalf("%s %s: got %d %q, want %d %q", r.Method, r.URL.Path, w.Code, w.Body, status, body)
 		}
-		return w
 	}
+	call(keeneticRequest("GET", "/", "", false), http.StatusUnauthorized, "KeeneticOS sign-in required")
+	call(keeneticRequest("GET", "/", "", true), http.StatusServiceUnavailable, "KeenProxy interface is being rebuilt")
+	call(keeneticRequest("GET", "/api/status", "", true), http.StatusForbidden, "local access only")
 
-	call(keeneticRequest("GET", "/api/status", "", false), http.StatusUnauthorized)
-	call(keeneticRequest("GET", "/api/status", "", true), http.StatusOK)
-
-	view := call(keeneticRequest("GET", "/api/session", "", true), http.StatusOK)
+	view := serve(s, keeneticRequest("GET", "/api/session", "", true))
 	var session struct {
 		Authed      bool   `json:"authed"`
 		KeeneticURL string `json:"keenetic_url"`
@@ -118,69 +120,43 @@ func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
 		t.Fatalf("browser session: %s", view.Body)
 	}
 
-	const config = `{"groups":[{"name":"test","target":"direct","entries":["example.com"]}]}`
-	write := keeneticRequest("PUT", "/api/config", config, true)
-	write.Header.Set("Origin", "http://192.168.7.1")
-	call(write, http.StatusForbidden)
-	if d.applied != nil {
-		t.Fatal("cross-origin request applied settings")
-	}
+	write := keeneticRequest("PUT", "/api/config", roleConfig, true)
 	write.Header.Set("Origin", keeneticPanel)
-	call(write, http.StatusOK)
-	if d.applied == nil || d.applied.Groups[0].Entries[0] != "example.com" {
-		t.Fatal("a verified management session could not apply settings")
+	call(write, http.StatusForbidden, "local access only")
+	if d.applied != nil {
+		t.Fatal("a browser session applied settings through the control API")
 	}
 
-	mode.Store(1)
-	call(keeneticRequest("GET", "/api/config", "", true), http.StatusOK)
 	mode.Store(3)
-	call(keeneticRequest("GET", "/api/config", "", true), http.StatusServiceUnavailable)
+	call(keeneticRequest("GET", "/", "", true), http.StatusServiceUnavailable, "KeeneticOS session check unavailable")
 	mode.Store(2)
-	call(keeneticRequest("GET", "/api/config", "", true), http.StatusUnauthorized)
+	call(keeneticRequest("GET", "/", "", true), http.StatusUnauthorized, "KeeneticOS sign-in required")
 
 	automation := keeneticRequest("GET", "/api/status", "", false)
 	automation.Header.Set("Authorization", "Bearer secret")
-	call(automation, http.StatusUnauthorized)
+	call(automation, http.StatusForbidden, "local access only")
 
 	local := keeneticRequest("GET", "/api/status", "", false)
 	local.RemoteAddr, local.Host = "127.0.0.1:5000", "127.0.0.1:8086"
-	call(local, http.StatusOK)
+	call(local, http.StatusOK, `"build"`)
 }
 
 func TestKeeneticLogoutRevokesSession(t *testing.T) {
 	s, _, _ := keeneticFixture(t)
-	journalGet := func() int {
-		w := httptest.NewRecorder()
-		s.Handler().ServeHTTP(w, keeneticRequest("GET", "/api/journal/audit", "", true))
-		return w.Code
-	}
-	if code := journalGet(); code != http.StatusOK {
-		t.Fatalf("authorized journal: HTTP %d", code)
+	if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleManage {
+		t.Fatalf("signed-in page: role %v, %d %s", role, w.Code, w.Body)
 	}
 	logout := keeneticRequest("POST", "/api/logout", "", true)
 	logout.Header.Set("Origin", keeneticPanel)
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, logout)
-	if w.Code != http.StatusOK {
+	if w := serve(s, logout); w.Code != http.StatusOK {
 		t.Fatalf("sign out: HTTP %d (%s)", w.Code, w.Body)
 	}
-	if code := journalGet(); code != http.StatusUnauthorized {
-		t.Fatalf("journal after sign-out: HTTP %d", code)
-	}
-	w = httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, keeneticRequest("GET", "/api/status", "", true))
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("the old session still opens the API: HTTP %d", w.Code)
+	if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleDeny || w.Code != http.StatusUnauthorized {
+		t.Fatalf("the old session still opens pages: role %v, %d %s", role, w.Code, w.Body)
 	}
 }
 
 const roleConfig = `{"groups":[{"name":"test","target":"direct","entries":["example.com"]}]}`
-
-func roleWrite() *http.Request {
-	r := keeneticRequest("PUT", "/api/config", roleConfig, true)
-	r.Header.Set("Origin", keeneticPanel)
-	return r
-}
 
 func serve(s *Server, r *http.Request) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
@@ -188,18 +164,33 @@ func serve(s *Server, r *http.Request) *httptest.ResponseRecorder {
 	return w
 }
 
+// pageRole sends r through the access policy to a page handler and returns
+// the role that handler sees (RoleDeny when it was never called) and the
+// response.
+func pageRole(s *Server, r *http.Request) (Role, *httptest.ResponseRecorder) {
+	got := RoleDeny
+	page := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = RoleFrom(r.Context()) })
+	w := httptest.NewRecorder()
+	s.lanOnly(s.authorize(page)).ServeHTTP(w, r)
+	return got, w
+}
+
+// pageWrite is a same-origin form post from the panel address.
+func pageWrite() *http.Request {
+	r := keeneticRequest("POST", "/connections", "", true)
+	r.Header.Set("Origin", keeneticPanel)
+	return r
+}
+
 func checkViewOnly(t *testing.T, tags []string) {
 	t.Helper()
-	s, d, _ := keeneticFixtureTags(t, tags)
-	if w := serve(s, keeneticRequest("GET", "/api/status", "", true)); w.Code != http.StatusOK {
-		t.Fatalf("read: got %d (%s)", w.Code, w.Body)
+	s, _, _ := keeneticFixtureTags(t, tags)
+	if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleView {
+		t.Fatalf("read: role %v, %d %s", role, w.Code, w.Body)
 	}
-	w := serve(s, roleWrite())
-	if w.Code != http.StatusForbidden || strings.TrimSpace(w.Body.String()) != `{"error":"KeeneticOS management access denied"}` {
-		t.Fatalf("write: got %d %s", w.Code, w.Body)
-	}
-	if d.applied != nil {
-		t.Fatal("a view role applied settings")
+	role, w := pageRole(s, pageWrite())
+	if role != RoleDeny || w.Code != http.StatusForbidden || strings.TrimSpace(w.Body.String()) != "KeeneticOS management access denied" {
+		t.Fatalf("write: role %v, %d %s", role, w.Code, w.Body)
 	}
 }
 
@@ -212,16 +203,16 @@ func TestManagerAccountIsViewOnly(t *testing.T) {
 }
 
 func TestAdministratorCanWrite(t *testing.T) {
-	s, d, _ := keeneticFixtureTags(t, []string{"http", "cli"})
-	if w := serve(s, roleWrite()); w.Code != http.StatusOK || d.applied == nil {
-		t.Fatalf("write: got %d (%s)", w.Code, w.Body)
+	s, _, _ := keeneticFixtureTags(t, []string{"http", "cli"})
+	if role, w := pageRole(s, pageWrite()); role != RoleManage {
+		t.Fatalf("write: role %v, %d %s", role, w.Code, w.Body)
 	}
 }
 
 func TestUnknownTagsAreDenied(t *testing.T) {
 	s, _, _ := keeneticFixtureTags(t, []string{"http"})
-	if w := serve(s, keeneticRequest("GET", "/api/status", "", true)); w.Code != http.StatusForbidden {
-		t.Fatalf("got %d (%s)", w.Code, w.Body)
+	if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleDeny || w.Code != http.StatusForbidden {
+		t.Fatalf("got role %v, %d (%s)", role, w.Code, w.Body)
 	}
 }
 
@@ -229,43 +220,33 @@ func TestRoleFromReportsTheAuthorizedRole(t *testing.T) {
 	if RoleFrom(context.Background()) != RoleDeny {
 		t.Fatal("a request without a decision must be denied")
 	}
-	probe := func(s *Server, r *http.Request) Role {
-		var got Role
-		serve := s.authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = RoleFrom(r.Context()) }))
-		serve.ServeHTTP(httptest.NewRecorder(), r)
-		return got
-	}
 	s, _, _ := keeneticFixtureTags(t, []string{"http", "readonly"})
-	if got := probe(s, keeneticRequest("GET", "/api/x", "", true)); got != RoleView {
+	if got, _ := pageRole(s, keeneticRequest("GET", "/x", "", true)); got != RoleView {
 		t.Fatalf("session role %v", got)
 	}
 	local := keeneticRequest("GET", "/api/x", "", false)
 	local.RemoteAddr, local.Host = "127.0.0.1:5000", "127.0.0.1:8086"
-	if got := probe(s, local); got != RoleManage {
+	if got, _ := pageRole(s, local); got != RoleManage {
 		t.Fatalf("loopback role %v", got)
 	}
 }
 
 func TestMyKeeneticHostAccepted(t *testing.T) {
 	s, _, _ := keeneticFixture(t)
-	r := keeneticRequest("GET", "/api/status", "", true)
+	r := keeneticRequest("GET", "/connections", "", true)
 	r.Host = "my.keenetic.net:8086"
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("my.keenetic.net with the panel port: %d", w.Code)
+	if role, w := pageRole(s, r); role != RoleManage {
+		t.Fatalf("my.keenetic.net with the panel port: role %v, %d", role, w.Code)
 	}
 }
 
 func TestOtherHostRejected(t *testing.T) {
 	s, _, _ := keeneticFixture(t)
 	for _, host := range []string{"my.keenetic.net", "my.keenetic.net:80", "evil.example:8086", "192.168.7.1", "192.168.7.2:8086", "my.keenetic.net.evil.example:8086"} {
-		r := keeneticRequest("GET", "/api/status", "", true)
+		r := keeneticRequest("GET", "/connections", "", true)
 		r.Host = host
-		w := httptest.NewRecorder()
-		s.Handler().ServeHTTP(w, r)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("Host %q: %d, want 403", host, w.Code)
+		if role, w := pageRole(s, r); role != RoleDeny || w.Code != http.StatusForbidden {
+			t.Errorf("Host %q: role %v, %d, want 403", host, role, w.Code)
 		}
 	}
 }
@@ -289,22 +270,70 @@ func TestUnavailableServiceDeniesBrowsersWith503(t *testing.T) {
 func TestMyKeeneticHostWritePath(t *testing.T) {
 	for _, tc := range []struct {
 		origin string
-		want   int
+		want   Role
 	}{
-		{"http://my.keenetic.net:8086", http.StatusOK},
-		{"http://192.168.7.1:8086", http.StatusForbidden},
+		{"http://my.keenetic.net:8086", RoleManage},
+		{"http://192.168.7.1:8086", RoleDeny},
 	} {
-		s, d, _ := keeneticFixture(t)
-		r := keeneticRequest("PUT", "/api/config", `{"groups":[{"name":"g","target":"direct","entries":["example.com"]}]}`, true)
+		s, _, _ := keeneticFixture(t)
+		r := pageWrite()
 		r.Host = "my.keenetic.net:8086"
 		r.Header.Set("Origin", tc.origin)
-		w := httptest.NewRecorder()
-		s.Handler().ServeHTTP(w, r)
-		if w.Code != tc.want {
-			t.Errorf("Origin %s: %d %s, want %d", tc.origin, w.Code, w.Body, tc.want)
+		if role, w := pageRole(s, r); role != tc.want || (role == RoleDeny && w.Code != http.StatusForbidden) {
+			t.Errorf("Origin %s: role %v, %d %s, want %v", tc.origin, role, w.Code, w.Body, tc.want)
 		}
-		if applied := d.applied != nil; applied != (tc.want == http.StatusOK) {
-			t.Errorf("Origin %s: config applied = %t", tc.origin, applied)
+	}
+}
+
+// The control API is loopback-only (ruling R14): whichever account signed in
+// and whichever route it calls, a browser on the LAN never receives the
+// subscription URL, a private key or a journal entry.
+func TestBrowserResponsesNeverCarrySecrets(t *testing.T) {
+	secrets := []string{"subscription-secret-fixture", "wireguard-key-secret-fixture", "journal-secret-fixture"}
+	seed := func(d *fakeDaemon) {
+		d.cfg = &model.Config{}
+		d.cfg.Defaults()
+		d.cfg.Subscriptions = []subscription.Source{{ID: "loki", URL: "https://provider.example/sub/" + secrets[0]}}
+		d.cfg.Connections = []model.Connection{{ID: "wg", Name: "WG", Type: model.ConnWireGuard,
+			WireGuard: &model.WireGuard{PrivateKey: secrets[1], Address: []string{"10.0.0.2/32"}}}}
+		for _, kind := range journal.Kinds {
+			d.journals[kind].Add(journal.Entry{Action: "fixture", Details: "password " + secrets[2], Message: secrets[2], Host: secrets[2]})
+		}
+	}
+	for _, account := range []struct {
+		name    string
+		tags    []string
+		session bool
+	}{
+		{"manage", []string{"http", "cli"}, true},
+		{"view", []string{"http", "readonly"}, true},
+		{"no session", []string{"http", "cli"}, false},
+	} {
+		s, d, mode := keeneticFixtureTags(t, account.tags)
+		for _, rt := range s.routes() {
+			method, _ := routeMethod(rt.pattern)
+			methods := []string{method}
+			if method == "" {
+				methods = []string{http.MethodGet, http.MethodPost}
+			}
+			for _, method := range methods {
+				for _, path := range routePaths(rt.pattern) {
+					seed(d)
+					mode.Store(0) // a previous logout revoked the router session
+					r := keeneticRequest(method, path, "{}", account.session)
+					r.Header.Set("Origin", keeneticPanel)
+					r.Header.Set("Content-Type", "application/json")
+					w := serve(s, r)
+					for _, secret := range secrets {
+						if strings.Contains(w.Body.String(), secret) {
+							t.Errorf("%s: %s %s disclosed %q: %d", account.name, method, path, secret, w.Code)
+						}
+					}
+					if !publicRoutes[method+" "+path] && w.Code/100 == 2 {
+						t.Errorf("%s: %s %s answered a browser with %d", account.name, method, path, w.Code)
+					}
+				}
+			}
 		}
 	}
 }
