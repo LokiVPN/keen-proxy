@@ -48,6 +48,7 @@ func subscriptionTargets(c *model.Config) []string {
 	}
 	for _, network := range c.Networks {
 		add(network.Target)
+		add(network.Default)
 	}
 	for _, client := range c.Clients {
 		add(client.Target)

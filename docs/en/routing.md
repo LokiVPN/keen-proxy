@@ -68,6 +68,15 @@ Disabling a connection keeps its incoming group, client, network, and DNS refere
 
 Periodic health checks measure HTTP requests, not ICMP ping. They are separate from the manual HTTPS and transfer checks in Diagnostics.
 
+## Default route for split policies { #default-route }
+
+In split mode, traffic that matches no group goes direct. A network can set `default` to send that traffic elsewhere: a connection ID or a managed subscription target tunnels it, `direct` (or empty) keeps it direct, and `profile` is accepted but still compiles as direct until the provider profile is applied. `block` is rejected; add a block group instead. Devices in the network that split inherit its default. Groups always win over the default.
+
+```yaml
+networks:
+  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: fi}
+```
+
 ## DNS
 
 DNS settings choose upstream resolvers and whether requests travel directly or through a connection. Bootstrap addresses help resolve encrypted resolver hostnames. Failure policy controls whether a failed selected path may use direct DNS. Filter lists and exceptions change DNS answers, not every possible form of application traffic.

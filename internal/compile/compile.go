@@ -5,9 +5,11 @@ package compile
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,9 +66,10 @@ type Output struct {
 // Client classes depend only on configured connections; address updates change
 // file contents without changing the class set.
 const (
-	classOff   = "clients-off"
-	classSplit = "clients-split"
-	classFull  = "clients-full-" // + connection ID
+	classOff     = "clients-off"
+	classSplit   = "clients-split"
+	classSplitTo = "clients-split-to-" // + default target
+	classFull    = "clients-full-"     // + connection ID
 )
 
 // noSource keeps empty classes from matching every source.
@@ -77,6 +80,17 @@ type policy struct {
 	source netip.Prefix
 	mode   model.Mode
 	target string
+	// fallback is the outbound for split traffic matching no group; empty means direct.
+	fallback string
+}
+
+// splitFallback maps a Network.Default to a compiled target; profile is not yet
+// resolved and compiles as direct.
+func splitFallback(d string) string {
+	if d == model.TargetDirect || d == model.DefaultProfile {
+		return ""
+	}
+	return d
 }
 
 // Compile builds runtime artifacts from a configuration that has passed Validate.
@@ -169,7 +183,7 @@ func policies(in Input) (clients, networks []policy, excluded []netip.Addr) {
 	for _, n := range c.Networks {
 		p, _ := netip.ParsePrefix(n.CIDR)
 		nets = append(nets, netPol{p.Masked(), n})
-		networks = append(networks, policy{p.Masked(), n.Mode, n.Target})
+		networks = append(networks, policy{p.Masked(), n.Mode, n.Target, splitFallback(n.Default)})
 	}
 	for _, cl := range c.Clients {
 		ip, ok := clientIP(cl, in.Neighbors)
@@ -193,7 +207,10 @@ func policies(in Input) (clients, networks []policy, excluded []netip.Addr) {
 		if target == "" && network != nil {
 			target = network.Target
 		}
-		pol := policy{netip.PrefixFrom(ip, ip.BitLen()), mode, target}
+		pol := policy{source: netip.PrefixFrom(ip, ip.BitLen()), mode: mode, target: target}
+		if network != nil {
+			pol.fallback = splitFallback(network.Default)
+		}
 		if mode == model.ModeOff {
 			if network != nil && network.Mode != model.ModeOff {
 				excluded = append(excluded, ip)
@@ -457,7 +474,7 @@ func sourceRules(pols []policy, groups []groupSet, tags map[string]string) []obj
 	var rules []obj
 	for i := 0; i < len(pols); {
 		j := i + 1
-		for j < len(pols) && pols[j].mode == pols[i].mode && (pols[i].mode == model.ModeSplit || pols[j].target == pols[i].target) {
+		for j < len(pols) && pols[j].mode == pols[i].mode && ((pols[i].mode == model.ModeSplit && pols[j].fallback == pols[i].fallback) || (pols[i].mode != model.ModeSplit && pols[j].target == pols[i].target)) {
 			j++
 		}
 		var src []string
@@ -483,7 +500,7 @@ func sourceRules(pols []policy, groups []groupSet, tags map[string]string) []obj
 				}
 				rules = append(rules, obj{"source_ip_cidr": src, "rule_set": g.tags, "outbound": outbound(g.target)})
 			}
-			rules = append(rules, obj{"source_ip_cidr": src, "outbound": tagDirect})
+			rules = append(rules, obj{"source_ip_cidr": src, "outbound": outbound(pols[i].fallback)})
 		}
 		i = j
 	}
@@ -493,6 +510,8 @@ func sourceRules(pols []policy, groups []groupSet, tags map[string]string) []obj
 // clientClass maps a resolved client policy to its shared address set.
 func clientClass(p policy) string {
 	switch {
+	case p.mode == model.ModeSplit && p.fallback != "":
+		return classSplitTo + p.fallback
 	case p.mode == model.ModeSplit:
 		return classSplit
 	case p.mode == model.ModeFull && p.target != "" && p.target != model.TargetDirect:
@@ -511,7 +530,17 @@ func clientClasses(c *model.Config) []string {
 	for _, target := range subscriptionTargets(c) {
 		classes = append(classes, classFull+target)
 	}
-	return append(classes, classSplit)
+	classes = append(classes, classSplit)
+	used := map[string]bool{}
+	for _, n := range c.Networks {
+		if n.Mode == model.ModeSplit && splitFallback(n.Default) != "" {
+			used[splitFallback(n.Default)] = true
+		}
+	}
+	for _, t := range slices.Sorted(maps.Keys(used)) {
+		classes = append(classes, classSplitTo+t)
+	}
+	return classes
 }
 
 // clientRouting orders client class rules before network rules: disabled
@@ -525,7 +554,11 @@ func clientRouting(c *model.Config, dir string, groups []groupSet, tags map[stri
 			rules = append(rules, obj{"rule_set": []string{class}, "outbound": tagDirect})
 		case strings.HasPrefix(class, classFull):
 			rules = append(rules, obj{"rule_set": []string{class}, "outbound": outbound(strings.TrimPrefix(class, classFull))})
-		case class == classSplit:
+		case class == classSplit || strings.HasPrefix(class, classSplitTo):
+			fallback := tagDirect
+			if class != classSplit {
+				fallback = outbound(strings.TrimPrefix(class, classSplitTo))
+			}
 			for _, g := range groups {
 				// Multiple rule_set values are ORed; use a logical rule for AND.
 				rules = append(rules, obj{
@@ -534,7 +567,7 @@ func clientRouting(c *model.Config, dir string, groups []groupSet, tags map[stri
 					"outbound": outbound(g.target),
 				})
 			}
-			rules = append(rules, obj{"rule_set": []string{class}, "outbound": tagDirect})
+			rules = append(rules, obj{"rule_set": []string{class}, "outbound": fallback})
 		}
 	}
 	return sets, rules

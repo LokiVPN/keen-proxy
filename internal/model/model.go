@@ -287,12 +287,19 @@ type Group struct {
 // IsGeo reports whether the group matches IP-database selectors rather than entries.
 func (g Group) IsGeo() bool { return len(g.Countries) > 0 || len(g.Categories) > 0 }
 
+// DefaultProfile is the Network.Default value that defers to the provider profile.
+const DefaultProfile = "profile"
+
 // Network applies a routing policy to a CIDR unless a client overrides it.
 type Network struct {
 	Name   string `yaml:"name" json:"name"`
 	CIDR   string `yaml:"cidr" json:"cidr"`
 	Mode   Mode   `yaml:"mode" json:"mode"`
 	Target string `yaml:"target,omitempty" json:"target,omitempty"` // connection for full mode and inherited client targets
+	// Default routes split traffic that matches no group: empty or direct goes
+	// direct, a connection or managed target tunnels it, and profile resolves
+	// it from the provider profile (compiled as direct until resolved).
+	Default string `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
 // Client identifies a device by MAC and optionally overrides its network policy.
@@ -537,6 +544,12 @@ func (c *Config) Validate() error {
 		target(where, n.Target, n.Mode != ModeFull)
 		if n.Target == TargetBlock {
 			add("%s: a whole network cannot target block; disable it with mode: off", where)
+		}
+		if n.Default != DefaultProfile {
+			target(where+" default", n.Default, true)
+		}
+		if n.Default == TargetBlock {
+			add("%s: default cannot be block; add a block group instead", where)
 		}
 	}
 	macs := map[string]bool{}
