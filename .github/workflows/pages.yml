@@ -2,10 +2,10 @@ name: Documentation
 
 on:
   pull_request:
-    paths: ['docs/**', 'locales/**', 'overrides/**', 'web/**', 'mkdocs.yml', 'requirements-docs.txt', '.github/workflows/pages.yml']
+    paths: ['docs/**', 'locales/**', 'overrides/**', 'mkdocs.yml', 'requirements-docs.txt', '.github/workflows/pages.yml']
   push:
     branches: [main]
-    paths: ['docs/**', 'locales/**', 'overrides/**', 'web/**', 'mkdocs.yml', 'requirements-docs.txt', '.github/workflows/pages.yml']
+    paths: ['docs/**', 'locales/**', 'overrides/**', 'mkdocs.yml', 'requirements-docs.txt', '.github/workflows/pages.yml']
   workflow_dispatch:
     inputs:
       deploy:
@@ -32,27 +32,14 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - name: Check source language
         run: make check-language
       - name: Build English and Russian documentation
         run: |
           pip install -r requirements-docs.txt
           mkdocs build --strict
-      - name: Test and build standalone demo
-        working-directory: web
-        run: |
-          npm ci --no-audit --no-fund
-          npm test
-          npm run build:demo
       - name: Assemble static site
         run: |
-          mkdir -p site/demo
-          cp -R web/dist-demo/. site/demo/
           touch site/.nojekyll
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:

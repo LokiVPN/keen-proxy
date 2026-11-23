@@ -37,7 +37,7 @@ Checks and repairs run sequentially while interception is active. Intentionally 
 
 In **Logs → Audit**, each repair attempt shows its trigger, affected rule, outcome and check-and-recovery time. Expand the entry for raw command errors. Older records without source metadata show **Not recorded**. Successful recovery is not duplicated in the system journal; hook errors and failed recovery remain there. The recorded duration measures the check and repair, not a network outage. Callback queues and rule application still take time, so this mechanism does not promise zero packet loss.
 
-Try the synthetic hook, timer and failure examples in the [browser demo](browser-demo.md). See [Troubleshooting](troubleshooting.md#why-does-the-watchdog-restore-interception-rules) for diagnostic evidence and export limits.
+See [Troubleshooting](troubleshooting.md#why-does-the-watchdog-restore-interception-rules) for diagnostic evidence and export limits.
 
 ## DNS and the application connection are separate
 

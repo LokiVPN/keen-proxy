@@ -2,29 +2,22 @@
 
 ## Локальная сборка
 
-Потребуются Python 3.12+ и Node 22.12+:
+Потребуется Python 3.12+:
 
 ```sh
 make docs-preview
 ```
 
-Команда создаёт `.venv-docs`, собирает документацию в строгом режиме вместе с демо в `site/` и запускает сервер на порту 8097. Другой порт задаётся через `DOCS_PORT`. `make docs` только собирает сайт. Те же шаги вручную:
+Команда создаёт `.venv-docs`, собирает документацию в строгом режиме в `site/` и запускает сервер на порту 8097. Другой порт задаётся через `DOCS_PORT`. `make docs` только собирает сайт. Те же шаги вручную:
 
 ```sh
 python3 -m venv .venv-docs
 .venv-docs/bin/pip install -r requirements-docs.txt
 DOCS_SITE_URL=http://localhost:8097/ .venv-docs/bin/mkdocs build --strict
-cd web
-npm ci
-npm test
-npm run build:demo
-cd ..
-mkdir -p site/demo
-cp -R web/dist-demo/. site/demo/
 python3 -m http.server 8097 --directory site
 ```
 
-Откройте `http://localhost:8097/` для английского, `/ru/` для русского и `/demo/` для отдельного демо. Сервер раздаёт только статические файлы. `npm run build` по-прежнему собирает интерфейс роутера в `web/dist`, а `build:demo` — в `web/dist-demo`.
+Откройте `http://localhost:8097/` для английского и `/ru/` для русского. Сервер раздаёт только статические файлы.
 
 ## Модули встроенного движка
 
@@ -114,8 +107,6 @@ make build-router-lite-ci
 
 Поддерживайте одинаковые Markdown-файлы в `docs/en/` и `docs/ru/`. Навигация задаётся в `mkdocs.yml`; i18n-плагин добавляет переключение языка, перевод навигации и поиск. Скриншоты на обоих языках сохраняйте в `docs/assets/screenshots/`. Снимайте только синтетические сеансы и обновляйте подписи при изменении экранов.
 
-Demo-режим подменяет импорт API на `web/src/demo/api.ts` через alias Vite. Проверка `satisfies` выявляет расхождения с обычным API. При расширении адаптера добавляйте поведенческие тесты; не имитируйте функции настоящими сетевыми запросами.
-
 ## Прототип WebUI KeeneticOS
 
 Локальные стенды в `test/keenetic-webui/` добавляют нативный маршрут KeenProxy
@@ -161,13 +152,12 @@ KeenProxy. Она следует раскладке штатной сетки и
 или HTTPS в атрибуте `data-keenproxy-panel-url` элемента скрипта.
 
 Запустите стенд с `--applications-card`, чтобы сравнить штатную страницу
-и страницу с карточкой. Параметр `--panel-url` задаёт адрес для проверки,
-например локальное демо при запущенном `make docs-preview`.
+и страницу с карточкой. Параметр `--panel-url` задаёт адрес для проверки.
 
 ```sh
 python3 -B test/keenetic-webui/orca_fixture.py \
   --firmware /path/to/KN-3812_stable_5.1.10_5.01.C.10.0-0.bin \
-  --applications-card --panel-url http://127.0.0.1:8097/demo/
+  --applications-card --panel-url http://127.0.0.1:8086/
 ```
 
 ### Пакет Entware для KN-3812
@@ -217,8 +207,8 @@ KeenProxy проверяет действующий сеанс и права у�
 
 ## GitHub Pages
 
-Workflow **Documentation** собирает и проверяет оба варианта при подходящих PR и push. Загружается только `site/`: сгенерированная документация и демо. Внутренние отчёты, память агента, source maps приложения, реквизиты и рабочее состояние Go-демона в эту папку не входят.
+Workflow **Documentation** собирает и проверяет оба варианта при подходящих PR и push. Загружается только `site/`: сгенерированная документация. Внутренние отчёты, память агента, source maps приложения, реквизиты и рабочее состояние Go-демона в эту папку не входят.
 
-Для локальной сборки и просмотра документации LokiVPN с демо используйте `make docs-preview`. Опубликованные документацию и демо поддерживает Ordo Systems. Процесс GitHub Pages в репозитории публикует документацию из исходной ветки `main`. [Опубликованная документация](https://ordo-systems.github.io/keen-proxy/ru/)
+Для локальной сборки и просмотра документации LokiVPN используйте `make docs-preview`. Опубликованную документацию поддерживает Ordo Systems. Процесс GitHub Pages в репозитории публикует документацию из исходной ветки `main`. [Опубликованная документация](https://ordo-systems.github.io/keen-proxy/ru/)
 
 Бинарные релизы LokiVPN собираются процессом Release по тегу версии. [Руководство по выпуску](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md)

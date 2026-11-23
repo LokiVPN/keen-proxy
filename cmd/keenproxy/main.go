@@ -25,14 +25,13 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/ndmhook"
 	"github.com/ordo-systems/keen-proxy/internal/netfilter"
 	"github.com/ordo-systems/keen-proxy/internal/update"
-	"github.com/ordo-systems/keen-proxy/web"
 
 	// Routers often lack a CA bundle. The Mozilla roots are used only when the
 	// system has none, so HTTPS downloads (country databases, filter lists) work.
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
-// main selects read-only disclosure, dry-run, synthetic demo, or the live router lifecycle.
+// main selects read-only disclosure, dry-run, or the live router lifecycle.
 func main() {
 	configPath := flag.String("config", "/opt/etc/keenproxy/config.yaml", "configuration file path")
 	arpPath := flag.String("arp", "/proc/net/arp", "ARP table path")
@@ -41,7 +40,6 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "print derived engine/firewall settings without applying them")
 	iptables := flag.String("iptables", "/opt/sbin/iptables", "Entware iptables executable")
 	restore := flag.String("iptables-restore", "/opt/sbin/iptables-restore", "Entware iptables-restore executable")
-	uiDemo := flag.Bool("ui-demo", false, "serve synthetic UI demo data without changing network state")
 	key := flag.Bool("key", false, "print the current panel token and exit")
 	showURL := flag.Bool("url", false, "print the configured panel URL and exit")
 	keeneticAuth := flag.String("keenetic-auth-origin", os.Getenv("KEENPROXY_KEENETIC_AUTH_ORIGIN"), "enable browser sign-in through the local KeeneticOS HTTP origin")
@@ -52,7 +50,7 @@ func main() {
 		return
 	}
 
-	if err := rejectAccessConflict(*key, *showURL, *dryRun, *uiDemo); err != nil {
+	if err := rejectAccessConflict(*key, *showURL, *dryRun); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -75,11 +73,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Keep journals beside derived rule sets; the UI demo uses memory only.
+	// Keep journals beside derived rule sets.
 	journalDir := filepath.Join(filepath.Dir(*ruleSetDir), "journal")
-	if *uiDemo {
-		journalDir = ""
-	}
 	journals := journal.NewSet(journalDir)
 	defer func() {
 		for _, j := range journals {
@@ -92,13 +87,6 @@ func main() {
 	if err != nil {
 		log.Error("configuration", "err", err)
 		os.Exit(1)
-	}
-	if *uiDemo {
-		if err := serveAPI(ctx, cfg, api.NewDemo(cfg), nil, log, "", nil); err != nil {
-			log.Error("web interface", "err", err)
-			os.Exit(1)
-		}
-		return
 	}
 
 	fw := netfilter.NewFirewall()
@@ -220,7 +208,7 @@ func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *upd
 	}
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,
-		Handler:           (&api.Server{D: d, Token: token, UI: web.FS(), Log: log, Updates: updates, Keenetic: keenetic}).Handler(),
+		Handler:           (&api.Server{D: d, Token: token, Log: log, Updates: updates, Keenetic: keenetic}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ln, err := net.Listen("tcp", srv.Addr)

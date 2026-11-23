@@ -30,9 +30,6 @@ theme:
       toggle:
         icon: material/weather-sunny
         name: Light theme
-extra:
-  demo_label: Demo
-  demo_title: Open the interactive browser demo
 extra_css:
   - assets/keenproxy.css
 nav:
@@ -43,7 +40,6 @@ nav:
   - Routing and DNS: routing.md
   - How traffic flows: network-flow.md
   - Troubleshooting: troubleshooting.md
-  - Browser demo: browser-demo.md
   - Release history:
       - Versions: releases/index.md
       - "0.9.2": releases/0.9.2.md

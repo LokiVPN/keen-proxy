@@ -12,9 +12,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -58,11 +56,10 @@ type Daemon interface {
 	NoTokenFrom() []netip.Prefix
 }
 
-// Server binds daemon operations, authentication policy, and embedded UI assets.
+// Server binds daemon operations and authentication policy.
 type Server struct {
 	D        Daemon
 	Token    string
-	UI       fs.FS
 	Log      *slog.Logger
 	Updates  *update.Manager
 	Keenetic *KeeneticAuth
@@ -141,7 +138,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/journal/{kind}/export", s.auth(s.journalExport))
 	s.updateRoutes(mux)
 	mux.Handle("/api/", http.NotFoundHandler())
-	mux.Handle("/", s.ui())
+	mux.HandleFunc("/", rebuildingUI)
 	return s.lanOnly(mux)
 }
 
@@ -407,23 +404,9 @@ func (s *Server) parseLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ui serves embedded assets and falls back to index.html for client-side routes
-// such as /connections. Unknown API paths remain 404 responses.
-func (s *Server) ui() http.Handler {
-	files := http.FileServerFS(s.UI)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := strings.TrimPrefix(r.URL.Path, "/")
-		if p != "" {
-			if _, err := fs.Stat(s.UI, p); errors.Is(err, fs.ErrNotExist) {
-				r = r.Clone(r.Context())
-				r.URL.Path = "/"
-			}
-		}
-		if strings.HasPrefix(p, "assets/") {
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		}
-		files.ServeHTTP(w, r)
-	})
+// rebuildingUI answers every non-API path until the server-rendered UI exists.
+func rebuildingUI(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "KeenProxy interface is being rebuilt", http.StatusServiceUnavailable)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

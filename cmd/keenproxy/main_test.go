@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
@@ -46,7 +45,7 @@ func TestStartupStateRequiresAnActiveDaemonOrAPIBindWhenParked(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			called := false
-			err := serveAPI(ctx, cfg, api.NewDemo(cfg), nil, log, "", func(apiCtx context.Context) {
+			err := serveAPI(ctx, cfg, nil, nil, log, "", func(apiCtx context.Context) {
 				called = true
 				listening <- apiCtx
 				if tc.mode == "" {

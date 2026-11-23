@@ -196,9 +196,8 @@ func TestResourceExchangePreviewAndExportDoNotApply(t *testing.T) {
 	}
 }
 
-func TestResourceExchangeDemoSRSRoundTrip(t *testing.T) {
-	s, fake := newServer()
-	s.D = &Demo{cfg: fake.cfg}
+func TestResourceExchangeSRSRoundTrip(t *testing.T) {
+	s, _ := newServer()
 	h := s.Handler()
 	input := `{"version":2,"rules":[{"domain_suffix":["example.org"],"ip_cidr":["192.0.2.0/25","192.0.2.128/25","2001:db8::/32"]}]}`
 	source := resourceResponse[resourceexchange.Preview](t, h, resourceRequest(resourcePreviewPath+"?format=sing-box-json", "application/octet-stream", strings.NewReader(input), s.Token), http.StatusOK)

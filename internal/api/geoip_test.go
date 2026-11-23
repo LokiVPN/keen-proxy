@@ -1,18 +1,38 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
-	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
+// geoFake serves one enabled database, "dbip", that maps every address to RU.
+type geoFake struct{ *fakeDaemon }
+
+func (g geoFake) GeoDatabases() []daemon.GeoDatabaseInfo {
+	out := make([]daemon.GeoDatabaseInfo, len(g.cfg.GeoIP.Databases))
+	for i, db := range g.cfg.GeoIP.Databases {
+		out[i] = daemon.GeoDatabaseInfo{ID: db.ID}
+	}
+	return out
+}
+func (geoFake) UpdateGeo(context.Context, string) error { return nil }
+func (geoFake) LookupGeo(_ netip.Addr, id string) (daemon.GeoLookup, error) {
+	if id != "" {
+		return daemon.GeoLookup{}, errors.New("unknown database")
+	}
+	return daemon.GeoLookup{Country: "RU", Database: "dbip", Results: make([]daemon.GeoLookupResult, 1)}, nil
+}
+
 func TestGeoEndpoints(t *testing.T) {
-	cfg := &model.Config{}
-	cfg.Defaults()
-	s := &Server{D: NewDemo(cfg), Token: "secret"}
+	s, fake := newServer()
+	cfg := fake.cfg
+	s.D = geoFake{fake}
 	h := s.Handler()
 	if w := do(t, h, "POST", "/api/geoip/lookup", `{"ip":"77.88.8.8"}`, "", lan); w.Code != 401 {
 		t.Fatal("authorization required", w.Code)
@@ -28,26 +48,13 @@ func TestGeoEndpoints(t *testing.T) {
 	if w.Code != 200 || res.Country != "RU" || res.Database != "dbip" || len(res.Results) != 1 {
 		t.Fatalf("enabled: %d %s", w.Code, w.Body)
 	}
-	// A disabled database is tested only on request and only after a download.
-	w = do(t, h, "POST", "/api/geoip/lookup", `{"ip":"77.88.8.8","id":"loyalsoldier"}`, "secret", lan)
-	if !strings.Contains(w.Body.String(), "not downloaded") {
-		t.Fatalf("before download: %s", w.Body)
-	}
-	if w := do(t, h, "POST", "/api/geoip/update", `{"id":"loyalsoldier"}`, "secret", lan); w.Code != 200 || !strings.Contains(w.Body.String(), `"demo":true`) {
-		t.Fatalf("download: %d %s", w.Code, w.Body)
-	}
-	w = do(t, h, "POST", "/api/geoip/lookup", `{"ip":"77.88.8.8","id":"loyalsoldier"}`, "secret", lan)
-	json.Unmarshal(w.Body.Bytes(), &res)
-	if res.Country != "RU" || res.Results[0].Enabled {
-		t.Fatalf("disabled database: %s", w.Body)
-	}
 	if w := do(t, h, "POST", "/api/geoip/lookup", `{"ip":"77.88.8.8","id":"nope"}`, "secret", lan); w.Code != 400 {
 		t.Fatalf("unknown database: %d", w.Code)
 	}
 	w = do(t, h, "GET", "/api/geoip", "", "secret", lan)
 	var list geoResponse
 	json.Unmarshal(w.Body.Bytes(), &list)
-	if len(list.Databases) != len(cfg.GeoIP.Databases) || !list.Demo {
+	if len(list.Databases) != len(cfg.GeoIP.Databases) {
 		t.Fatalf("list: %s", w.Body)
 	}
 	w = do(t, h, "GET", "/api/catalog", "", "secret", lan)

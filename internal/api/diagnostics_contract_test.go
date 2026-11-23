@@ -32,20 +32,3 @@ func TestDiagnosticRPCProvidesUsableBoundedContext(t *testing.T) {
 		t.Fatalf("unusable diagnostic budget: status=%d deadline=%v remaining=%s", w.Code, probe.deadline, probe.remaining)
 	}
 }
-
-func TestDemoDiagnosticResultsAreExplicitSyntheticSuccesses(t *testing.T) {
-	d := &Demo{cfg: &model.Config{Connections: []model.Connection{{ID: "one"}}}}
-	report, err := d.DiagnosticChecks(context.Background(), "one")
-	if err != nil || !report.Demo || report.Connection != "one" || len(report.Results) != 3 {
-		t.Fatalf("invalid demo report: %+v, %v", report, err)
-	}
-	for i, kind := range []string{"http", "https", "transfer"} {
-		r := report.Results[i]
-		if r.Kind != kind || !r.OK || r.Error != "" || r.Checked.IsZero() {
-			t.Fatalf("invalid synthetic %s result: %+v", kind, r)
-		}
-	}
-	if report.Results[2].Bytes != 65536 {
-		t.Fatal("demo transfer does not represent the advertised byte count")
-	}
-}

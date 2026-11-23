@@ -16,7 +16,7 @@ For a router-specific report, explain how you retained access and restored the p
 
 ## Development setup
 
-See the root [README](README.md) for toolchain requirements and build commands. Go build tags are significant: an untagged test run does not exercise the normal protocol registry. Frontend dependencies are locked with npm; use `npm ci`.
+See the root [README](README.md) for toolchain requirements and build commands. Go build tags are significant: an untagged test run does not exercise the normal protocol registry.
 
 Download dependencies with `go mod download` before Go commands; no Git submodules are required. The root `go.mod` pins sing-box-lx `v1.14.4-lx.35` and the four corresponding dependency forks through versioned `replace` directives. To upgrade, select an exact release, verify its four dependency revisions, update all five pins together, and review `go.sum`. Makefile and CI select Go 1.27.3 from the root `go` directive, which also declares the language floor.
 
@@ -31,7 +31,6 @@ The main code boundaries are:
 | `internal/dnsfront`, `domaincache`, `filterlist` | DNS transport, bounded observations, and DNS-only filtering |
 | `internal/engine`, `links`, `trusttunnel` | Embedded engine and protocol/client adaptation |
 | `internal/api`, `journal`, `stats` | Authenticated management, journals, and telemetry |
-| `web/src` | Typed API client, shared draft state, and Vue interface |
 
 ## Make the smallest verifiable change
 
@@ -52,7 +51,6 @@ Run the relevant tests while developing, then verify the final change:
 CGO_ENABLED=0 make test
 CGO_ENABLED=0 make vet
 make check-secrets
-cd web && npm test && npm run build
 ```
 
 CI scans for leaked credentials with gitleaks. A pull request scans only the commits on that branch, including commits whose change was removed later. A run on `main` scans every commit reachable from `main`. Both include changes that exist only in a merge commit, and a range whose endpoints are not commits fails instead of passing. `make check-secrets` runs that main-style scan locally. The scans catch accidental leaks; they are not a security gate. A pull request runs the workflow, `tools/scan-secrets.sh`, and the gitleaks policy from its own checkout, so it can change what is scanned. Code-owner review of those files is the control against a deliberate bypass. A clean scan does not replace a manual review of configuration and Git history. Do not commit a detectable fixture: deleting it in a later commit does not remove it from the scan.

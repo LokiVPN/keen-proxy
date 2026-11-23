@@ -1,55 +1,13 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/miekg/dns"
-	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 )
-
-func TestDemoDisabledConnectionIsUnavailable(t *testing.T) {
-	cfg := &model.Config{Connections: []model.Connection{{ID: "off", Type: model.ConnTrustTunnel, Disabled: true, Fallback: "reserve"}, {ID: "reserve", Type: model.ConnLink, Link: "socks5://203.0.113.2:1080"}}}
-	d := &Demo{cfg: cfg, started: time.Now()}
-	st := d.Status(context.Background())
-	if st.Health["off"].OK || st.Health["off"].Error != "connection is disabled" || st.Failover["off"].Active != "reserve" {
-		t.Fatalf("dishonest demo status: %+v", st)
-	}
-	if report, err := d.DiagnosticChecks(context.Background(), "off"); !errors.Is(err, daemon.ErrDiagnosticConnection) || len(report.Results) != 0 {
-		t.Fatalf("disabled diagnostic: %+v %v", report, err)
-	}
-	for _, o := range d.Stats(false).Outbounds {
-		if o.Tag == "off" {
-			t.Fatal("disabled profile has traffic")
-		}
-	}
-	cfg.Connections[1].Disabled = true
-	if st = d.Status(context.Background()); st.Failover["off"].Active != model.TargetBlock {
-		t.Fatalf("all-off demo = %+v", st.Failover)
-	}
-}
-
-func TestDemoDNSDisabledPolicy(t *testing.T) {
-	cfg := &model.Config{Connections: []model.Connection{{ID: "off", Type: model.ConnLink, Link: "socks5://203.0.113.1:1080", Disabled: true}}}
-	cfg.Defaults()
-	cfg.DNS.Route, cfg.DNS.Connection, cfg.DNS.Failure = "connection", "off", "strict"
-	cfg.DNS.Upstreams = []string{"https://1.1.1.1/dns-query"}
-	d := &Demo{cfg: cfg}
-	check, err := d.CheckDNS(context.Background(), cfg)
-	if err != nil || !check.Demo || check.Route != "unavailable" || check.RCode != dns.RcodeServerFailure {
-		t.Fatalf("strict demo DNS: %+v %v", check, err)
-	}
-	cfg.DNS.Failure = "direct"
-	check, err = d.CheckDNS(context.Background(), cfg)
-	if err != nil || check.Route != "direct-fallback" || check.Error == "" {
-		t.Fatalf("direct demo DNS: %+v %v", check, err)
-	}
-}
 
 func TestSupportExportsKeepActivationMetadataPrivate(t *testing.T) {
 	const private = "private-disabled-activation.example"
@@ -80,12 +38,14 @@ func TestSupportExportsKeepActivationMetadataPrivate(t *testing.T) {
 	}
 }
 
+// emptyHostsDaemon reports no matching hosts.
+type emptyHostsDaemon struct{ *fakeDaemon }
+
+func (emptyHostsDaemon) Hosts(_, _ string, _ int) ([]stats.Host, int) { return nil, 0 }
+
 func TestEmptyHostsResponseIsArray(t *testing.T) {
-	s, _ := newServer()
-	s.D = &Demo{cfg: &model.Config{
-		Connections: []model.Connection{{ID: "off", Disabled: true}, {ID: "on"}},
-		Groups:      []model.Group{{Target: "on", Entries: []string{"example.com"}}},
-	}}
+	s, fake := newServer()
+	s.D = emptyHostsDaemon{fake}
 	for _, path := range []string{"/api/stats/hosts?tag=off", "/api/stats/hosts?tag=on&q=missing.invalid"} {
 		t.Run(path, func(t *testing.T) {
 			w := do(t, s.Handler(), "GET", path, "", "secret", lan)

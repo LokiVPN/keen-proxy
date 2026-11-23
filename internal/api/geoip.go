@@ -17,9 +17,8 @@ type geoDaemon interface {
 	LookupGeo(ip netip.Addr, id string) (daemon.GeoLookup, error)
 }
 
-// geoResponse lists database states; Demo marks synthetic data without downloads.
+// geoResponse lists database states.
 type geoResponse struct {
-	Demo      bool                     `json:"demo,omitempty"`
 	Databases []daemon.GeoDatabaseInfo `json:"databases"`
 	Error     string                   `json:"error,omitempty"`
 }
@@ -34,8 +33,7 @@ func (s *Server) geoDaemon(w http.ResponseWriter) (geoDaemon, bool) {
 
 func (s *Server) geoDatabases(w http.ResponseWriter, r *http.Request) {
 	if d, ok := s.geoDaemon(w); ok {
-		_, demo := s.D.(*Demo)
-		writeJSON(w, 200, geoResponse{Demo: demo, Databases: d.GeoDatabases()})
+		writeJSON(w, 200, geoResponse{Databases: d.GeoDatabases()})
 	}
 }
 
@@ -55,8 +53,7 @@ func (s *Server) updateGeo(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	_, demo := s.D.(*Demo)
-	res := geoResponse{Demo: demo}
+	var res geoResponse
 	if err := d.UpdateGeo(ctx, req.ID); err != nil {
 		res.Error = err.Error()
 	}

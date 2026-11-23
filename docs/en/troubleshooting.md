@@ -1,9 +1,5 @@
 # Troubleshooting
 
-## The demo says a tunnel works. Is it real?
-
-No. Every address, counter, DNS result, and connectivity check in the browser demo is simulated. It does not contact the listed VPN servers, resolve your domains, download lists, or configure a router. Reload the page to reset configuration changes.
-
 ## I edited a profile, but traffic did not change
 
 Look for pending changes and choose **Apply**. All screens share a draft. Confirm that the selected network/client uses the intended routing mode, then inspect the route journal and test the applied connection.

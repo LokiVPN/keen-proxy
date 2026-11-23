@@ -279,21 +279,20 @@ func TestPanelURL(t *testing.T) {
 
 func TestAccessConflict(t *testing.T) {
 	cases := []struct {
-		name                string
-		key, url, dry, demo bool
-		want                string
+		name          string
+		key, url, dry bool
+		want          string
 	}{
 		{name: "key", key: true},
 		{name: "url", url: true},
-		{name: "daemon flags alone", dry: true, demo: true},
+		{name: "daemon flags alone", dry: true},
 		{name: "key and url", key: true, url: true, want: "-key and -url"},
 		{name: "key and dry-run", key: true, dry: true, want: "-dry-run"},
-		{name: "url and ui-demo", url: true, demo: true, want: "-ui-demo"},
 		{name: "both read-only and daemon", key: true, url: true, dry: true, want: "-key and -url"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := rejectAccessConflict(tc.key, tc.url, tc.dry, tc.demo)
+			err := rejectAccessConflict(tc.key, tc.url, tc.dry)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -356,7 +355,6 @@ func TestCLIAccessFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"-key", "-url", "-config", cfg},
 		{"-key", "-dry-run", "-config", cfg},
-		{"-url", "-ui-demo", "-config", cfg},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			stdout, stderr, code := runKeenproxy(t, args...)

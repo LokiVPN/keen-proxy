@@ -23,13 +23,13 @@ func TestDiagnosticEndpointAuthAndUnknownConnection(t *testing.T) {
 	}
 }
 
-func TestDiagnosticEndpointDemoSuccessAndUnavailableCapability(t *testing.T) {
+func TestDiagnosticEndpointCapabilityAndStrictRequests(t *testing.T) {
 	s, fake := newServer()
 	fake.cfg.Connections = []model.Connection{{ID: "one", Name: "One", Type: model.ConnLink}}
 	if w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", lan); w.Code != 501 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	s.D = &Demo{cfg: fake.cfg}
+	s.D = &diagnosticContextProbe{fakeDaemon: fake}
 	w := do(t, s.Handler(), "POST", "/api/diagnostics/check", `{"connection":"one"}`, "secret", lan)
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
@@ -38,7 +38,7 @@ func TestDiagnosticEndpointDemoSuccessAndUnavailableCapability(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if !report.Demo || report.Connection != "one" || len(report.Results) != 3 {
+	if report.Connection != "one" {
 		t.Fatal("bad report", report)
 	}
 	for _, body := range []string{`{"connection":"one","url":"https://private.test"}`, `{"connection":"one"}{}`} {

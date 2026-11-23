@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
@@ -59,8 +58,7 @@ func newServer() (*Server, *fakeDaemon) {
 	cfg := &model.Config{}
 	cfg.Defaults()
 	d := &fakeDaemon{cfg: cfg, journals: journal.NewSet("")}
-	ui := fstest.MapFS{"index.html": {Data: []byte("<div id=app>")}, "assets/app.js": {Data: []byte("js")}}
-	return &Server{D: d, Token: "secret", UI: ui}, d
+	return &Server{D: d, Token: "secret"}, d
 }
 
 func do(t *testing.T, h http.Handler, method, path, body, token, remote string) *httptest.ResponseRecorder {
@@ -244,23 +242,6 @@ func TestLegacyTrustTunnelMixIsRejected(t *testing.T) {
 	}
 }
 
-func TestUIFallback(t *testing.T) {
-	s, _ := newServer()
-	h := s.Handler()
-	for _, p := range []string{"/", "/connections", "/lists/whitelist"} {
-		w := do(t, h, "GET", p, "", "", lan)
-		if w.Code != 200 || !strings.Contains(w.Body.String(), "id=app") {
-			t.Errorf("%s: %d %q", p, w.Code, w.Body.String())
-		}
-	}
-	if w := do(t, h, "GET", "/assets/app.js", "", "", lan); w.Body.String() != "js" || !strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
-		t.Errorf("assets: %q %q", w.Body.String(), w.Header().Get("Cache-Control"))
-	}
-	if w := do(t, h, "GET", "/api/nope", "", "secret", lan); w.Code != 404 {
-		t.Errorf("unknown API: %d", w.Code)
-	}
-}
-
 func TestStatsEndpoints(t *testing.T) {
 	s, _ := newServer()
 	if w := do(t, s.Handler(), "GET", "/api/stats?series=1", "", "secret", lan); w.Code != 200 || !strings.Contains(w.Body.String(), "outbounds") {
@@ -308,5 +289,17 @@ func TestJournalEndpoints(t *testing.T) {
 	if !strings.Contains(w.Header().Get("Content-Disposition"), "keenproxy-system-") || strings.Contains(w.Body.String(), "secret") ||
 		!strings.Contains(w.Body.String(), "appeared in message") {
 		t.Errorf("export: %q\n%s", w.Header().Get("Content-Disposition"), w.Body)
+	}
+}
+
+func TestRootIsPlaceholderUntilUIExists(t *testing.T) {
+	s, _ := newServer()
+	h := s.Handler()
+	w := do(t, h, "GET", "/", "", "", "127.0.0.1:1234")
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "KeenProxy interface is being rebuilt") {
+		t.Fatalf("root = %d %q", w.Code, w.Body.String())
+	}
+	if w := do(t, h, "GET", "/api/unknown", "", "", "127.0.0.1:1234"); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown api path = %d", w.Code)
 	}
 }

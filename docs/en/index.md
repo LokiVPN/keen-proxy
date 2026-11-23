@@ -17,13 +17,12 @@ hide:
 Selective traffic routing for Keenetic and Netcraze routers running Entware. Choose which devices, domains, addresses, and countries use a tunnel, connect directly, or are blocked — from one web panel.
 
 <div class="kp-actions" markdown>
-[:material-play: Try the demo](demo/){ .md-button .md-button--primary }
-[Get started](getting-started.md){ .md-button }
+[Get started](getting-started.md){ .md-button .md-button--primary }
 </div>
 
 </div>
 
-[![KeenProxy web panel overview with synthetic traffic](../assets/screenshots/readme-overview.png){ .kp-hero__shot }](demo/)
+[![KeenProxy web panel overview with synthetic traffic](../assets/screenshots/readme-overview.png){ .kp-hero__shot }](user-guide.md)
 
 </section>
 
@@ -142,13 +141,10 @@ KeenProxy also watches its interception rules. On compatible Keenetic/Netcraze f
 
 <section class="kp-cta" markdown>
 
-## Try it in your browser
-
-The demo runs the real web panel with synthetic data. No router or credentials are required.
+## Learn more
 
 <div class="kp-actions" markdown>
-[:material-play: Open the demo](demo/){ .md-button .md-button--primary }
-[Read the overview](overview.md){ .md-button }
+[Read the overview](overview.md){ .md-button .md-button--primary }
 </div>
 
 <p class="kp-note">KeenProxy is experimental. Compatibility depends on the router architecture, firmware, kernel capabilities, and build features.</p>

@@ -55,24 +55,3 @@ func (s *Server) diagnosticCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, report)
 }
-
-// DiagnosticChecks returns labeled synthetic results without making network requests.
-func (d *Demo) DiagnosticChecks(_ context.Context, id string) (daemon.DiagnosticReport, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	enabled := false
-	for _, cn := range d.cfg.Connections {
-		if cn.ID == id && !cn.Disabled {
-			enabled = true
-			break
-		}
-	}
-	if !enabled {
-		return daemon.DiagnosticReport{Connection: id, Demo: true}, daemon.ErrDiagnosticConnection
-	}
-	return daemon.DiagnosticReport{Connection: id, Demo: true, Results: []daemon.DiagnosticResult{
-		{Kind: "http", OK: true, Checked: time.Now(), Latency: 42},
-		{Kind: "https", OK: true, Checked: time.Now(), Latency: 58},
-		{Kind: "transfer", OK: true, Checked: time.Now(), Latency: 144, Bytes: 65536},
-	}}, nil
-}

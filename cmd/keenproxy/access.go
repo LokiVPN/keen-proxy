@@ -20,7 +20,7 @@ type ifaceLookup func(name string) ([]netip.Addr, error)
 
 // rejectAccessConflict refuses combined disclosure and daemon actions before
 // any token or URL is printed. Daemon-only flags keep their existing precedence.
-func rejectAccessConflict(key, showURL, dryRun, uiDemo bool) error {
+func rejectAccessConflict(key, showURL, dryRun bool) error {
 	if !key && !showURL {
 		return nil
 	}
@@ -29,8 +29,6 @@ func rejectAccessConflict(key, showURL, dryRun, uiDemo bool) error {
 		return errors.New("cannot combine -key and -url")
 	case dryRun:
 		return errors.New("cannot combine -key or -url with -dry-run")
-	case uiDemo:
-		return errors.New("cannot combine -key or -url with -ui-demo")
 	default:
 		return nil
 	}

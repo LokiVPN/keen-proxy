@@ -17,13 +17,12 @@ hide:
 Выборочная маршрутизация трафика для роутеров Keenetic и Netcraze с Entware. Выбирайте, какие устройства, домены, адреса и страны идут через туннель, напрямую или блокируются, — в одной веб-панели.
 
 <div class="kp-actions" markdown>
-[:material-play: Открыть демо](../demo/){ .md-button .md-button--primary }
-[Начать работу](getting-started.md){ .md-button }
+[Начать работу](getting-started.md){ .md-button .md-button--primary }
 </div>
 
 </div>
 
-[![Обзор веб-панели KeenProxy с синтетическим трафиком](../assets/screenshots/ru-landing-overview.png){ .kp-hero__shot }](../demo/)
+[![Обзор веб-панели KeenProxy с синтетическим трафиком](../assets/screenshots/ru-landing-overview.png){ .kp-hero__shot }](user-guide.md)
 
 </section>
 
@@ -142,13 +141,10 @@ KeenProxy также следит за своими правилами пере�
 
 <section class="kp-cta" markdown>
 
-## Попробуйте в браузере
-
-Демо запускает настоящую веб-панель с синтетическими данными. Роутер и учётные данные не нужны.
+## Подробнее
 
 <div class="kp-actions" markdown>
-[:material-play: Открыть демо](../demo/){ .md-button .md-button--primary }
-[Читать обзор](overview.md){ .md-button }
+[Читать обзор](overview.md){ .md-button .md-button--primary }
 </div>
 
 <p class="kp-note">KeenProxy — экспериментальный проект. Совместимость зависит от архитектуры роутера, прошивки, возможностей ядра и состава сборки.</p>

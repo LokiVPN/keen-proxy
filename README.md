@@ -2,22 +2,21 @@
 
 # KeenProxy
 
-LokiVPN publishes KeenProxy source on `master` and checksummed binaries in GitHub Releases. The original project and hosted demo are maintained by Ordo Systems. [LokiVPN releases](https://github.com/LokiVPN/keen-proxy/releases) · [Ordo Systems upstream](https://github.com/ordo-systems/keen-proxy)
+LokiVPN publishes KeenProxy source on `master` and checksummed binaries in GitHub Releases. The original project is maintained by Ordo Systems. [LokiVPN releases](https://github.com/LokiVPN/keen-proxy/releases) · [Ordo Systems upstream](https://github.com/ordo-systems/keen-proxy)
 
-Selective traffic routing for Keenetic and Netcraze routers running Entware, with an embedded [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) engine and a Vue web interface. This experimental branch pins lx.35 on the sing-box 1.14.4 base.
+Selective traffic routing for Keenetic and Netcraze routers running Entware, with an embedded [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) engine and a web interface. This experimental branch pins lx.35 on the sing-box 1.14.4 base.
 
 KeenProxy lets you choose which devices, domains, IP ranges, and countries use a tunnel, connect directly, or are blocked. The web panel shows router load and lets you install, schedule, or roll back releases on managed Entware and native OpenWrt installations. Router compatibility and protocol support depend on the firmware, kernel modules, and build tags. The project is experimental.
 
 KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze and OpenWrt. Leave memory headroom for firmware and other services; this is not a guarantee that every workload fits. Experimental OpenWrt builds target x86-64, 32-bit x86 with SSE2, ARM32, ARM64, little-endian MIPS, and big-endian MIPS. [Router requirements](docs/en/getting-started.md#experimental-openwrt-support)
 
-[![KeenProxy web panel overview with tunnel traffic, router load, and connection status (synthetic demo data)](docs/assets/screenshots/readme-overview.png)](https://ordo-systems.github.io/keen-proxy/demo/)
+[![KeenProxy web panel overview with tunnel traffic, router load, and connection status (synthetic demo data)](docs/assets/screenshots/readme-overview.png)](docs/en/user-guide.md)
 
-## Documentation and live demo
+## Documentation
 
 - Install and configure the LokiVPN build. [English guide](docs/en/getting-started.md) · [Russian guide](docs/ru/getting-started.md)
 - Configure subscriptions and routing. [English user guide](docs/en/user-guide.md) · [Russian user guide](docs/ru/user-guide.md)
 - Run the experimental KeeneticOS integration in local fixtures. [WebUI prototype](docs/en/development.md#keeneticos-webui-prototype)
-- Try the Ordo Systems demo with synthetic traffic, router load, and update and rollback flows. [Upstream demo](https://ordo-systems.github.io/keen-proxy/demo/)
 
 ## What works today
 
@@ -47,7 +46,6 @@ Readable hostnames remain the primary routing signal. DNS-derived IP rules are u
 Requirements:
 
 - Go **1.27.3**, declared by the `go` directive in `go.mod`; Makefile commands select this compiler through `GOTOOLCHAIN`.
-- Node.js **22.12+** (or another Vite-compatible version) and npm.
 - Docker with privileged-container support and at least 2 engine CPUs, Python 3.12+, and repository history for the mandatory build-time memory gates and the network-namespace integration suite.
 - For a router: Entware or native OpenWrt/procd, supported Linux kernel facilities, and compatible iptables tools.
 
@@ -67,23 +65,7 @@ go mod download
 The root `go.mod` preserves upstream import paths and pins sing-box-lx `v1.14.4-lx.35` plus its matching WireGuard/AWG, sing-tun, gVisor and uTLS forks through five versioned `replace` directives. Update these pins as a reviewed release snapshot, not with `@latest`.
 
 ```sh
-make ui-demo
-```
-
-Open `http://127.0.0.1:8086/`. Demo mode uses synthetic traffic and keeps configuration changes in memory; it does not configure host routing or a firewall. The initial token is printed to the terminal and stored at the path specified in `examples/demo.yaml`.
-
-For frontend development, keep the demo API running and use a second terminal:
-
-```sh
-cd web
-npm ci
-npm run dev
-```
-
-The development server proxies `/api` to `http://127.0.0.1:8086`. Set `KEENPROXY_URL` to use a different local backend.
-
-```sh
-make build               # Host binary with the embedded UI
+make build               # Host binary
 make build-router        # Linux x86-64, x86/SSE2, ARMv5, ARM64, and both MIPS byte orders
 make build-router-lite   # Smaller protocol set for constrained routers
 ```
@@ -96,7 +78,7 @@ CI exposes independent **Memory regression**, **AWG stress (320 MiB)**, **AWG st
 
 ## Configuration and router installation
 
-The bilingual documentation source is in [docs/en/](docs/en/index.md) and [docs/ru/](docs/ru/index.md), including an illustrated user guide. A separate browser demo is built from the same Vue interface with an in-memory API adapter; see [documentation build instructions](docs/en/development.md).
+The bilingual documentation source is in [docs/en/](docs/en/index.md) and [docs/ru/](docs/ru/index.md), including an illustrated user guide. See the [documentation build instructions](docs/en/development.md).
 
 Start with [examples/config.yaml](examples/config.yaml) and [examples/connections.yaml](examples/connections.yaml). Example keys, addresses, and credentials are placeholders and must be replaced. Keep real configuration files and support exports out of Git.
 
@@ -170,7 +152,6 @@ The dry-run output contains generated connection settings and may include secret
 ```sh
 CGO_ENABLED=0 make test
 CGO_ENABLED=0 make vet
-cd web && npm test && npm run build
 ```
 
 Run `make integration` separately for real DNS/firewall/tunnel tests in disposable Docker network namespaces. It uses a privileged container to create those namespaces; it does not target your router. Auxiliary Go tools under `tools/bench` and `tools/nlprobe` are separate modules.
