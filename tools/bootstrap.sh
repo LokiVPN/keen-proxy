@@ -577,7 +577,13 @@ fi
 chmod 755 "$work/$asset"
 # Dry-run output can contain connection credentials. Keep it off the console.
 if ! "$work/$asset" -dry-run -config "$config_source" >/dev/null 2>&1; then
-    # On a rollback, use the newest file the daemon kept before newer-schema writes.
+    # A candidate that reads schema 2 rejected the file itself: refuse the
+    # update rather than give it an older file.
+    printf 'schema_version: 2\n' > "$work/schema-2.yaml"
+    if "$work/$asset" -dry-run -config "$work/schema-2.yaml" >/dev/null 2>&1; then
+        fail 'candidate binary or configuration failed validation'
+    fi
+    # A release older than schema 2 gets the newest file the daemon kept for it.
     config_kept=$(newest_kept_config)
     [ "$config_source" = "$config" ] && [ -n "$config_kept" ] &&
         "$work/$asset" -dry-run -config "$config_kept" >/dev/null 2>&1 ||

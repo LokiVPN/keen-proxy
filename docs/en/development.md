@@ -236,9 +236,10 @@ New configurations are written with `schema_version: 2`.
   valid subscription are carried into a fresh schema 2 file. A broken schema 2
   file is still an error. `-dry-run` reports a planned reset without writing.
 - `tools/bootstrap.sh` snapshots the configuration before installing and
-  restores it if the update fails. When a rollback target rejects the schema 2
-  file, it atomically switches to the newest kept `config.v1*.yaml` and keeps
-  the newer file as `config.v2*.yaml`. A fresh install of this release has no v1
+  restores it if the update fails. When the target release cannot read schema 2
+  at all, it atomically switches to the newest kept `config.v1*.yaml` and keeps
+  the newer file as `config.v2*.yaml`. A target that reads schema 2 but rejects
+  the file is refused and nothing changes. A fresh install of this release has no v1
   backup, so a rollback to an older release is refused at validation and
   changes nothing.
 

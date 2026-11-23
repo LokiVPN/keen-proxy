@@ -461,6 +461,23 @@ done
         for name, (text, _) in backups.items():
             self.assertEqual(self.config.with_name(name).read_text(), text)
 
+    def test_release_that_reads_schema_2_never_gets_the_kept_configuration(self):
+        _, kept = self.newer_configuration()
+        current = self.binary.read_bytes()
+        rejected = 'schema_version: 2\n# rejected by the next release\n'
+        self.config.write_text(rejected)
+        # The candidate reads schema 2 but rejects this file; it would accept the kept one.
+        self.release('v1.2.5', dry_run='if grep -q rejected "$3"; then exit 1; fi\nexit 0')
+        result = self.install('--version', 'v1.2.5')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('failed validation', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), current)
+        self.assertEqual(self.config.read_text(), rejected)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertEqual(sorted(p.name for p in self.config.parent.iterdir()),
+                         ['config.v1.yaml', 'config.yaml'])
+        self.assertTrue((self.prefix / 'running').exists())
+
     def test_failed_switch_leaves_the_newer_configuration_in_place(self):
         newer, kept = self.newer_configuration()
         current = self.binary.read_bytes()
