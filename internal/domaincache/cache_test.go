@@ -58,7 +58,7 @@ func TestLimitsAndEviction(t *testing.T) {
 	for i := 0; i < 4100; i++ {
 		c.SetError(fmt.Sprintf("%d.example.com", i), "timeout")
 	}
-	if len(c.Snapshot(nil)) != 4096 || !c.Limited() {
+	if len(c.Snapshot(nil)) != 4096 {
 		t.Fatal("name limit")
 	}
 }

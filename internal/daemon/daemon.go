@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"math"
@@ -22,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/compile"
@@ -69,7 +71,6 @@ type Daemon struct {
 	dnsRoute          string // latest DNS route, to journal fallback transitions
 	domains           *domaincache.Cache
 	domainSlots       chan struct{}
-	domainMu          sync.Mutex
 	domainError       string
 	domainFingerprint []byte
 	opt               Options
@@ -444,7 +445,12 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 	if err != nil {
 		return err
 	}
-	if previous, err := os.ReadFile(d.opt.ConfigPath); err == nil {
+	previous, err := os.ReadFile(d.opt.ConfigPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// What the save would replace is unknown, so it cannot be backed up.
+		return fmt.Errorf("current configuration could not be read: %w", err)
+	}
+	if err == nil {
 		if !d.configCurrent {
 			backup, err := keepV1Config(d.opt.ConfigPath, previous)
 			if err != nil {
@@ -455,19 +461,19 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 			}
 		}
 		if recovery {
-			if err := persistRecoveryConfig(d.opt.ConfigPath, previous, raw); err != nil {
+			if err := d.warnDurability(persistRecoveryConfig(d.opt.ConfigPath, previous, raw)); err != nil {
 				return err
 			}
 			d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
 			return nil
 		}
-		if err := replacePrivateFile(d.opt.ConfigPath+".previous", previous); err != nil {
+		if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath+".previous", previous)); err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
 		}
 	} else if recovery {
 		return fmt.Errorf("previous configuration could not be read: %w", err)
 	}
-	if err := replacePrivateFile(d.opt.ConfigPath, raw); err != nil {
+	if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath, raw)); err != nil {
 		return fmt.Errorf("configuration was not saved: %w", err)
 	}
 	d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
@@ -544,9 +550,26 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 		return saveErr
 	}
 	if err := syncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("configuration was not saved: %w", err)
+		return &durabilityError{err}
 	}
 	return nil
+}
+
+// durabilityError reports that a file was replaced but its directory entry
+// may not survive a crash. The save counts as done; callers log a warning.
+type durabilityError struct{ err error }
+
+func (e *durabilityError) Error() string { return "directory sync failed: " + e.err.Error() }
+func (e *durabilityError) Unwrap() error { return e.err }
+
+// warnDurability logs and drops a durabilityError and passes other errors on.
+func (d *Daemon) warnDurability(err error) error {
+	var de *durabilityError
+	if errors.As(err, &de) {
+		d.log.Warn("configuration saved, but its directory could not be synced", "err", de.err)
+		return nil
+	}
+	return err
 }
 
 // replacePrivateFile atomically replaces path with a mode 0600 file holding
@@ -566,7 +589,10 @@ func replacePrivateFile(path string, data []byte) error {
 		os.Remove(temp)
 		return err
 	}
-	return syncDir(filepath.Dir(path))
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return &durabilityError{err}
+	}
+	return nil
 }
 
 // stagePrivateFile writes data to a new synced mode 0600 file beside path and
@@ -587,13 +613,22 @@ func stagePrivateFile(path string, data []byte) (string, error) {
 	return f.Name(), nil
 }
 
-// syncDir makes entries created or renamed in dir durable.
+// fsyncDir flushes an open directory; tests replace it.
+var fsyncDir = func(f *os.File) error { return f.Sync() }
+
+// syncDir makes entries created or renamed in dir durable. Filesystems that
+// cannot fsync a directory (EINVAL, ENOTSUP) are tolerated with a warning.
 func syncDir(dir string) error {
 	f, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	return errors.Join(f.Sync(), f.Close())
+	err = fsyncDir(f)
+	if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+		slog.Warn("directory sync is not supported here; durability after a crash is not guaranteed", "dir", dir)
+		err = nil
+	}
+	return errors.Join(err, f.Close())
 }
 
 // applyLocked reconciles runtime state with cfg while d.mu is held.

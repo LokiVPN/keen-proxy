@@ -33,7 +33,6 @@ type Cache struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	records map[string]Record
-	limited bool
 }
 
 // New creates an empty cache whose expiration decisions use now.
@@ -56,7 +55,6 @@ func (c *Cache) put(r Record) {
 			}
 		}
 		delete(c.records, oldest)
-		c.limited = true
 	}
 	c.records[r.Name] = r
 }
@@ -157,9 +155,6 @@ func (c *Cache) pruneLocked() {
 
 // Prune removes expired addresses while retaining name and attempt history.
 func (c *Cache) Prune() { c.mu.Lock(); defer c.mu.Unlock(); c.pruneLocked() }
-
-// Limited reports whether name-capacity eviction has occurred.
-func (c *Cache) Limited() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.limited }
 
 // Snapshot returns detached, sorted records with expired addresses removed; no names means all.
 func (c *Cache) Snapshot(names []string) []Record {

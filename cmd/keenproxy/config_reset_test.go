@@ -468,3 +468,35 @@ func assertDirNames(t *testing.T, dir string, want ...string) {
 		t.Fatalf("%s holds %q, want %q", dir, got, want)
 	}
 }
+
+// The installer probes a candidate binary with a file holding only
+// schema_version 2, passing just -dry-run and -config.
+func TestDryRunAcceptsBareSchema2(t *testing.T) {
+	const body = "schema_version: 2\n"
+	dir, path := writeConfigFile(t, body)
+	stdout, stderr, code := runKeenproxy(t, "-dry-run", "-config", path)
+	if code != 0 || !strings.Contains(stdout, "# sing-box") {
+		t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	assertFileBytes(t, path, body)
+	assertDirNames(t, dir, "config.yaml")
+}
+
+// Load errors can quote share links with credentials; the startup log gives a
+// fixed message and the path instead.
+func TestBrokenSchema2LogHasNoLoadError(t *testing.T) {
+	const body = "schema_version: 2\nconnections:\n  - id: broken\n    name: Broken\n    type: link\n    link: vless://fixture-secret@[bad\n"
+	if _, err := model.Parse([]byte(body)); err == nil || !strings.Contains(err.Error(), "fixture-secret") {
+		t.Fatalf("fixture no longer produces an error that quotes the link: %v", err)
+	}
+	_, path := writeConfigFile(t, body)
+	work := t.TempDir()
+	stdout, stderr, code := runKeenproxy(t, "-config", path,
+		"-rule-sets", filepath.Join(work, "rule-sets"))
+	if code == 0 {
+		t.Fatalf("started on a broken file: stdout %q stderr %q", stdout, stderr)
+	}
+	if strings.Contains(stdout+stderr, "fixture-secret") || !strings.Contains(stderr, path) {
+		t.Fatalf("startup log = %q %q", stdout, stderr)
+	}
+}

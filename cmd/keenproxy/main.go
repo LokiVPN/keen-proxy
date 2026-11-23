@@ -84,7 +84,8 @@ func main() {
 
 	cfg, err := startupConfig(*configPath, log)
 	if err != nil {
-		log.Error("configuration", "err", err)
+		// The load error can quote share links with credentials.
+		log.Error("configuration cannot be loaded; fix the file and restart", "path", *configPath)
 		os.Exit(1)
 	}
 

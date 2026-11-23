@@ -67,13 +67,10 @@ func (d *Daemon) flushDomains() {
 	}
 }
 
-// writeDNSLocked writes changed DNS fallback sets while d.mu is held, and records
-// write progress under domainMu.
+// writeDNSLocked writes changed DNS fallback sets and records write progress while d.mu is held.
 func (d *Daemon) writeDNSLocked() {
 	sets := compile.DNSRuleSets(d.cfg, recordsMap(d.domainRecords()))
 	fingerprint, _ := json.Marshal(sets)
-	d.domainMu.Lock()
-	defer d.domainMu.Unlock()
 	if bytes.Equal(fingerprint, d.domainFingerprint) && d.domainError == "" {
 		return
 	}

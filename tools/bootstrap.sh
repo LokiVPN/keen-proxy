@@ -337,8 +337,9 @@ switch_config() {
     mv -f "$config_temp" "$config"
 }
 
-# A new daemon can rewrite the configuration as soon as it starts, for example
-# when it resets a v0.10 file. Keep the file so a failed update restores it.
+# A new daemon replaces the configuration at its first save, and an older file
+# can change in other ways during an update. Keep the file as a safety net so a
+# failed update restores it.
 snapshot_config() {
     config_snapshot="$work/previous/etc/keenproxy/config.yaml"
     mkdir -p "${config_snapshot%/*}" && cp -p "$config" "$config_snapshot"

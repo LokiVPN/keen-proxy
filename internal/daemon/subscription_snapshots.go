@@ -138,7 +138,7 @@ func (d *Daemon) saveSubscriptionSnapshotsLocked(cfg *model.Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return errSubscriptionSnapshot
 	}
-	if err := replacePrivateFile(path, raw); err != nil {
+	if err := d.warnDurability(replacePrivateFile(path, raw)); err != nil {
 		return errSubscriptionSnapshot
 	}
 	return nil

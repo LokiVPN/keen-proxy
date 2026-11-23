@@ -235,8 +235,8 @@ New configurations are written with `schema_version: 2`.
 - A schema 1 or unreadable file that no longer loads is reset in memory at
   startup: `api.listen`, `lan` and the first valid subscription are kept, and
   everything else starts from defaults. Startup does not change the file. The
-  first save copies it byte for byte to `config.v1.yaml` and then writes
-  schema 2, so an older release can still read its file if the update is
+  first save copies it byte for byte to `config.v1.yaml` (unless it holds only
+  installer starter settings) and then writes schema 2, so an older release can still read its file if the update is
   rolled back before any save, and every restart until then computes the same
   reset. A broken schema 2 file is still an error. `-dry-run` and `--url` use
   the reset without writing.

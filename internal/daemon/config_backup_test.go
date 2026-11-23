@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestApplySkipsBackupOfPlaceholderV1(t *testing.T) {
 		"schema_version: 1\nlan:\n  interface: br-lan\n",
 		"schema_version: 1\napi:\n  token_file: /etc/keenproxy/token\nlan:\n  interface: br-lan\n",
 	} {
-		t.Run(placeholder, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%d bytes", len(placeholder)), func(t *testing.T) {
 			d, path := startDaemonOn(t, []byte(placeholder), quietConfig(t))
 			if err := d.Apply(context.Background(), d.Config()); err != nil {
 				t.Fatal(err)
@@ -173,4 +174,105 @@ func assertSavedBytes(t *testing.T, path string, want []byte) {
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("%s = %q, %v; want %q", path, got, err, want)
 	}
+}
+
+// A read error other than not-found hides what the first save would replace,
+// so the save is refused and the file stays.
+func TestFirstSaveFailsClosedOnUnreadableConfig(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any file")
+	}
+	d, path, original := startV1Daemon(t, withConnection(t))
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+	if err := d.Apply(context.Background(), d.Config()); err == nil || !strings.Contains(err.Error(), "not saved") {
+		t.Fatalf("apply over an unreadable file: %v", err)
+	}
+	os.Chmod(path, 0o600)
+	assertSavedBytes(t, path, original)
+	if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config.v1*")); len(matches) != 0 {
+		t.Fatalf("backups = %v", matches)
+	}
+}
+
+func failDirSync(t *testing.T, err error) {
+	t.Helper()
+	old := fsyncDir
+	fsyncDir = func(*os.File) error { return err }
+	t.Cleanup(func() { fsyncDir = old })
+}
+
+// Filesystems that cannot fsync a directory are tolerated, and a directory
+// sync failure after the config was replaced is a durability warning: the
+// file is saved and the Apply stands.
+func TestDirectorySyncUnsupportedIsAWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{{"EINVAL", syscall.EINVAL}, {"ENOTSUP", syscall.ENOTSUP}, {"EIO after the rename", syscall.EIO}} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, path, original := startV1Daemon(t, quietConfig(t))
+			failDirSync(t, tc.err)
+			// A backup is kept first; only unsupported syncs let that proceed.
+			err := d.Apply(context.Background(), d.Config())
+			if tc.err == syscall.EIO {
+				if err == nil {
+					t.Fatal("first save went on after the backup directory sync failed")
+				}
+				assertSavedBytes(t, path, original)
+				// With the backup in place, the replace itself only warns.
+				failDirSync(t, nil)
+				if err := d.Apply(context.Background(), d.Config()); err != nil {
+					t.Fatal(err)
+				}
+				failDirSync(t, tc.err)
+				if err := d.Apply(context.Background(), d.Config()); err != nil {
+					t.Fatalf("durability warning failed the save: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unsupported directory sync failed the save: %v", err)
+			}
+			if saved, err := model.Load(path); err != nil || saved.SchemaVersion != 2 {
+				t.Fatalf("saved config = %+v, %v; want schema_version 2", saved, err)
+			}
+			if !d.configCurrent {
+				t.Fatal("daemon did not record the file as current")
+			}
+		})
+	}
+}
+
+// A directory sync failure after the config was replaced still saves it.
+func TestDirectorySyncFailureAfterRenameKeepsTheSave(t *testing.T) {
+	d, path := startDaemonOn(t, []byte("schema_version: 2\n"), quietConfig(t))
+	failDirSync(t, syscall.EIO)
+	cfg := d.Config()
+	cfg.LAN.Interface = "br9"
+	if err := d.Apply(context.Background(), cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if saved, err := model.Load(path); err != nil || saved.LAN.Interface != "br9" {
+		t.Fatalf("saved config = %+v, %v", saved, err)
+	}
+}
+
+// Failed first saves repeat the backup step; identical bytes are kept once.
+func TestRepeatedFailedFirstSaveDoesNotPileUpBackups(t *testing.T) {
+	d, path, original := startV1Daemon(t, withConnection(t))
+	// A directory in place of the rollback copy fails the save after the backup.
+	if err := os.Mkdir(path+".previous", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := d.Apply(context.Background(), d.Config()); err == nil {
+			t.Fatal("apply succeeded without a rollback copy")
+		}
+	}
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "config.v1*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("backups after repeated failures = %v, %v", matches, err)
+	}
+	assertSavedBytes(t, matches[0], original)
 }

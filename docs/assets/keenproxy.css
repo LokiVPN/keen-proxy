@@ -1,4 +1,4 @@
-/* Match the panel palette in web/src/style.css without loading app styles. */
+/* Match the panel palette without loading app styles. */
 body[data-md-color-scheme="default"] {
   --kp-page: #f6f8f4;
   --kp-surface: #fff;

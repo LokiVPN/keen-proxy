@@ -50,7 +50,7 @@ func loadOrReset(path string) (cfg *model.Config, reset bool, err error) {
 func startupConfig(path string, log *slog.Logger) (*model.Config, error) {
 	cfg, reset, err := loadOrReset(path)
 	if err == nil && reset {
-		logReset(log, "configuration reset after upgrade; the first save keeps the file for older releases", cfg)
+		logReset(log, "configuration reset after upgrade; the first save keeps the file for older releases unless it holds only installer starter settings", cfg)
 	}
 	return cfg, err
 }

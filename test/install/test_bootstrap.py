@@ -13,7 +13,8 @@ ACCESS_URL = 'http://192.0.2.10:8086'
 SCHEMA_1_DRY_RUN = 'if grep -qx "schema_version: 2" "$3"; then exit 1; fi\nexit 0'
 FIXTURE_CONFIG = '"$KEENPROXY_PREFIX/etc/keenproxy/config.yaml"'
 # Start hooks: a release from before schema 2 cannot start on a schema 2 file,
-# and a schema 2 daemon rewrites an older file as soon as it starts.
+# and RESET_ON_START stands in for a start that leaves a schema 2 file behind,
+# which the config snapshot must undo on a failed update.
 SCHEMA_1_START = f'! grep -qx "schema_version: 2" {FIXTURE_CONFIG} || exit 1; '
 RESET_ON_START = f'printf "schema_version: 2\\n" > {FIXTURE_CONFIG}; '
 
