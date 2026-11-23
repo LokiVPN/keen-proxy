@@ -22,9 +22,9 @@ const maxKeeneticResponse = 32 << 10
 // KeeneticAuth checks browser sessions against the router on this host.
 // Only the discovered session cookie is sent to the router.
 type KeeneticAuth struct {
-	router    url.URL
-	panelHost string
-	client    *http.Client
+	router     url.URL
+	panelHosts []string // accepted browser Host values; see acceptedPanelHosts
+	client     *http.Client
 
 	cookieMu   sync.Mutex
 	cookieName string
@@ -101,7 +101,21 @@ func newKeeneticAuth(origin *url.URL, panelHost string, client *http.Client) *Ke
 	copy := *client
 	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	copy.Jar = nil
-	return &KeeneticAuth{router: *origin, panelHost: panelHost, client: &copy}
+	return &KeeneticAuth{router: *origin, panelHosts: acceptedPanelHosts(panelHost), client: &copy}
+}
+
+// keeneticNameHost is the router's own DNS name for its web interface.
+const keeneticNameHost = "my.keenetic.net"
+
+// acceptedPanelHosts is the only list of browser Host values that may sign in:
+// the LAN address with the panel port and my.keenetic.net with the same port,
+// where port 80 is omitted. Anything else is a foreign or spoofed name.
+func acceptedPanelHosts(lanHost string) []string {
+	hosts := []string{lanHost}
+	if _, port, err := net.SplitHostPort(lanHost); err == nil {
+		return append(hosts, net.JoinHostPort(keeneticNameHost, port))
+	}
+	return append(hosts, keeneticNameHost)
 }
 
 func (a *KeeneticAuth) request(ctx context.Context, method, path, user string, cookie *http.Cookie) (*http.Response, error) {
@@ -156,13 +170,13 @@ func (a *KeeneticAuth) sessionCookieName(ctx context.Context) string {
 }
 
 func (a *KeeneticAuth) browserCookie(r *http.Request) (*http.Cookie, int) {
-	if r.Host != a.panelHost || r.TLS != nil {
+	if !slices.Contains(a.panelHosts, r.Host) || r.TLS != nil {
 		return nil, http.StatusForbidden
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 	default:
-		if r.Header.Get("Origin") != "http://"+a.panelHost || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			return nil, http.StatusForbidden
 		}
 	}

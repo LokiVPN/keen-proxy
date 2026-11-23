@@ -41,7 +41,7 @@ func main() {
 	iptables := flag.String("iptables", "/opt/sbin/iptables", "Entware iptables executable")
 	restore := flag.String("iptables-restore", "/opt/sbin/iptables-restore", "Entware iptables-restore executable")
 	showURL := flag.Bool("url", false, "print the configured panel URL and exit")
-	keeneticAuth := flag.String("keenetic-auth-origin", os.Getenv("KEENPROXY_KEENETIC_AUTH_ORIGIN"), "enable browser sign-in through the local KeeneticOS HTTP origin")
+	keeneticAuth := flag.String("keenetic-auth-origin", os.Getenv("KEENPROXY_KEENETIC_AUTH_ORIGIN"), "local KeeneticOS HTTP origin for browser sign-in; empty derives it on Keenetic, off disables")
 	startupProtocol := flag.Bool("startup-state-protocol", false, "print the service readiness protocol version and exit")
 	flag.Parse()
 	if *startupProtocol {
@@ -120,8 +120,12 @@ func main() {
 	updates := update.NewManaged(*configPath, log)
 	go updates.Run(ctx)
 	// A management API failure must not stop the independent routing daemon.
+	origin, originErr := keeneticOrigin(*keeneticAuth, cfg.LAN.Interface, isKeenetic, interfacePrefixes)
+	if originErr != nil {
+		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working", "err", originErr)
+	}
 	go func() {
-		if err := serveAPI(ctx, cfg, d, updates, log, *keeneticAuth, onAPIListening); err != nil {
+		if err := serveAPI(ctx, cfg, d, updates, log, origin, originErr != nil, onAPIListening); err != nil {
 			log.Error("web interface failed to start", "err", err)
 		}
 	}()
@@ -194,14 +198,14 @@ func writeStartupState(path, mode string) error {
 
 // serveAPI serves management requests until cancellation, using startup bind
 // settings; it does not apply routing changes itself.
-func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, onListening func(context.Context)) error {
+func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, unavailable bool, onListening func(context.Context)) error {
 	keenetic, err := api.NewKeeneticAuth(keeneticOrigin, cfg.API.Listen)
 	if err != nil {
 		return err
 	}
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,
-		Handler:           (&api.Server{D: d, Log: log, Updates: updates, Keenetic: keenetic}).Handler(),
+		Handler:           (&api.Server{D: d, Log: log, Updates: updates, Keenetic: keenetic, Unavailable: unavailable}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ln, err := net.Listen("tcp", srv.Addr)

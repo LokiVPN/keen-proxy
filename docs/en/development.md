@@ -189,12 +189,16 @@ Remove the card and restore the stock page with `opkg remove keenproxy-app-card`
 
 ### KeeneticOS sign-in { #keenetic-auth }
 
-Start the KeenProxy service with `-keenetic-auth-origin http://ROUTER_LAN_IP`
-or set `KEENPROXY_KEENETIC_AUTH_ORIGIN` to that origin in its startup
-environment. Use the router's own IPv4 address and its local HTTP
-management port. Open the Applications card from that same IP address.
-This experimental mode targets the LAN HTTP session protocol in KeeneticOS
-5.1.10.
+On KeeneticOS sign-in is on by default. KeenProxy derives the origin from the
+first private IPv4 address of the LAN interface (`lan.interface`, `br0` by
+default). Browsers may use the router's LAN IPv4 address or `my.keenetic.net`,
+each with the panel port (the port is omitted when it is 80); any other `Host`
+is refused. To override the origin pass `-keenetic-auth-origin http://ROUTER_LAN_IP`
+or set `KEENPROXY_KEENETIC_AUTH_ORIGIN`; `-keenetic-auth-origin=off` disables
+sign-in. If the LAN interface has no IPv4 address at startup, the daemon and
+routing still start, a single error is logged, and non-loopback requests get
+`503` until restart. The mode targets the LAN HTTP session protocol in
+KeeneticOS 5.1.10.
 
 KeenProxy verifies the current session and the account's permissions for
 each protected request. An administrator (Web interface and command-line
@@ -206,6 +210,17 @@ Signing out of either panel ends the router session.
 This is the only non-loopback way in: without it, other clients get
 `403 local access only`. See the [control API](#control-api).
 
+Recovery and non-Keenetic systems: forward the panel through SSH and open it
+on loopback, which is always trusted:
+
+```sh
+ssh -L 8086:127.0.0.1:8086 root@ROUTER
+# then open http://127.0.0.1:8086
+```
+
+On OpenWrt and other non-Keenetic systems sign-in is off, so the panel is
+reachable only through such a tunnel.
+
 ## Control API { #control-api }
 
 The HTTP API is a control API, not a browser session API. A request whose
@@ -216,7 +231,7 @@ is treated like a LAN client. The memory gate
 local scripts on the router rely on this; the installer does not call the API.
 Any `Authorization` header a client still sends is ignored. Other
 clients need a KeeneticOS session when KeeneticOS sign-in is enabled
-(`-keenetic-auth-origin`) and otherwise receive `403 local access only`. Every route except
+(default on Keenetic; see `-keenetic-auth-origin`) and otherwise receive `403 local access only`. Every route except
 `GET /api/session` and `POST /api/logout` is authorized in one middleware.
 
 Residual risk: a forward proxy running on the router (tinyproxy, xray and the

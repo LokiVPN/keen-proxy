@@ -48,6 +48,9 @@ type Server struct {
 	Log      *slog.Logger
 	Updates  *update.Manager
 	Keenetic *KeeneticAuth
+	// Unavailable refuses non-loopback requests with 503 when browser
+	// sign-in could not be configured at startup.
+	Unavailable bool
 
 	supportBusy atomic.Bool
 }
@@ -161,6 +164,10 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 func (s *Server) authorizeRole(w http.ResponseWriter, r *http.Request) (Role, bool) {
 	if isLoopback(r) {
 		return RoleManage, true
+	}
+	if s.Unavailable {
+		writeError(w, http.StatusServiceUnavailable, "web interface unavailable; use an SSH tunnel to 127.0.0.1")
+		return RoleDeny, false
 	}
 	if s.Keenetic == nil {
 		writeError(w, http.StatusForbidden, "local access only")

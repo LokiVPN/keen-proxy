@@ -244,3 +244,43 @@ func TestRoleFromReportsTheAuthorizedRole(t *testing.T) {
 		t.Fatalf("loopback role %v", got)
 	}
 }
+
+func TestMyKeeneticHostAccepted(t *testing.T) {
+	s, _, _ := keeneticFixture(t)
+	r := keeneticRequest("GET", "/api/status", "", true)
+	r.Host = "my.keenetic.net:8086"
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("my.keenetic.net with the panel port: %d", w.Code)
+	}
+}
+
+func TestOtherHostRejected(t *testing.T) {
+	s, _, _ := keeneticFixture(t)
+	for _, host := range []string{"my.keenetic.net", "my.keenetic.net:80", "evil.example:8086", "192.168.7.1", "192.168.7.2:8086", "my.keenetic.net.evil.example:8086"} {
+		r := keeneticRequest("GET", "/api/status", "", true)
+		r.Host = host
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("Host %q: %d, want 403", host, w.Code)
+		}
+	}
+}
+
+func TestUnavailableServiceDeniesBrowsersWith503(t *testing.T) {
+	s, _ := newServer()
+	s.Unavailable = true
+	h := s.Handler()
+	if c := do(t, h, "GET", "/api/status", "", "", lan).Code; c != http.StatusServiceUnavailable {
+		t.Errorf("LAN peer: %d, want 503", c)
+	}
+	r := httptest.NewRequest("GET", "/api/status", nil)
+	r.RemoteAddr, r.Host = "127.0.0.1:5000", "127.0.0.1:8086"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("loopback: %d, want 200", w.Code)
+	}
+}
