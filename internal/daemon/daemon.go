@@ -121,6 +121,10 @@ type Daemon struct {
 	memoryDefault int64
 	// memoryActive is the limit from the last successful activation.
 	memoryActive int64
+	// configCurrent records that ConfigPath holds the current schema because
+	// this daemon saved it. Until then a save checks whether the file is one
+	// older releases read and keeps it first.
+	configCurrent bool
 	// Fallback chains, selected members, and probe results from the latest
 	// compilation (see failover.go).
 	chains  []compile.FailoverChain
@@ -432,21 +436,31 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	return nil
 }
 
+// persistConfig saves cfg at ConfigPath while d.mu is held. Until the daemon
+// has saved the file once, it first keeps a file older releases read (see
+// keepV1Config); afterwards the file is known to be current and is not parsed
+// again. The replaced bytes become config.yaml.previous.
 func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 	raw, err := cfg.Marshal()
 	if err != nil {
 		return err
 	}
 	if previous, err := os.ReadFile(d.opt.ConfigPath); err == nil {
-		backup, err := keepV1Config(d.opt.ConfigPath, previous)
-		if err != nil {
-			return err
-		}
-		if backup != "" {
-			d.log.Info("configuration for older releases kept", "backup", backup)
+		if !d.configCurrent {
+			backup, err := keepV1Config(d.opt.ConfigPath, previous)
+			if err != nil {
+				return err
+			}
+			if backup != "" {
+				d.log.Info("configuration for older releases kept", "backup", backup)
+			}
 		}
 		if recovery {
-			return persistRecoveryConfig(d.opt.ConfigPath, previous, raw)
+			if err := persistRecoveryConfig(d.opt.ConfigPath, previous, raw); err != nil {
+				return err
+			}
+			d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
+			return nil
 		}
 		if err := replacePrivateFile(d.opt.ConfigPath+".previous", previous); err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
@@ -457,6 +471,7 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 	if err := replacePrivateFile(d.opt.ConfigPath, raw); err != nil {
 		return fmt.Errorf("configuration was not saved: %w", err)
 	}
+	d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
 	return nil
 }
 
