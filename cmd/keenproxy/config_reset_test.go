@@ -141,6 +141,32 @@ func TestLoadOrResetCarriesSubscription(t *testing.T) {
 	assertPrivate(t, path+".previous")
 }
 
+// v0.10 wrote groups[].preset for every group added from a preset, the most
+// common reason its files no longer load. That key alone resets the file, and
+// the first save keeps the original although it has no connections or
+// subscriptions.
+func TestGroupPresetAloneResetsTheFile(t *testing.T) {
+	const body = `schema_version: 1
+groups:
+  - name: Video
+    target: direct
+    entries: [video.example]
+    preset: {id: video, version: "3", base: [video.example]}
+`
+	dir, path := writeConfigFile(t, body)
+	cfg, reset, err := loadOrReset(path)
+	if err != nil || !reset || len(cfg.Groups) != 0 || len(cfg.Subscriptions) != 0 {
+		t.Fatalf("reset = %t, %+v, %v", reset, cfg, err)
+	}
+	d := startDaemon(t, path, cfg)
+	assertFileBytes(t, path, body)
+	assertDirNames(t, dir, "config.yaml")
+	if err := d.Apply(context.Background(), d.Config()); err != nil {
+		t.Fatal(err)
+	}
+	assertFileBytes(t, filepath.Join(dir, "config.v1.yaml"), body)
+}
+
 // A backup an earlier upgrade left behind is never replaced: the first save
 // after a reset keeps the file under a timestamped name instead.
 func TestFirstSaveAfterResetNeverOverwritesBackup(t *testing.T) {

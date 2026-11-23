@@ -195,13 +195,21 @@ func TestDeprecatedTokenSettingsAreAcceptedAndIgnored(t *testing.T) {
 }
 
 func TestParseRejectsRemovedSections(t *testing.T) {
-	for _, section := range []string{
-		"filters:\n  sources: []\n",
-		"local_presets:\n  - id: mine\n    name: Mine\n",
+	// v0.10 recorded catalog provenance on every group added from a preset.
+	preset := strings.Replace(validYAML, "    target: block\n",
+		"    target: block\n    preset: {id: ads, version: \"3\", base: [ads.example.com]}\n", 1)
+	if preset == validYAML {
+		t.Fatal("fixture has no group to mark as a preset")
+	}
+	for _, tc := range []struct{ name, raw, field string }{
+		{"filters", validYAML + "filters:\n  sources: []\n", "filters"},
+		{"local presets", validYAML + "local_presets:\n  - id: mine\n    name: Mine\n", "local_presets"},
+		{"group preset", preset, "preset"},
 	} {
-		_, err := Parse([]byte(validYAML + section))
-		if err == nil || !strings.Contains(err.Error(), strings.SplitN(section, ":", 2)[0]) {
-			t.Fatalf("section %q accepted or wrong error: %v", section, err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Parse([]byte(tc.raw)); err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("accepted or wrong error: %v", err)
+			}
+		})
 	}
 }
