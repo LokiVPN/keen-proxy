@@ -229,8 +229,9 @@ New configurations are written with `schema_version: 2`.
 
 - A schema 1 file that still loads is used as is. Before the first write it is
   copied byte for byte to `config.v1.yaml` (mode 0600, never overwritten; a
-  timestamped name is used if that file exists). Installer placeholder files
-  without connections and subscriptions are not backed up.
+  timestamped name is used if that file exists). Installer starter files,
+  whose only top-level keys are `schema_version`, `lan` and `api`, are not
+  backed up.
 - A schema 1 or unreadable file that no longer loads is reset in memory at
   startup: `api.listen`, `lan` and the first valid subscription are kept, and
   everything else starts from defaults. Startup does not change the file. The

@@ -704,18 +704,26 @@ func FileSchemaVersion(raw []byte) int {
 	return head.SchemaVersion
 }
 
-// FileHasProfiles reports whether saved YAML lists a connection or a
-// subscription, unlike the installer's placeholder file. Unreadable YAML
-// counts as having them, so callers keep such a file.
-func FileHasProfiles(raw []byte) bool {
-	var head struct {
-		Connections   []yaml.Node `yaml:"connections"`
-		Subscriptions []yaml.Node `yaml:"subscriptions"`
+// placeholderKeys are the top-level keys of the starter files installers
+// write: schema_version, lan and, in older OpenWrt installers, api.
+var placeholderKeys = map[string]bool{"schema_version": true, "lan": true, "api": true}
+
+// FileIsPlaceholder reports whether saved YAML is an installer starter file: a
+// mapping, possibly empty, whose top-level keys are only schema_version, lan
+// and api. Older releases need nothing from such a file. Any other key, a
+// document that is not a mapping and unreadable YAML are not placeholders, so
+// callers keep them.
+func FileIsPlaceholder(raw []byte) bool {
+	var top map[string]yaml.Node
+	if yaml.Unmarshal(raw, &top) != nil {
+		return false
 	}
-	if yaml.Unmarshal(raw, &head) != nil {
-		return true
+	for key := range top {
+		if !placeholderKeys[key] {
+			return false
+		}
 	}
-	return len(head.Connections) > 0 || len(head.Subscriptions) > 0
+	return true
 }
 
 // Marshal serializes configuration as YAML for persistence.

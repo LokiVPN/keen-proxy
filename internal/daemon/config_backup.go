@@ -43,12 +43,12 @@ func backupV1Config(path string, raw []byte, now time.Time) (string, error) {
 
 // keepV1Config backs up the saved file before the first write in the current
 // schema replaces a file that older releases can read, including a v0.10 or
-// unreadable file the daemon started from after a reset in memory. A file
-// without connections or subscriptions, such as the installer's placeholder,
-// has nothing a rollback needs and is not kept. It returns the backup path, or
-// "" when nothing was kept.
+// unreadable file the daemon started from after a reset in memory. An
+// installer starter file (see model.FileIsPlaceholder) has nothing a rollback
+// needs and is not kept. It returns the backup path, or "" when nothing was
+// kept.
 func keepV1Config(path string, previous []byte) (string, error) {
-	if model.FileSchemaVersion(previous) >= model.SchemaVersion || !model.FileHasProfiles(previous) {
+	if model.FileSchemaVersion(previous) >= model.SchemaVersion || model.FileIsPlaceholder(previous) {
 		return "", nil
 	}
 	backup, err := backupV1Config(path, previous, time.Now())

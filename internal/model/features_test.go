@@ -63,19 +63,25 @@ func TestSchemaVersionsOneAndTwoLoad(t *testing.T) {
 	}
 }
 
-// Installer placeholders have no profiles; unreadable files count as having them.
-func TestFileHasProfiles(t *testing.T) {
+// Installer starter files hold only schema_version, lan and api. Any other key,
+// a document that is not a mapping and unreadable YAML are worth keeping.
+func TestFileIsPlaceholder(t *testing.T) {
 	for raw, want := range map[string]bool{
-		"schema_version: 1\n":                            false,
-		"schema_version: 1\nlan:\n  interface: br-lan\n": false,
-		"connections: []\nsubscriptions: []\n":           false,
-		"connections: [{id: vpn}]\n":                     true,
-		"subscriptions: [{id: lokivpn}]\n":               true,
-		"connections: {id: vpn}\n":                       true,
-		"\x00{{ not yaml":                                true,
+		"":                    true,
+		"schema_version: 1\n": true,
+		"schema_version: 1\nlan:\n  interface: br-lan\n":                                            true,
+		"schema_version: 1\napi:\n  token_file: /etc/keenproxy/token\nlan:\n  interface: br-lan\n":  true,
+		"schema_version: 1\ndns:\n  listen: 0.0.0.0:5354\n":                                         false,
+		"schema_version: 1\ngroups:\n  - {name: Video, target: direct, entries: [video.example]}\n": false,
+		"schema_version: 1\nfilters: []\n":                                                          false,
+		"connections: []\nsubscriptions: []\n":                                                      false,
+		"connections: [{id: vpn}]\n":                                                                false,
+		"subscriptions: [{id: lokivpn}]\n":                                                          false,
+		"- not\n- a mapping\n":                                                                      false,
+		"\x00{{ not yaml":                                                                           false,
 	} {
-		if got := FileHasProfiles([]byte(raw)); got != want {
-			t.Errorf("FileHasProfiles(%q) = %t, want %t", raw, got, want)
+		if got := FileIsPlaceholder([]byte(raw)); got != want {
+			t.Errorf("FileIsPlaceholder(%q) = %t, want %t", raw, got, want)
 		}
 	}
 }

@@ -51,19 +51,38 @@ func TestApplyBacksUpV1BeforeFirstWrite(t *testing.T) {
 	}
 }
 
-// The installer's placeholder file lists no connections or subscriptions, so
-// a rollback has nothing to restore from it and no backup is kept.
+// Installer starter files hold only schema_version, lan and, from older
+// OpenWrt installers, api. A rollback needs nothing from them, so no backup is
+// kept. The daemon runs on test settings in memory, as main passes them.
 func TestApplySkipsBackupOfPlaceholderV1(t *testing.T) {
-	d, path, _ := startV1Daemon(t, quietConfig(t))
+	for _, placeholder := range []string{
+		"schema_version: 1\n",
+		"schema_version: 1\nlan:\n  interface: br-lan\n",
+		"schema_version: 1\napi:\n  token_file: /etc/keenproxy/token\nlan:\n  interface: br-lan\n",
+	} {
+		t.Run(placeholder, func(t *testing.T) {
+			d, path := startDaemonOn(t, []byte(placeholder), quietConfig(t))
+			if err := d.Apply(context.Background(), d.Config()); err != nil {
+				t.Fatal(err)
+			}
+			if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "config.v1*")); err != nil || len(matches) != 0 {
+				t.Fatalf("placeholder backups = %v, %v", matches, err)
+			}
+			if saved, err := model.Load(path); err != nil || saved.SchemaVersion != 2 {
+				t.Fatalf("saved config = %+v, %v; want schema_version 2", saved, err)
+			}
+		})
+	}
+}
+
+// A version 1 file with settings beyond the starter keys is kept even
+// without connections or subscriptions.
+func TestApplyBacksUpV1WithoutProfiles(t *testing.T) {
+	d, path, original := startV1Daemon(t, quietConfig(t))
 	if err := d.Apply(context.Background(), d.Config()); err != nil {
 		t.Fatal(err)
 	}
-	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "config.v1*")); err != nil || len(matches) != 0 {
-		t.Fatalf("placeholder backups = %v, %v", matches, err)
-	}
-	if saved, err := model.Load(path); err != nil || saved.SchemaVersion != 2 {
-		t.Fatalf("saved config = %+v, %v; want schema_version 2", saved, err)
-	}
+	assertSavedBytes(t, filepath.Join(filepath.Dir(path), "config.v1.yaml"), original)
 }
 
 // Without a backup, a save must not replace a file that older releases read.
@@ -113,21 +132,31 @@ func TestBackupV1ConfigNeverReplacesAFile(t *testing.T) {
 // re-marshal would drop, and runs a daemon from it. It returns the file bytes.
 func startV1Daemon(t *testing.T, cfg *model.Config) (*Daemon, string, []byte) {
 	t.Helper()
-	holdMemoryLimit(t)
-	baseline := int64(300) * memoryMiB
-	debug.SetMemoryLimit(baseline)
 	cfg.SchemaVersion = 1
 	raw, err := cfg.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
 	original := append([]byte("# saved by an older release\n"), raw...)
+	d, path := startDaemonOn(t, original, nil)
+	return d, path, original
+}
+
+// startDaemonOn saves raw as the configuration file and runs a daemon on it,
+// or on cfg when set, as main passes the configuration it loaded or reset.
+func startDaemonOn(t *testing.T, raw []byte, cfg *model.Config) (*Daemon, string) {
+	t.Helper()
+	holdMemoryLimit(t)
+	baseline := int64(300) * memoryMiB
+	debug.SetMemoryLimit(baseline)
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, original, 0o600); err != nil {
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d, _ := startMemoryDaemon(t, path, &gateRunner{}, baseline)
-	return d, path, original
+	d := newMemoryDaemon(t, path, &gateRunner{})
+	d.opt.Config = cfg
+	runDaemon(t, d, baseline)
+	return d, path
 }
 
 // withConnection returns a quiet configuration with one connection profile,
