@@ -499,4 +499,15 @@ func TestBrokenSchema2LogHasNoLoadError(t *testing.T) {
 	if strings.Contains(stdout+stderr, "fixture-secret") || !strings.Contains(stderr, path) {
 		t.Fatalf("startup log = %q %q", stdout, stderr)
 	}
+	// The log points to a command that shows the error on the terminal only.
+	hint := "keenproxy -dry-run -config " + path
+	if !strings.Contains(stderr, hint) {
+		t.Fatalf("startup log lacks the hint %q: %q", hint, stderr)
+	}
+	dryRun := t.TempDir()
+	stdout, stderr, code = runKeenproxy(t, "-dry-run", "-config", path, "-rule-sets", filepath.Join(dryRun, "rule-sets"))
+	if code == 0 || stdout != "" || !strings.Contains(stderr, "fixture-secret") {
+		t.Fatalf("dry run: code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	assertDirNames(t, dryRun)
 }

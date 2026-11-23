@@ -84,8 +84,10 @@ func main() {
 
 	cfg, err := startupConfig(*configPath, log)
 	if err != nil {
-		// The load error can quote share links with credentials.
-		log.Error("configuration cannot be loaded; fix the file and restart", "path", *configPath)
+		// The load error can quote share links with credentials, so it stays
+		// out of the journal; -dry-run prints it to the terminal only.
+		log.Error("configuration cannot be loaded; fix the file and restart", "path", *configPath,
+			"hint", "keenproxy -dry-run -config "+*configPath+" shows the error on the terminal only")
 		os.Exit(1)
 	}
 

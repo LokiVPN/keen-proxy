@@ -281,8 +281,10 @@ New configurations are written with `schema_version: 2`.
   first save copies it byte for byte to `config.v1.yaml` (unless it holds only
   installer starter settings) and then writes schema 2, so an older release can still read its file if the update is
   rolled back before any save, and every restart until then computes the same
-  reset. A broken schema 2 file is still an error. `-dry-run` and `--url` use
-  the reset without writing.
+  reset. A broken schema 2 file is still an error: the daemon does not start
+  and its log names only the file, because the error can quote credentials.
+  Run `keenproxy -dry-run -config <path>` on the router to see the error on
+  the terminal. `-dry-run` and `--url` use the reset without writing.
 - This release's `tools/bootstrap.sh` also snapshots the configuration before
   installing and restores it if the update fails. When the target release
   cannot read schema 2 at all, it atomically switches to the newest kept
