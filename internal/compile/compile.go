@@ -531,9 +531,12 @@ func clientClasses(c *model.Config) []string {
 		classes = append(classes, classFull+target)
 	}
 	classes = append(classes, classSplit)
+	// A client that overrides to split inherits its network's default whatever
+	// the network mode, so every network default needs a class (the same
+	// mapping policies uses to set policy.fallback).
 	used := map[string]bool{}
 	for _, n := range c.Networks {
-		if n.Mode == model.ModeSplit && splitFallback(n.Default) != "" {
+		if splitFallback(n.Default) != "" {
 			used[splitFallback(n.Default)] = true
 		}
 	}

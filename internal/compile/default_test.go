@@ -173,3 +173,15 @@ clients:
 	}
 	instance.Close()
 }
+
+// A split-override client inherits the default of a network that is not itself split.
+func TestSplitOverrideClientInheritsDefaultOfOtherModes(t *testing.T) {
+	for _, mode := range []string{"full, target: fi", `"off"`} {
+		out := compileDefault(t, "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: "+mode+", default: fi}\n"+
+			"clients:\n  - {name: Phone, mac: \"02:00:00:00:00:10\", mode: split}\n")
+		if !strings.Contains(string(out.RuleSets["clients-split-to-fi.json"]), "192.168.7.104/32") {
+			t.Errorf("%s: client missing from its class; sets: %v", mode, out.RuleSets)
+		}
+		hasLines(t, routeLines(t, out), " clients-split-to-fi&group-0 → direct", " clients-split-to-fi → fi")
+	}
+}
