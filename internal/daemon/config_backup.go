@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,7 +19,7 @@ import (
 // release. The copy has mode 0600, never replaces an existing file, and it and
 // its directory entry are synced before return, so a crash after the original
 // is replaced cannot lose both. It returns the backup path.
-func backupV1Config(path string, raw []byte, now time.Time) (string, error) {
+func backupV1Config(path string, raw []byte, now time.Time, log *slog.Logger) (string, error) {
 	dir := filepath.Dir(path)
 	if existing := newestIdenticalBackup(dir, raw); existing != "" {
 		return existing, nil
@@ -38,7 +39,7 @@ func backupV1Config(path string, raw []byte, now time.Time) (string, error) {
 		}
 		err = errors.Join(err, f.Close())
 		if err == nil {
-			err = syncDir(dir)
+			err = syncDir(dir, log)
 		}
 		if err != nil {
 			// A copy that is partial or may not survive a crash must not
@@ -57,11 +58,11 @@ func backupV1Config(path string, raw []byte, now time.Time) (string, error) {
 // installer starter file (see model.FileIsPlaceholder) has nothing a rollback
 // needs and is not kept. It returns the backup path, or "" when nothing was
 // kept.
-func keepV1Config(path string, previous []byte) (string, error) {
+func keepV1Config(path string, previous []byte, log *slog.Logger) (string, error) {
 	if model.FileSchemaVersion(previous) >= model.SchemaVersion || model.FileIsPlaceholder(previous) {
 		return "", nil
 	}
-	backup, err := backupV1Config(path, previous, time.Now())
+	backup, err := backupV1Config(path, previous, time.Now(), log)
 	if err != nil {
 		return "", fmt.Errorf("configuration for older releases was not kept: %w", err)
 	}

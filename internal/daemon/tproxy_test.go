@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -292,7 +293,7 @@ func TestRecoverySaveRestoresPreviousAfterFinalRenameFails(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		err := persistRecoveryConfig(path, []byte("# original\n"), []byte("# replacement\n"))
+		err := persistRecoveryConfig(path, []byte("# original\n"), []byte("# replacement\n"), slog.New(slog.DiscardHandler))
 		var renameErr *os.LinkError
 		if !errors.As(err, &renameErr) || renameErr.Op != "rename" || renameErr.New != path {
 			t.Fatalf("expected final rename failure, got %v", err)

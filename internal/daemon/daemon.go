@@ -452,7 +452,7 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 	}
 	if err == nil {
 		if !d.configCurrent {
-			backup, err := keepV1Config(d.opt.ConfigPath, previous)
+			backup, err := keepV1Config(d.opt.ConfigPath, previous, d.log)
 			if err != nil {
 				return err
 			}
@@ -461,19 +461,19 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 			}
 		}
 		if recovery {
-			if err := d.warnDurability(persistRecoveryConfig(d.opt.ConfigPath, previous, raw)); err != nil {
+			if err := d.warnDurability(persistRecoveryConfig(d.opt.ConfigPath, previous, raw, d.log)); err != nil {
 				return err
 			}
 			d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
 			return nil
 		}
-		if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath+".previous", previous)); err != nil {
+		if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath+".previous", previous, d.log)); err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
 		}
 	} else if recovery {
 		return fmt.Errorf("previous configuration could not be read: %w", err)
 	}
-	if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath, raw)); err != nil {
+	if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath, raw, d.log)); err != nil {
 		return fmt.Errorf("configuration was not saved: %w", err)
 	}
 	d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
@@ -484,7 +484,7 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 // If the final rename fails, the original rollback snapshot can be restored
 // without allocating disk space. Ordinary active applies replace each file in
 // turn and report a failure without restoring the other.
-func persistRecoveryConfig(path string, original, next []byte) error {
+func persistRecoveryConfig(path string, original, next []byte, log *slog.Logger) error {
 	mainChanged := !bytes.Equal(original, next)
 	var mainTemp string
 	if mainChanged {
@@ -528,7 +528,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 
 	if !mainChanged {
 		if previousChanged {
-			if err := syncDir(filepath.Dir(path)); err != nil {
+			if err := syncDir(filepath.Dir(path), log); err != nil {
 				return fmt.Errorf("previous configuration was not saved: %w", err)
 			}
 		}
@@ -549,7 +549,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 		}
 		return saveErr
 	}
-	if err := syncDir(filepath.Dir(path)); err != nil {
+	if err := syncDir(filepath.Dir(path), log); err != nil {
 		return &durabilityError{err}
 	}
 	return nil
@@ -577,7 +577,7 @@ func (d *Daemon) warnDurability(err error) error {
 // before the rename and the directory after it, so after a crash path holds
 // the old or the new bytes. The daemon writes its configuration, the
 // configuration's rollback copy and subscription snapshots this way.
-func replacePrivateFile(path string, data []byte) error {
+func replacePrivateFile(path string, data []byte, log *slog.Logger) error {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
 		return nil
 	}
@@ -589,7 +589,7 @@ func replacePrivateFile(path string, data []byte) error {
 		os.Remove(temp)
 		return err
 	}
-	if err := syncDir(filepath.Dir(path)); err != nil {
+	if err := syncDir(filepath.Dir(path), log); err != nil {
 		return &durabilityError{err}
 	}
 	return nil
@@ -617,15 +617,16 @@ func stagePrivateFile(path string, data []byte) (string, error) {
 var fsyncDir = func(f *os.File) error { return f.Sync() }
 
 // syncDir makes entries created or renamed in dir durable. Filesystems that
-// cannot fsync a directory (EINVAL, ENOTSUP) are tolerated with a warning.
-func syncDir(dir string) error {
+// cannot fsync a directory (EINVAL, ENOTSUP) are tolerated with a warning on
+// log, the daemon's logger, so it reaches the system journal.
+func syncDir(dir string, log *slog.Logger) error {
 	f, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
 	err = fsyncDir(f)
 	if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
-		slog.Warn("directory sync is not supported here; durability after a crash is not guaranteed", "dir", dir)
+		log.Warn("directory sync is not supported here; durability after a crash is not guaranteed", "dir", dir)
 		err = nil
 	}
 	return errors.Join(err, f.Close())

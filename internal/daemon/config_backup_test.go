@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -118,11 +119,11 @@ func TestBackupV1ConfigNeverReplacesAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Unix(1700000000, 0)
-	got, err := backupV1Config(path, []byte("second\n"), now)
+	got, err := backupV1Config(path, []byte("second\n"), now, slog.New(slog.DiscardHandler))
 	if want := filepath.Join(dir, "config.v1.1700000000.yaml"); err != nil || got != want {
 		t.Fatalf("backup = %q, %v; want %q", got, err, want)
 	}
-	if _, err := backupV1Config(path, []byte("third\n"), now); err == nil {
+	if _, err := backupV1Config(path, []byte("third\n"), now, slog.New(slog.DiscardHandler)); err == nil {
 		t.Fatal("a third backup in the same second replaced an existing file")
 	}
 	assertSavedBytes(t, first, []byte("first\n"))
@@ -255,6 +256,38 @@ func TestDirectorySyncFailureAfterRenameKeepsTheSave(t *testing.T) {
 	}
 	if saved, err := model.Load(path); err != nil || saved.LAN.Interface != "br9" {
 		t.Fatalf("saved config = %+v, %v", saved, err)
+	}
+}
+
+// savedDaemon is a daemon, not running, on a saved schema 2 file whose
+// warnings go to logs.
+func savedDaemon(t *testing.T, logs *bytes.Buffer) (*Daemon, *model.Config, string) {
+	t.Helper()
+	cfg := quietConfig(t)
+	path := writeSavedConfig(t, cfg)
+	d := newMemoryDaemon(t, path, &gateRunner{})
+	d.log = slog.New(slog.NewTextHandler(logs, nil))
+	return d, cfg, path
+}
+
+// The warning for a filesystem that cannot sync a directory goes to the
+// daemon's log, which feeds the system journal, not to the process default.
+func TestUnsupportedDirectorySyncWarnsInTheDaemonLog(t *testing.T) {
+	var logs, fallback bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&fallback, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	d, cfg, _ := savedDaemon(t, &logs)
+	failDirSync(t, syscall.EINVAL)
+	cfg.LAN.Interface = "br9"
+	if err := d.persistConfig(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "directory sync is not supported") {
+		t.Errorf("daemon log = %q", logs.String())
+	}
+	if strings.Contains(fallback.String(), "directory sync") {
+		t.Errorf("default logger got the warning: %q", fallback.String())
 	}
 }
 
