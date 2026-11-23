@@ -10,8 +10,6 @@ KeenProxy lets you choose which devices, domains, IP ranges, and countries use a
 
 KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze and OpenWrt. Leave memory headroom for firmware and other services; this is not a guarantee that every workload fits. Experimental OpenWrt builds target x86-64, 32-bit x86 with SSE2, ARM32, ARM64, little-endian MIPS, and big-endian MIPS. [Router requirements](docs/en/getting-started.md#experimental-openwrt-support)
 
-[![KeenProxy web panel overview with tunnel traffic, router load, and connection status (synthetic demo data)](docs/assets/screenshots/readme-overview.png)](docs/en/user-guide.md)
-
 ## Documentation
 
 - Install and configure the LokiVPN build. [English guide](docs/en/getting-started.md) · [Russian guide](docs/ru/getting-started.md)

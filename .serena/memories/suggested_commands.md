@@ -2,10 +2,7 @@
 - make test — language checks, installer tests, secret-scan contract tests, memory-gate unit tests, and tagged Go tests for internal and cmd.
 - make check-secrets — checksum-pinned gitleaks scan of commits reachable from HEAD. CI uses the same script: pull requests scan `base..head`; `main` scans HEAD.
 - make vet — go vet with the same tags, ./...
-- make web — npm ci and npm run build (vue-tsc + Vite).
-- make build — web + bin/keenproxy with ui.
-- make ui-demo — build bin/keenproxy-demo with the planned preview identity and run on :8086 with examples/demo.yaml, without network changes. Demo configuration is in memory; token: bin/demo/token.
-- cd web && npm run dev — HMR, /api proxy on :8086; KEENPROXY_URL selects the backend. npm run typecheck checks TS/Vue separately.
+- make build — bin/keenproxy (after the memory gates).
 - go run -tags with_wireguard,with_awg,with_gvisor ./cmd/keenproxy -dry-run -config examples/config.yaml -arp /dev/null — print artifacts without installing firewall rules. Output includes configuration: never publish it with real keys.
 - make build-router / make build-router-lite — cross-compile Linux router binaries with CGO_ENABLED=0. See the Makefile for architectures and build tags. Both require a web build.
 - make integration — Docker --privileged, Linux network namespaces; installs packages inside a container and requires network access and Docker. Run for changes to routing, firewall, or DNS behavior.

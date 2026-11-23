@@ -14,7 +14,7 @@ hide:
 
 # Ваша сеть — ваши маршруты
 
-Выборочная маршрутизация трафика для роутеров Keenetic и Netcraze с Entware. Выбирайте, какие устройства, домены, адреса и страны идут через туннель, напрямую или блокируются, — в одной веб-панели.
+Выборочная маршрутизация трафика для роутеров Keenetic и Netcraze с Entware. Выбирайте, какие устройства, домены, адреса и страны идут через туннель, напрямую или блокируются, — в браузерном интерфейсе.
 
 <div class="kp-actions" markdown>
 [Начать работу](getting-started.md){ .md-button .md-button--primary }
@@ -22,7 +22,6 @@ hide:
 
 </div>
 
-[![Обзор веб-панели KeenProxy с синтетическим трафиком](../assets/screenshots/ru-landing-overview.png){ .kp-hero__shot }](user-guide.md)
 
 </section>
 
@@ -111,31 +110,6 @@ WireGuard, ссылки подключения sing-box, outbound-объекты
 </div>
 
 KeenProxy также следит за своими правилами перехвата. На совместимых прошивках Keenetic/Netcraze хук netfilter запускает проверку после изменений firewall; периодический сторож работает везде, включая экспериментальные установки OpenWrt. [Как устроено восстановление правил](network-flow.md#how-firewall-rules-recover-after-a-firmware-change).
-
-</section>
-
-<section class="kp-section" markdown>
-
-## Как выглядит панель
-
-<div class="kp-gallery" markdown>
-
-<figure markdown>
-[![Группы доменов, маршруты и наблюдаемые адреса](../assets/screenshots/ru-rules.png)](user-guide.md)
-<figcaption>Правила</figcaption>
-</figure>
-
-<figure markdown>
-[![Профили соединений и маршруты](../assets/screenshots/ru-connections.png)](user-guide.md)
-<figcaption>Соединения</figcaption>
-</figure>
-
-<figure markdown>
-[![Диагностика выбранного соединения](../assets/screenshots/ru-diagnostics.png)](user-guide.md)
-<figcaption markdown>Диагностика. [Как скачать ZIP на роутере](troubleshooting.md#download-the-diagnostic-zip).</figcaption>
-</figure>
-
-</div>
 
 </section>
 

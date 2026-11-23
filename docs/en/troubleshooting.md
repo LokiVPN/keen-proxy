@@ -10,7 +10,7 @@ Run HTTPS and transfer checks separately. Inspect certificate/time errors, profi
 
 ## A domain has no current IPs
 
-Check whether the group is enabled and applied. Review its DNS route, resolver availability, expiration and error details. Manual preview observations are separate from applying the configuration. Demo `.invalid` names intentionally return synthetic errors.
+Check whether the group is enabled and applied. Review its DNS route, resolver availability, expiration and error details. Manual preview observations are separate from applying the configuration.
 
 ## Why does the watchdog restore interception rules?
 
@@ -214,8 +214,12 @@ When `iptables-restore` fails during Apply, look for **Configuration apply faile
 
 The export omits credentials, raw connection profiles, and free-form log messages. Names and addresses are removed or replaced with aliases that are consistent within one ZIP. Event times, ports, protocols, policies, and counts can still identify activity. Review the files before attaching them to an issue or sharing them privately.
 
-**Download report** on the Diagnostics screen saves `keenproxy-diagnostics.json` with a status summary and results from any checks you ran for the selected connection. In the browser demo this report contains synthetic data, and ZIP download is available only in the router panel. For a restorable configuration, copy the YAML configuration file over SSH and store it privately.
+**Download report** on the Diagnostics screen saves `keenproxy-diagnostics.json` with a status summary and results from any checks you ran for the selected connection. ZIP download is available only from the router. For a restorable configuration, copy the YAML configuration file over SSH and store it privately.
 
 ## What should a bug report include?
 
 Include the expected and actual behavior, the running release and build details, router model and firmware, steps to reproduce, and the approximate time of the incident. Use a minimal synthetic configuration or attach a reviewed [diagnostic ZIP](#download-the-diagnostic-zip). Read [CONTRIBUTING](https://github.com/ordo-systems/keen-proxy/blob/main/CONTRIBUTING.md) and [SECURITY](https://github.com/ordo-systems/keen-proxy/blob/main/SECURITY.md).
+
+## Upgrading from v0.10 { #upgrade-from-v010 }
+
+This release no longer reads the v0.10 configuration format. If the file still loads, it is used as is after a byte-for-byte backup to `config.v1.yaml`. If it does not load, KeenProxy resets it at startup: the original stays as `config.v1.yaml` next to the configuration, and the listen address, LAN settings and the first valid subscription are carried into a new file. Re-create other connections and rules afterwards. Presets, resource exchange, ad filter lists and YAML import/export no longer exist, and there is no panel token to look up. A fresh install has no v1 backup, so a [rollback](getting-started.md#update-from-the-panel) to an older release is refused and changes nothing.

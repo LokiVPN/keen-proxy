@@ -1,6 +1,9 @@
 # User guide
 
-These screenshots show the same Vue screens shipped by KeenProxy, running in the independent browser demo. Addresses, counters, profiles, and results are synthetic. The guide covers the implemented interface, rather than promising every feature shown in historical mockups.
+!!! note "Interface being replaced"
+    The browser interface is being replaced by a new server-rendered one, and this guide will be updated. Until then, the page at `/` shows a placeholder and the sections below describe the previous panel. Settings are managed through the [YAML file](getting-started.md#first-configuration) and the loopback [control API](development.md#control-api).
+
+The screenshots below are synthetic.
 
 ## Access the panel
 
@@ -31,7 +34,7 @@ Open **Connections**. Select a profile to inspect its settings and status. Choos
 
 The file picker accepts `.conf`, `.txt`, `.json`, and `.vpn` up to 2 MiB. For a sing-box file with multiple profiles, choose the outbound or endpoint to import. Router DNS and routes stay under KeenProxy control. In **Failover**, choose the immediate backup and review the inherited chain. Connection parameters stay hidden until you reveal them. See [how failover works](routing.md#fallback-chains).
 
-Changes enter the shared draft. Real credentials belong only in your local management session. In the browser demo, use synthetic values.
+Changes enter the shared draft. Real credentials belong only in your local management session.
 
 Use the connection's **Enabled** switch to pause it without deleting its profile, credentials, or routing references. The switch changes the draft only; the running connection changes after **Apply**, and **Discard** restores the saved state. A disabled connection stays visible and editable, but its tunnel/client and availability checks do not run.
 
@@ -225,7 +228,7 @@ system:
   memory_limit_mib: 400
 ```
 
-Only positive whole MiB values are accepted. To remove the override, omit `memory_limit_mib`, rather than setting it to zero. The demo saves this setting in memory without imposing a real process limit.
+Only positive whole MiB values are accepted. To remove the override, omit `memory_limit_mib`, rather than setting it to zero.
 
 ## 8. Install or roll back a release
 

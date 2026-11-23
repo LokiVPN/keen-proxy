@@ -29,8 +29,6 @@ Country groups match the **destination IP address** against the GeoIP database. 
 4. Set **Connection** to the desired profile, for example **Finland WG**. **Direct** bypasses the tunnel; **Block** rejects matching traffic.
 5. Open **Connections → Clients** and ensure the relevant network or device uses **Split**. Review the shared draft and choose **Apply** once.
 
-The browser demo already includes **All except Russia → Finland WG**. You can edit it, Apply, and reload to reset the synthetic session.
-
 [![Country group excluding Russia and targeting Finland WG](../assets/screenshots/en-countries.png)](../assets/screenshots/en-countries.png)
 
 Open the country selector to search by country name or ISO code. Selected countries appear as code chips; removing a chip changes the draft.
@@ -41,7 +39,7 @@ Open the country selector to search by country name or ISO code. Selected countr
 
 Global block groups are evaluated first. For a routed device/network policy, explicit domain and address groups precede country groups. Device overrides take precedence over network defaults. **Full tunnel** uses its selected default connection and is a different policy from this split-routing recipe.
 
-| Example with the demo configuration | Result |
+| Example configuration | Result |
 | --- | --- |
 | A Steam domain matches **Steam direct** | Direct, even if its destination is outside Russia |
 | A domain matches **Video and social media** | Netherlands Reality, before the broad country rule |
@@ -53,8 +51,6 @@ Global block groups are evaluated first. For a routed device/network policy, exp
 ### Check the result
 
 On a real installation, confirm that the country database is loaded in **Diagnostics**, Apply the configuration, and inspect **Logs → Routing** for the selected outbound and matching rule. Missing GeoIP data must be resolved before relying on country routing. CDN addresses and database updates can change an IP's assigned country; use explicit domains or addresses when that distinction matters.
-
-The demo reports a synthetic loaded database and sample journal records. It demonstrates editing and Apply, but does not perform GeoIP lookups or verify real network traffic.
 
 ## Country databases
 
@@ -80,6 +76,6 @@ If KeenProxy uses a resolver on the LAN and that resolver forwards requests thro
 
 The exception bypasses KeenProxy for all UDP/TCP port 53 queries from those addresses on the configured LAN interface, including DNS filtering for those queries. It does not affect other clients, application routing on other ports, or encrypted DNS rules. Only add trusted resolvers that need this exception; the router's own forwarding rules still apply.
 
-Use your router's actual network test procedure to evaluate UDP/TCP interception and encrypted-DNS handling. Applications can use their own resolvers. The UI and demo do not establish universal DNS-leak protection.
+Use your router's actual network test procedure to evaluate UDP/TCP interception and encrypted-DNS handling. Applications can use their own resolvers. The UI does not establish universal DNS-leak protection.
 
 See the [user guide](user-guide.md) for screenshots and [Troubleshooting](troubleshooting.md) for interpreting evidence.

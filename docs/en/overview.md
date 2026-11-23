@@ -19,4 +19,4 @@ A **connection** is a named WireGuard, link-based, sing-box, or TrustTunnel prof
 Routing settings share one draft. Review changes to connections or rules and choose **Apply**. **Discard** returns to the last saved configuration. Release installation and scheduling use their own controls under **Settings**.
 
 !!! warning "Experimental software"
-    Compatibility depends on architecture, firmware, kernel capabilities, and build features. Synthetic demo results do not prove connectivity, DNS protection, or compatibility with your router.
+    Compatibility depends on architecture, firmware, kernel capabilities, and build features. Synthetic test results do not prove connectivity, DNS protection, or compatibility with your router.

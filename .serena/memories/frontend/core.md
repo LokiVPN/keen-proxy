@@ -1,11 +1,6 @@
-# Panel and API
-- web/src/store.ts owns the reactive draft and saved snapshot. Apply PUTs the complete /api/config. Discard resets the draft and failed Apply leaves it available for correction.
-- The panel uses Vue, Naive UI, and a shared API client. Keep same-origin auth, the shared 401 handler, and EventSource for journal updates. Unknown /api/ routes return 404 rather than the SPA.
-- Keep both demo paths in sync with the API. Go api.Demo serves synthetic data through the real HTTP layer. Vite demo mode aliases web/src/api.ts imports to web/src/demo/api.ts and uses relative assets for static hosting. Demo configuration is in memory.
-- Both demo paths read the planned preview version from web/src/demo/release.json; Release Please synchronizes it separately from the last published installer/package versions. The Go demo serves the real offline vpn:// decoder; the static demo explicitly requires a backend for that operation.
-- API access checks RemoteAddr. Do not trust forwarded headers. Credentials use bearer auth or the session cookie; configured no-token CIDRs come from applied configuration.
-- Keep EN messages typed against RU. Preserve browser locale, the stored user preference, and the Naive UI locale. Use translation keys for route titles.
-- ConnTabs uses ResizeObserver for overflow and exposes hidden connections through a dropdown. Keep toolbar actions outside the scrolling tab area.
-- Groups expand to domain/IP/TTL rows. Preview resolution is isolated from active routing. Match frontend domain normalization against model.ParseEntry.
-- Health status measures HTTP reachability and freshness. Keep the reactive clock scoped to the component lifecycle. Diagnostics distinguishes HTTP, HTTPS, and transfer checks.
-- LAN names are discovered in the background. Show the manual name first, then the DHCP or local DNS name, then address identifiers. Search both names. Discovery does not edit the configuration.
+# API and UI
+- The Vue panel, Vite demo and Go api.Demo are removed. GET / and any non-/api/ path return 503 "KeenProxy interface is being rebuilt" (api.rebuildingUI, temporary). A server-rendered UI is pending in a later stage; do not reintroduce a SPA build.
+- The HTTP API is a control API. A loopback RemoteAddr is trusted without a token and any Authorization header is ignored (installer, memory gate and netns integration use it). Other clients need a KeeneticOS session when KeeneticOS sign-in is enabled (-keenetic-auth-origin); otherwise they get 403 "local access only". Do not trust forwarded headers.
+- Removed: panel token, -key, trusted networks, POST /api/login, presets, resource exchange, ad filter lists and panel-only endpoints (GeoIP lookup, domain preview, YAML import/export/previous, DNS check, journal stream/export). api.token_file and api.no_token_from are accepted and ignored.
+- Kept for loopback automation: GET/PUT /api/config, /api/status, /api/stats, /api/stats/hosts, GET /api/journal/{kind}, and the support ZIP. Unknown /api/ routes return 404.
+- The shared draft/Apply workflow stays the contract for the future UI: one complete config PUT, no separate writes.

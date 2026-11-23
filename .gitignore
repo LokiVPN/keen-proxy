@@ -8,8 +8,6 @@ tools/*/dist/
 .DS_Store
 *.test
 coverage.out
-/web/dist/
-/web/dist-demo/
 /site/
 /.venv-docs/
 /web/node_modules/

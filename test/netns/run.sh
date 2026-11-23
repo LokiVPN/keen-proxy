@@ -231,7 +231,7 @@ done
 dns_routed || { cat /tmp/keenproxy.log; fail "no-SNI DNS fallback"; }
 ip netns exec client curl -fsS -m 3 -H 'Host: unrelated.test' http://198.51.100.5/ >/dev/null
 api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x["host"]=="unrelated.test" and x["outbound"]=="direct" for x in json.load(sys.stdin)["entries"])' || fail "shared IP overrode Host"
-# Wait past the resolved entry's TTL; the daemon does not re-resolve within 30 seconds.
+# Wait past the resolved entry's TTL: dnsmasq runs with local-ttl=5, so 7 seconds expire it.
 sleep 7
 expired_direct() {
  ip netns exec client curl -fsS -m 3 --http1.0 -H 'Host:' http://198.51.100.5/ >/dev/null

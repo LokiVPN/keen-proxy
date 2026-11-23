@@ -127,7 +127,7 @@ func TestSessionReportsLoopbackAccess(t *testing.T) {
 			t.Errorf("session for %s: %d %v", remote, w.Code, sess)
 		}
 	}
-	if c := do(t, h, "POST", "/api/login", `{"token":"x"}`, "", local).Code; c == http.StatusOK {
+	if c := do(t, h, "POST", "/api/login", `{"token":"x"}`, "", local).Code; c != http.StatusNotFound {
 		t.Errorf("token login still exists: %d", c)
 	}
 }
@@ -277,6 +277,9 @@ func TestRootIsPlaceholderUntilUIExists(t *testing.T) {
 	w := do(t, h, "GET", "/", "", "", "127.0.0.1:1234")
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "KeenProxy interface is being rebuilt") {
 		t.Fatalf("root = %d %q", w.Code, w.Body.String())
+	}
+	if w := do(t, h, "GET", "/connections", "", "", "127.0.0.1:1234"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("non-API path = %d", w.Code)
 	}
 	if w := do(t, h, "GET", "/api/unknown", "", "", "127.0.0.1:1234"); w.Code != http.StatusNotFound {
 		t.Fatalf("unknown api path = %d", w.Code)

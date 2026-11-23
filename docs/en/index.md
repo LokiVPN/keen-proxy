@@ -14,7 +14,7 @@ hide:
 
 # Your network, your routes
 
-Selective traffic routing for Keenetic and Netcraze routers running Entware. Choose which devices, domains, addresses, and countries use a tunnel, connect directly, or are blocked — from one web panel.
+Selective traffic routing for Keenetic and Netcraze routers running Entware. Choose which devices, domains, addresses, and countries use a tunnel, connect directly, or are blocked — from a browser interface.
 
 <div class="kp-actions" markdown>
 [Get started](getting-started.md){ .md-button .md-button--primary }
@@ -22,7 +22,6 @@ Selective traffic routing for Keenetic and Netcraze routers running Entware. Cho
 
 </div>
 
-[![KeenProxy web panel overview with synthetic traffic](../assets/screenshots/readme-overview.png){ .kp-hero__shot }](user-guide.md)
 
 </section>
 
@@ -111,31 +110,6 @@ Select which networks and clients follow the rules, then apply the draft.
 </div>
 
 KeenProxy also watches its interception rules. On compatible Keenetic/Netcraze firmware, a netfilter hook requests a check after firewall changes; a periodic watchdog remains active everywhere, including experimental OpenWrt installations. [How rule recovery works](network-flow.md#how-firewall-rules-recover-after-a-firmware-change).
-
-</section>
-
-<section class="kp-section" markdown>
-
-## A look at the panel
-
-<div class="kp-gallery" markdown>
-
-<figure markdown>
-[![Domain groups, targets, and address observations](../assets/screenshots/en-rules.png)](user-guide.md#3-add-a-routing-group)
-<figcaption>Rules</figcaption>
-</figure>
-
-<figure markdown>
-[![Connection profiles and routing targets](../assets/screenshots/en-connections.png)](user-guide.md#2-configure-a-connection)
-<figcaption>Connections</figcaption>
-</figure>
-
-<figure markdown>
-[![Diagnostics for a selected connection](../assets/screenshots/en-diagnostics.png)](user-guide.md#6-verify-the-result)
-<figcaption markdown>Diagnostics. [How to download the ZIP on your router](troubleshooting.md#download-the-diagnostic-zip).</figcaption>
-</figure>
-
-</div>
 
 </section>
 

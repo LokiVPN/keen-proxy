@@ -202,9 +202,45 @@ management permissions. Read-only, manager and demo accounts are denied.
 Signing out of either panel ends the router session. An active journal
 stream also checks access before sending more events.
 
-The HTTP API trusts only loopback peers for local automation, such as the
-installer and test scripts; an `Authorization` header is ignored. Other
-peers need a verified KeeneticOS session.
+This is the only non-loopback way in: without it, other clients get
+`403 local access only`. See the [control API](#control-api).
+
+## Control API { #control-api }
+
+The HTTP API is a control API, not a browser session API. A request whose
+`RemoteAddr` is loopback is trusted without a token; the installer, the memory
+gate (`test/memory/scenario.py`) and `make integration` (`test/netns/run.sh`)
+rely on this. Any `Authorization` header they still send is ignored. Other
+clients need a KeeneticOS session when KeeneticOS sign-in is enabled
+(`-keenetic-auth-origin`) and otherwise receive `403 local access only`.
+
+The panel token, the `-key` option, trusted networks and `POST /api/login` are
+removed; `api.token_file` and `api.no_token_from` are accepted and ignored. The
+Vue panel and demo mode are removed too. `GET /` and other non-`/api/` paths
+return `503 KeenProxy interface is being rebuilt` until the server-rendered UI
+arrives. The journal stays internal (`GET /api/journal/{kind}` on loopback and
+the support ZIP); the journal stream and export, presets, resource exchange,
+ad filter lists, GeoIP lookup, domain preview, YAML import/export and the DNS
+check endpoint are removed.
+
+## Configuration schema 2 and rollback { #config-schema }
+
+New configurations are written with `schema_version: 2`.
+
+- A schema 1 file that still loads is used as is. Before the first write it is
+  copied byte for byte to `config.v1.yaml` (mode 0600, never overwritten; a
+  timestamped name is used if that file exists). Installer placeholder files
+  without connections and subscriptions are not backed up.
+- A schema 1 or unreadable file that no longer loads is reset at startup. The
+  original stays as `config.v1.yaml`, and `api.listen`, `lan` and the first
+  valid subscription are carried into a fresh schema 2 file. A broken schema 2
+  file is still an error. `-dry-run` reports a planned reset without writing.
+- `tools/bootstrap.sh` snapshots the configuration before installing and
+  restores it if the update fails. When a rollback target rejects the schema 2
+  file, it atomically switches to the newest kept `config.v1*.yaml` and keeps
+  the newer file as `config.v2*.yaml`. A fresh install of this release has no v1
+  backup, so a rollback to an older release is refused at validation and
+  changes nothing.
 
 ## GitHub Pages
 

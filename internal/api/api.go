@@ -281,7 +281,8 @@ func (s *Server) parseLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// rebuildingUI answers every non-API path until the server-rendered UI exists.
+// rebuildingUI is a temporary placeholder for every non-API path; it goes away
+// when the server-rendered UI lands.
 func rebuildingUI(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "KeenProxy interface is being rebuilt", http.StatusServiceUnavailable)
 }

@@ -12,7 +12,7 @@ For failures on the router, use **Diagnostics → Diagnostics archive → Downlo
 
 Never attach real private keys, passwords, tokens, connection URLs, complete production YAML, unreviewed support exports, or browsing histories. A hostname or process being reachable does not prove that a tunnel transfers application data successfully.
 
-For a router-specific report, explain how you retained access and restored the previous state. Do not ask maintainers to run unknown scripts against a live router. Use the local demo and disposable integration suite whenever possible.
+For a router-specific report, explain how you retained access and restored the previous state. Do not ask maintainers to run unknown scripts against a live router. Use the disposable integration suite whenever possible.
 
 ## Development setup
 
@@ -30,15 +30,15 @@ The main code boundaries are:
 | `internal/netfilter` | Owned iptables chains and policy-routing lifecycle |
 | `internal/dnsfront`, `domaincache` | DNS transport and bounded observations |
 | `internal/engine`, `links`, `trusttunnel` | Embedded engine and protocol/client adaptation |
-| `internal/api`, `journal`, `stats` | Authenticated management, journals, and telemetry |
+| `internal/api`, `journal`, `stats` | Loopback and KeeneticOS-authorized control API, journals, and telemetry |
 
 ## Make the smallest verifiable change
 
-- Follow Go formatting and the existing TypeScript/Vue style.
+- Follow Go formatting and the existing style of the surrounding code. The interface is Go with server-rendered pages (being rebuilt).
 - Write short English comments explaining contracts, ownership, units, and non-obvious ordering. Keep comments close to the code they describe.
 - Keep runtime diagnostics and generated comments in English. Put Russian text in `docs/ru/` or Russian localization resources; preserve essential Unicode test values using escapes. `make check-language` enforces this boundary and runs as part of `make test`.
 - Preserve configuration compatibility, the shared draft/Apply workflow, and rollback behavior.
-- Update the Go model, compiler, API, frontend types, examples, and tests together when changing the schema.
+- Update the Go model, compiler, API, UI, examples, and tests together when changing the schema.
 - Add a failing behavioral test before fixing a bug when practical. Use controlled clocks and injected network boundaries instead of real services.
 - Keep compiler directives, generated-file markers, and third-party notices intact.
 - Preserve meaningful Unicode and localized fixtures. Translate UI messages through the locale dictionaries.
