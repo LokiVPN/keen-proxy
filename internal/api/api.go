@@ -1,7 +1,7 @@
 // Package api serves the keenProxy HTTP API and web interface.
 //
 // The HTTP API is a control API for local processes: it trusts only loopback
-// peers, judged by RemoteAddr alone. Other peers reach it only through a
+// peers that also address a loopback Host. Other peers reach it only through a
 // verified KeeneticOS session when that sign-in mode is enabled. A separate
 // address guard restricts access to private, loopback, and link-local peers
 // even when the listening port is exposed.
@@ -52,33 +52,56 @@ type Server struct {
 	supportBusy atomic.Bool
 }
 
-// Handler builds the API routes and applies the peer-address guard to all requests.
+// route is one registered pattern and its endpoint.
+type route struct {
+	pattern string
+	h       http.Handler
+}
+
+// publicRoutes are the only API patterns that skip authorization: they decide
+// for themselves what to reveal (the session probe) or only drop a session.
+var publicRoutes = map[string]bool{
+	"GET /api/session": true,
+	"POST /api/logout": true,
+}
+
+// routes lists every API endpoint; Handler registers exactly this list.
+func (s *Server) routes() []route {
+	return append([]route{
+		{"POST /api/diagnostics/check", http.HandlerFunc(s.diagnosticCheck)},
+		{"GET /api/diagnostics/bundle", http.HandlerFunc(s.supportBundle)},
+		{"GET /api/diagnostics/tproxy", http.HandlerFunc(s.tproxyReadiness)},
+		{"POST /api/diagnostics/tproxy/retry", http.HandlerFunc(s.retryTProxy)},
+		{"GET /api/subscriptions/status", http.HandlerFunc(s.subscriptionStatus)},
+		{"POST /api/subscriptions/preview", http.HandlerFunc(s.subscriptionPreview)},
+		{"POST /api/subscriptions/{id}/refresh", http.HandlerFunc(s.subscriptionRefresh)},
+		{"POST /api/subscriptions/{id}/check", http.HandlerFunc(s.subscriptionCheck)},
+		{"POST /api/logout", http.HandlerFunc(s.logout)},
+		{"GET /api/session", http.HandlerFunc(s.session)},
+		{"GET /api/status", http.HandlerFunc(s.status)},
+		{"GET /api/config", http.HandlerFunc(s.getConfig)},
+		{"PUT /api/config", http.HandlerFunc(s.putConfig)},
+		{"POST /api/config/validate", http.HandlerFunc(s.validateConfig)},
+		{"GET /api/devices", http.HandlerFunc(s.devices)},
+		{"POST /api/links/parse", http.HandlerFunc(s.parseLink)},
+		{"POST /api/amnezia/import", http.HandlerFunc(s.amneziaImport)},
+		{"GET /api/stats", http.HandlerFunc(s.stats)},
+		{"GET /api/stats/hosts", http.HandlerFunc(s.hosts)},
+		{"GET /api/journal/{kind}", http.HandlerFunc(s.journalPage)},
+	}, s.updateRoutes()...)
+}
+
+// Handler builds the routes. The peer-address guard runs first, then the
+// authorization middleware, so a new route is protected unless it is listed
+// in publicRoutes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST /api/diagnostics/check", s.auth(s.diagnosticCheck))
-	mux.Handle("GET /api/diagnostics/bundle", s.auth(s.supportBundle))
-	mux.Handle("GET /api/diagnostics/tproxy", s.auth(s.tproxyReadiness))
-	mux.Handle("POST /api/diagnostics/tproxy/retry", s.auth(s.retryTProxy))
-	mux.Handle("GET /api/subscriptions/status", s.auth(s.subscriptionStatus))
-	mux.Handle("POST /api/subscriptions/preview", s.auth(s.subscriptionPreview))
-	mux.Handle("POST /api/subscriptions/{id}/refresh", s.auth(s.subscriptionRefresh))
-	mux.Handle("POST /api/subscriptions/{id}/check", s.auth(s.subscriptionCheck))
-	mux.HandleFunc("POST /api/logout", s.logout)
-	mux.HandleFunc("GET /api/session", s.session)
-	mux.Handle("GET /api/status", s.auth(s.status))
-	mux.Handle("GET /api/config", s.auth(s.getConfig))
-	mux.Handle("PUT /api/config", s.auth(s.putConfig))
-	mux.Handle("POST /api/config/validate", s.auth(s.validateConfig))
-	mux.Handle("GET /api/devices", s.auth(s.devices))
-	mux.Handle("POST /api/links/parse", s.auth(s.parseLink))
-	mux.Handle("POST /api/amnezia/import", s.auth(s.amneziaImport))
-	mux.Handle("GET /api/stats", s.auth(s.stats))
-	mux.Handle("GET /api/stats/hosts", s.auth(s.hosts))
-	mux.Handle("GET /api/journal/{kind}", s.auth(s.journalPage))
-	s.updateRoutes(mux)
+	for _, rt := range s.routes() {
+		mux.Handle(rt.pattern, rt.h)
+	}
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.HandleFunc("/", rebuildingUI)
-	return s.lanOnly(mux)
+	return s.lanOnly(s.authorize(mux))
 }
 
 // lanOnly accepts private, loopback, and link-local peers based on RemoteAddr.
@@ -94,47 +117,66 @@ func (s *Server) lanOnly(next http.Handler) http.Handler {
 	})
 }
 
-// isLoopback reports whether the peer is a local process. It uses only
-// RemoteAddr; client-controlled forwarding headers are untrusted.
+// isLoopback reports whether the request comes from a local process: a
+// loopback RemoteAddr and a loopback Host. The Host check keeps a browser
+// reaching the router through a DNS name or a LAN address from being trusted
+// when a local reverse proxy forwards it. Other headers are untrusted.
 func isLoopback(r *http.Request) bool {
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	a, err := netip.ParseAddr(host)
-	return err == nil && a.Unmap().IsLoopback()
+	return err == nil && a.Unmap().IsLoopback() && loopbackHost(r.Host)
 }
 
-// authorized applies the access policy: loopback peers are trusted with
-// RoleManage, other peers need a verified KeeneticOS session, and without that
-// mode they are refused. Writes need RoleManage. It stores the decided role in
-// the request context and writes any refusal itself.
-func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
-	role := RoleManage
-	if !isLoopback(r) {
-		if s.Keenetic == nil {
-			writeError(w, http.StatusForbidden, "local access only")
-			return false
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		var status int
-		if role, status = s.keeneticStatus(r); status != http.StatusOK {
-			writeKeeneticError(w, status)
-			return false
-		}
-		if role != RoleManage && r.Method != http.MethodGet && r.Method != http.MethodHead {
-			writeKeeneticError(w, http.StatusForbidden)
-			return false
-		}
+// loopbackHost reports whether a Host header names 127.0.0.1, ::1 or
+// localhost, with any port.
+func loopbackHost(hostport string) bool {
+	h, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		h = strings.Trim(hostport, "[]")
 	}
-	*r = *r.WithContext(context.WithValue(r.Context(), roleKey{}, role))
-	return true
+	h = strings.ToLower(h)
+	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
-// auth applies the access policy before calling the endpoint.
-func (s *Server) auth(h http.HandlerFunc) http.Handler {
+// authorize is the single place that decides access. It authorizes every
+// request except publicRoutes and non-API paths (the placeholder page serves no
+// data), stores the role in the context, and passes the derived request on.
+func (s *Server) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authorized(w, r) {
-			h(w, r)
+		if publicRoutes[r.Method+" "+r.URL.Path] || !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
 		}
+		role, ok := s.authorizeRole(w, r)
+		if !ok {
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), roleKey{}, role)))
 	})
+}
+
+// authorizeRole applies the access policy: trusted loopback requests get
+// RoleManage, other peers need a verified KeeneticOS session, and without that
+// mode they are refused. Writes need RoleManage. It writes any refusal itself.
+func (s *Server) authorizeRole(w http.ResponseWriter, r *http.Request) (Role, bool) {
+	if isLoopback(r) {
+		return RoleManage, true
+	}
+	if s.Keenetic == nil {
+		writeError(w, http.StatusForbidden, "local access only")
+		return RoleDeny, false
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	role, status := s.keeneticStatus(r)
+	if status != http.StatusOK {
+		writeKeeneticError(w, status)
+		return RoleDeny, false
+	}
+	if role != RoleManage && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeKeeneticError(w, http.StatusForbidden)
+		return RoleDeny, false
+	}
+	return role, true
 }
 
 // session reports whether the caller has access and, in KeeneticOS mode,
@@ -144,7 +186,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		_, status := s.keeneticStatus(r)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"authed":       status == http.StatusOK,
+			"authed":       isLoopback(r) || status == http.StatusOK,
 			"ip":           clientIP(r),
 			"keenetic_url": s.Keenetic.applicationsURL(),
 		})

@@ -52,6 +52,7 @@ func TestSubscriptionPreviewReportsProviderLimitWithoutSaving(t *testing.T) {
 	post := func(body, contentType string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		r.RemoteAddr = local
+		r.Host = "127.0.0.1:8086"
 		r.Header.Set("Authorization", "Bearer secret")
 		r.Header.Set("Content-Type", contentType)
 		w := httptest.NewRecorder()
@@ -82,9 +83,10 @@ func TestSubscriptionMutationRejectsForeignOrigin(t *testing.T) {
 	s.D = subscriptionFixture{d}
 	h := s.Handler()
 	for _, path := range []string{"/api/subscriptions/preview", "/api/subscriptions/provider/refresh", "/api/subscriptions/provider/check"} {
-		request := httptest.NewRequest(http.MethodPost, "http://router.test"+path,
+		request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8086"+path,
 			strings.NewReader(`{"id":"provider","url":"https://provider.example/list"}`))
 		request.RemoteAddr = local
+		request.Host = "127.0.0.1:8086"
 		request.Header.Set("Content-Type", "text/plain")
 		request.Header.Set("Origin", "https://other.example")
 		request.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -124,6 +126,7 @@ func TestSubscriptionCheckRequestUsesOnlyAppliedNodeIDs(t *testing.T) {
 	} {
 		r := httptest.NewRequest(http.MethodPost, "/api/subscriptions/"+tc.source+"/check", strings.NewReader(tc.body))
 		r.RemoteAddr = local
+		r.Host = "127.0.0.1:8086"
 		r.Header.Set("Authorization", "Bearer "+tc.token)
 		r.Header.Set("Content-Type", tc.contentType)
 		w := httptest.NewRecorder()

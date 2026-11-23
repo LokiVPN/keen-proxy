@@ -107,9 +107,10 @@ func TestTProxyRetryRejectsCrossOrigin(t *testing.T) {
 	recovery := &tproxyDiagnosticStub{fakeDaemon: fake, result: daemon.TProxyDiagnostic{StartupBlocked: true}}
 	s.D = recovery
 	h := s.Handler()
-	for i, origin := range []string{"https://other.example", "http://keenproxy.example"} {
-		r := httptest.NewRequest("POST", "http://keenproxy.example"+tproxyPath+"/retry", nil)
+	for i, origin := range []string{"https://other.example", "http://127.0.0.1:8086"} {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:8086"+tproxyPath+"/retry", nil)
 		r.RemoteAddr = local
+		r.Host = "127.0.0.1:8086"
 		r.Header.Set("Origin", origin)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

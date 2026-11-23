@@ -142,7 +142,7 @@ func TestKeeneticSessionAuthorizesAPIAndRevokesAccess(t *testing.T) {
 	call(automation, http.StatusUnauthorized)
 
 	local := keeneticRequest("GET", "/api/status", "", false)
-	local.RemoteAddr = "127.0.0.1:5000"
+	local.RemoteAddr, local.Host = "127.0.0.1:5000", "127.0.0.1:8086"
 	call(local, http.StatusOK)
 }
 
@@ -230,16 +230,16 @@ func TestRoleFromReportsTheAuthorizedRole(t *testing.T) {
 	}
 	probe := func(s *Server, r *http.Request) Role {
 		var got Role
-		serve := s.auth(func(w http.ResponseWriter, r *http.Request) { got = RoleFrom(r.Context()) })
+		serve := s.authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = RoleFrom(r.Context()) }))
 		serve.ServeHTTP(httptest.NewRecorder(), r)
 		return got
 	}
 	s, _, _ := keeneticFixtureTags(t, []string{"http", "readonly"})
-	if got := probe(s, keeneticRequest("GET", "/x", "", true)); got != RoleView {
+	if got := probe(s, keeneticRequest("GET", "/api/x", "", true)); got != RoleView {
 		t.Fatalf("session role %v", got)
 	}
-	local := keeneticRequest("GET", "/x", "", false)
-	local.RemoteAddr = "127.0.0.1:5000"
+	local := keeneticRequest("GET", "/api/x", "", false)
+	local.RemoteAddr, local.Host = "127.0.0.1:5000", "127.0.0.1:8086"
 	if got := probe(s, local); got != RoleManage {
 		t.Fatalf("loopback role %v", got)
 	}

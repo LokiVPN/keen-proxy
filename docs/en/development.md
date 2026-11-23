@@ -209,12 +209,19 @@ This is the only non-loopback way in: without it, other clients get
 ## Control API { #control-api }
 
 The HTTP API is a control API, not a browser session API. A request whose
-`RemoteAddr` is loopback is trusted without a token. The memory gate
+`RemoteAddr` is loopback and whose `Host` is `127.0.0.1`, `::1` or `localhost`
+(any port) is trusted without a token; a loopback peer with any other `Host`
+is treated like a LAN client. The memory gate
 (`test/memory/scenario.py`), `make integration` (`test/netns/run.sh`) and
 local scripts on the router rely on this; the installer does not call the API.
 Any `Authorization` header a client still sends is ignored. Other
 clients need a KeeneticOS session when KeeneticOS sign-in is enabled
-(`-keenetic-auth-origin`) and otherwise receive `403 local access only`.
+(`-keenetic-auth-origin`) and otherwise receive `403 local access only`. Every route except
+`GET /api/session` and `POST /api/logout` is authorized in one middleware.
+
+Residual risk: a forward proxy running on the router (tinyproxy, xray and the
+like) that connects from `127.0.0.1` with `Host: 127.0.0.1:<port>` is trusted.
+Do not run open local proxies next to KeenProxy.
 
 The panel token, the `-key` option, trusted networks and `POST /api/login` are
 removed; `api.token_file` and `api.no_token_from` are accepted and ignored. The

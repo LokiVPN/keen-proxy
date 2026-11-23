@@ -27,6 +27,7 @@ func TestUpdatePermissions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 			r.RemoteAddr = local
+			r.Host = "127.0.0.1:8086"
 			r.Header.Set("Content-Type", "application/json")
 			if tc.token != "" {
 				r.Header.Set("Authorization", "Bearer "+tc.token)

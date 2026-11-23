@@ -13,18 +13,19 @@ import (
 var browserOrigin = http.NewCrossOriginProtection()
 
 // updateRoutes separates release discovery from operations that can replace the binary.
-func (s *Server) updateRoutes(mux *http.ServeMux) {
-	mux.Handle("GET /api/updates", s.auth(s.updateStatus))
-	mux.Handle("POST /api/updates/check", s.auth(s.checkUpdates))
-	mux.Handle("PUT /api/updates/preferences", s.updateAuthorization(s.updatePreferences))
-	mux.Handle("POST /api/updates/install", s.updateAuthorization(s.installUpdate))
+func (s *Server) updateRoutes() []route {
+	return []route{
+		{"GET /api/updates", http.HandlerFunc(s.updateStatus)},
+		{"POST /api/updates/check", http.HandlerFunc(s.checkUpdates)},
+		{"PUT /api/updates/preferences", sameOriginOnly(s.updatePreferences)},
+		{"POST /api/updates/install", sameOriginOnly(s.installUpdate)},
+	}
 }
 
-func (s *Server) updateAuthorization(h http.HandlerFunc) http.HandlerFunc {
+// sameOriginOnly refuses cross-origin browser requests; authorization has
+// already run in the mux middleware.
+func sameOriginOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.authorized(w, r) {
-			return
-		}
 		if err := browserOrigin.Check(r); err != nil {
 			writeError(w, http.StatusForbidden, "cross-origin update request denied")
 			return

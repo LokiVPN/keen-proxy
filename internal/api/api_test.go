@@ -62,6 +62,7 @@ func do(t *testing.T, h http.Handler, method, path, body, token, remote string) 
 	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.RemoteAddr = remote
+	r.Host = "127.0.0.1:8086"
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -310,5 +311,86 @@ func TestDNSBypassSourcesApply(t *testing.T) {
 	bad := do(t, h, "PUT", "/api/config", `{"dns":{"bypass_sources":["192.168.37.0/24"]}}`, "", local)
 	if bad.Code != http.StatusUnprocessableEntity || !strings.Contains(bad.Body.String(), "dns.bypass_sources[0]") {
 		t.Fatalf("invalid apply: %d %s", bad.Code, bad.Body)
+	}
+}
+
+func TestLoopbackRequiresLoopbackHost(t *testing.T) {
+	s, _ := newServer()
+	get := func(srv *Server, remote, host string) int {
+		r := httptest.NewRequest("GET", "/api/status", nil)
+		r.RemoteAddr, r.Host = remote, host
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w.Code
+	}
+	for _, tc := range []struct{ remote, host string }{
+		{"127.0.0.1:5000", "127.0.0.1:8086"},
+		{"127.0.0.1:5000", "localhost:8086"},
+		{"127.0.0.1:5000", "LOCALHOST"},
+		{"[::1]:5000", "[::1]:8086"},
+	} {
+		if c := get(s, tc.remote, tc.host); c != http.StatusOK {
+			t.Errorf("%s with Host %s: %d, want 200", tc.remote, tc.host, c)
+		}
+	}
+	for _, host := range []string{"name.keenetic.pro", "192.168.1.1:8086", "localhost.evil.example", ""} {
+		if c := get(s, "127.0.0.1:5000", host); c != http.StatusForbidden {
+			t.Errorf("Host %q without KeeneticOS: %d, want 403", host, c)
+		}
+	}
+	k, _, _ := keeneticFixtureTags(t, []string{"http", "cli"})
+	if c := get(k, "127.0.0.1:5000", "name.keenetic.pro"); c != http.StatusForbidden {
+		t.Errorf("foreign Host with KeeneticOS: %d, want 403 (host not accepted, treated as a LAN peer)", c)
+	}
+	if c := get(k, "127.0.0.1:5000", "127.0.0.1:8086"); c != http.StatusOK {
+		t.Errorf("loopback Host with KeeneticOS: %d, want 200", c)
+	}
+}
+
+func TestSessionReportsLoopbackAccessInKeeneticMode(t *testing.T) {
+	k, _, _ := keeneticFixtureTags(t, []string{"http", "cli"})
+	r := httptest.NewRequest("GET", "/api/session", nil)
+	r.RemoteAddr, r.Host = local, "127.0.0.1:8086"
+	w := httptest.NewRecorder()
+	k.Handler().ServeHTTP(w, r)
+	var sess map[string]any
+	json.Unmarshal(w.Body.Bytes(), &sess)
+	if sess["authed"] != true {
+		t.Fatalf("loopback session in KeeneticOS mode: %v", sess)
+	}
+}
+
+// Every registered route except the explicit public ones must refuse a LAN
+// peer without a session, whether or not KeeneticOS sign-in is enabled.
+func TestEveryRouteRejectsLANPeers(t *testing.T) {
+	plain, _ := newServer()
+	keenetic, _, _ := keeneticFixtureTags(t, []string{"http", "cli"})
+	seen := map[string]bool{}
+	for _, rt := range plain.routes() {
+		seen[rt.pattern] = true
+		if publicRoutes[rt.pattern] {
+			continue
+		}
+		method, path, _ := strings.Cut(rt.pattern, " ")
+		path = strings.NewReplacer("{id}", "x", "{kind}", "routes").Replace(path)
+		for name, srv := range map[string]*Server{"plain": plain, "keeneticos": keenetic} {
+			r := httptest.NewRequest(method, path, strings.NewReader("{}"))
+			r.RemoteAddr = lan
+			r.Host = "192.168.7.1:8086"
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, r)
+			if w.Code/100 == 2 {
+				t.Errorf("%s: %s answered a LAN peer with %d", name, rt.pattern, w.Code)
+			}
+		}
+	}
+	for p := range publicRoutes {
+		if !seen[p] {
+			t.Errorf("public pattern %q is not a registered route", p)
+		}
+	}
+	// An unknown API path reveals nothing to a LAN peer.
+	if c := do(t, plain.Handler(), "GET", "/api/nothing-here", "", "", lan).Code; c != http.StatusForbidden {
+		t.Errorf("unknown API path from LAN: %d, want 403", c)
 	}
 }
