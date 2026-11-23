@@ -179,7 +179,7 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 		switch {
 		case browserOrigin.Check(r) != nil:
 			v = verdict{status: http.StatusForbidden, reason: "cross-origin request denied"}
-		case publicRoutes[r.Method+" "+r.URL.Path]:
+		case publicRoutes[r.Method+" "+r.URL.EscapedPath()]:
 			next.ServeHTTP(w, r)
 			return
 		default:

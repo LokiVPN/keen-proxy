@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"slices"
 	"strconv"
@@ -434,7 +435,7 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range []string{"/", "/connections", "/api/", "/api/nothing-here", "/api"} {
+	for _, path := range []string{"/", "/connections", "/api/", "/api/nothing-here", "/api", "/api%2Fsession", "/api%2Flogout"} {
 		for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodHead, http.MethodOptions} {
 			requests = append(requests, request{m, path, false})
 		}
@@ -461,7 +462,8 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 				continue
 			}
 			want, format := mode.page, "text/plain"
-			if rq.path == "/api" || strings.HasPrefix(rq.path, "/api/") {
+			// Refusals classify by the decoded path, so an encoded API path is JSON too.
+			if decoded, _ := url.PathUnescape(rq.path); decoded == "/api" || strings.HasPrefix(decoded, "/api/") {
 				want, format = mode.api, "application/json"
 			}
 			if w.Code != want.status || (rq.method != http.MethodHead && !strings.Contains(w.Body.String(), want.reason)) {
