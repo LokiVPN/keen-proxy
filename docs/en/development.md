@@ -197,7 +197,10 @@ is refused. To override the origin pass `-keenetic-auth-origin http://ROUTER_LAN
 or set `KEENPROXY_KEENETIC_AUTH_ORIGIN`; `-keenetic-auth-origin=off` disables
 sign-in. If the LAN interface has no IPv4 address at startup, the daemon and
 routing still start, a single error is logged, and non-loopback requests get
-`503` until restart. The mode targets the LAN HTTP session protocol in
+`503` until restart. Sign-in needs `api.listen` to be empty-host, `0.0.0.0`, `::` or the LAN IPv4
+address; with another `api.listen` (for example `127.0.0.1:8086`) a derived
+origin falls back to the 503 mode above and only an explicit origin fails the
+startup of the web interface. The mode targets the LAN HTTP session protocol in
 KeeneticOS 5.1.10.
 
 KeenProxy verifies the current session and the account's permissions for

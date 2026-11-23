@@ -284,3 +284,29 @@ func TestUnavailableServiceDeniesBrowsersWith503(t *testing.T) {
 		t.Errorf("loopback: %d, want 200", w.Code)
 	}
 }
+
+func TestMyKeeneticHostWritePath(t *testing.T) {
+	for _, tc := range []struct {
+		origin string
+		want   int
+	}{
+		{"http://my.keenetic.net:8086", http.StatusOK},
+		{"http://192.168.7.1:8086", http.StatusForbidden},
+	} {
+		s, d, _ := keeneticFixture(t)
+		r := keeneticRequest("PUT", "/api/config", "{}", true)
+		r.Host = "my.keenetic.net:8086"
+		r.Header.Set("Origin", tc.origin)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if tc.want == http.StatusOK && w.Code == http.StatusForbidden {
+			t.Errorf("Origin %s: forbidden, want accepted", tc.origin)
+		}
+		if tc.want == http.StatusForbidden && w.Code != tc.want {
+			t.Errorf("Origin %s: %d, want 403", tc.origin, w.Code)
+		}
+		if tc.want == http.StatusForbidden && d.applied != nil {
+			t.Error("a mismatched Origin applied settings")
+		}
+	}
+}

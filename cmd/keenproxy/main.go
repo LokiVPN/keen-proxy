@@ -125,7 +125,7 @@ func main() {
 		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working", "err", originErr)
 	}
 	go func() {
-		if err := serveAPI(ctx, cfg, d, updates, log, origin, originErr != nil, onAPIListening); err != nil {
+		if err := serveAPI(ctx, cfg, d, updates, log, origin, *keeneticAuth != "", originErr != nil, onAPIListening); err != nil {
 			log.Error("web interface failed to start", "err", err)
 		}
 	}()
@@ -198,10 +198,16 @@ func writeStartupState(path, mode string) error {
 
 // serveAPI serves management requests until cancellation, using startup bind
 // settings; it does not apply routing changes itself.
-func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, unavailable bool, onListening func(context.Context)) error {
+func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, explicitOrigin, unavailable bool, onListening func(context.Context)) error {
 	keenetic, err := api.NewKeeneticAuth(keeneticOrigin, cfg.API.Listen)
 	if err != nil {
-		return err
+		if explicitOrigin {
+			return err
+		}
+		// A derived origin that cannot work (for example api.listen is
+		// loopback-only) must not take the loopback panel down with it.
+		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working", "reason", err.Error())
+		keenetic, unavailable = nil, true
 	}
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,

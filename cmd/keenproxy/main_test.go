@@ -45,7 +45,7 @@ func TestStartupStateRequiresAnActiveDaemonOrAPIBindWhenParked(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			called := false
-			err := serveAPI(ctx, cfg, nil, nil, log, "", false, func(apiCtx context.Context) {
+			err := serveAPI(ctx, cfg, nil, nil, log, "", false, false, func(apiCtx context.Context) {
 				called = true
 				listening <- apiCtx
 				if tc.mode == "" {
