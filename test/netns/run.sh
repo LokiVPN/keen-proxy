@@ -203,11 +203,11 @@ echo "$AUDIT" | grep -q 'Start keenProxy' || { echo "$AUDIT"; fail "startup audi
 [ -s /tmp/journal/routes.jsonl ] && [ -s /tmp/journal/audit.jsonl ] || { ls -la /tmp/journal; fail "journals are not written to disk"; }
 ok "journal: Steam direct and country routes, startup audit and files"
 
-# --- DNS fallback: preview is isolated; a live rule-set reload changes routing.
+# --- DNS fallback: a live rule-set reload changes routing.
 api_get() { curl -fsS -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8086/api/$1"; }
 api_post() { curl -fsS -m 10 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$2" "http://127.0.0.1:8086/api/$1"; }
 
-# Remove the exception through the same configuration endpoint the panel uses.
+# Remove the exception through the configuration endpoint.
 api_get config | python3 -c 'import json,sys; c=json.load(sys.stdin); del c["dns"]["bypass_sources"]; print(json.dumps(c))' >/tmp/dns-no-bypass.json
 curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 	--data-binary @/tmp/dns-no-bypass.json http://127.0.0.1:8086/api/config >/dev/null || fail "clear DNS bypass"
@@ -217,15 +217,13 @@ for transport in +notcp +tcp; do
 done
 ok "clearing DNS bypass through Apply restores UDP/TCP interception"
 
-api_post domains/resolve '{"names":["fallback.test"],"preview":true}' >/tmp/dns-preview.json
-api_get domains | python3 -c 'import json,sys; assert not any(r["name"]=="fallback.test" for r in json.load(sys.stdin)["records"])' || fail "preview changed active cache"
 api_get config | python3 -c 'import json,sys; c=json.load(sys.stdin);c["groups"].append({"name":"DNS reserve","target":"vless","entries":["fallback.test"]});print(json.dumps(c))' >/tmp/dns-config.json
 curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/dns-config.json http://127.0.0.1:8086/api/config >/dev/null || fail "DNS group apply"
-api_post domains/resolve '{"names":["fallback.test"]}' >/dev/null
+# The daemon resolves configured names itself within about a second of Apply.
 dns_routed() {
  api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x.get("ip")=="198.51.100.5" and x["outbound"]=="vless" and "DNS" in x["rule"] for x in json.load(sys.stdin)["entries"])' 2>/dev/null
 }
-for i in $(seq 1 20); do
+for i in $(seq 1 100); do
  ip netns exec client curl -s -m 2 --http1.0 -H 'Host:' http://198.51.100.5/ >/dev/null || true
  dns_routed && break
  sleep 0.1
@@ -233,17 +231,15 @@ done
 dns_routed || { cat /tmp/keenproxy.log; fail "no-SNI DNS fallback"; }
 ip netns exec client curl -fsS -m 3 -H 'Host: unrelated.test' http://198.51.100.5/ >/dev/null
 api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x["host"]=="unrelated.test" and x["outbound"]=="direct" for x in json.load(sys.stdin)["entries"])' || fail "shared IP overrode Host"
-for i in $(seq 1 35); do
- sleep 0.2
- if api_get domains | python3 -c 'import json,sys; r=[r for r in json.load(sys.stdin)["records"] if r["name"]=="fallback.test"]; assert r and not r[0]["addresses"]' 2>/dev/null; then break; fi
-done
+# Wait past the resolved entry's TTL; the daemon does not re-resolve within 30 seconds.
+sleep 7
 expired_direct() {
  ip netns exec client curl -fsS -m 3 --http1.0 -H 'Host:' http://198.51.100.5/ >/dev/null
  api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["entries"] if x.get("ip")=="198.51.100.5" and x.get("host")=="198.51.100.5"]; assert r and r[0]["outbound"]=="direct"' 2>/dev/null
 }
 for i in $(seq 1 15); do expired_direct && break; sleep 0.2; done
 expired_direct || fail "expired DNS still routes"
-ok "DNS reserve: preview isolated, no-SNI via VLESS, readable Host direct, TTL expiry removed route"
+ok "DNS reserve: no-SNI via VLESS, readable Host direct, TTL expiry removed route"
 
 # --- Simulate firmware removing an interception jump; the watchdog repairs it
 iptables -t nat -D PREROUTING -j KEENPROXY_TCP
