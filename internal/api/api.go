@@ -230,8 +230,10 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// logout ends the caller's KeeneticOS session. Trusted loopback has no router
+// session here (an SSH tunnel carries no router cookie), so it is a no-op.
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if s.Keenetic != nil {
+	if s.Keenetic != nil && !isLoopback(r) {
 		if status := s.Keenetic.logout(r); status != http.StatusOK {
 			writeKeeneticError(w, status)
 			return

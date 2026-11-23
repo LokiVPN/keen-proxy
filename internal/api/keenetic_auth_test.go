@@ -156,6 +156,21 @@ func TestKeeneticLogoutRevokesSession(t *testing.T) {
 	}
 }
 
+// Through an SSH tunnel there is no router session to drop: signing out from
+// trusted loopback succeeds without touching the router.
+func TestLoopbackLogoutSucceedsInKeeneticMode(t *testing.T) {
+	s, _, mode := keeneticFixture(t)
+	r := keeneticRequest("POST", "/api/logout", "", false)
+	r.RemoteAddr, r.Host = local, "127.0.0.1:8086"
+	r.Header.Set("Origin", "http://127.0.0.1:8086")
+	if w := serve(s, r); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"ok":true}` {
+		t.Fatalf("loopback sign-out: %d %s", w.Code, w.Body)
+	}
+	if mode.Load() != 0 {
+		t.Fatal("loopback sign-out changed the router session")
+	}
+}
+
 const roleConfig = `{"groups":[{"name":"test","target":"direct","entries":["example.com"]}]}`
 
 func serve(s *Server, r *http.Request) *httptest.ResponseRecorder {
