@@ -136,9 +136,9 @@ func TestLoadOrResetCarriesSubscription(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFileBytes(t, backup, v010Config)
-	if matches, err := filepath.Glob(filepath.Join(dir, "config.v1*")); err != nil || len(matches) != 1 {
-		t.Fatalf("backups after a second save = %v, %v", matches, err)
-	}
+	// One backup, the rollback copy of the previous save and no staged files.
+	assertDirNames(t, dir, "config.v1.yaml", "config.yaml", "config.yaml.previous")
+	assertPrivate(t, path+".previous")
 }
 
 // A backup an earlier upgrade left behind is never replaced: the first save

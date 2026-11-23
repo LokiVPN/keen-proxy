@@ -448,13 +448,13 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 		if recovery {
 			return persistRecoveryConfig(d.opt.ConfigPath, previous, raw)
 		}
-		if err := writeFile(d.opt.ConfigPath+".previous", previous, 0o600); err != nil {
+		if err := replacePrivateFile(d.opt.ConfigPath+".previous", previous); err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
 		}
 	} else if recovery {
 		return fmt.Errorf("previous configuration could not be read: %w", err)
 	}
-	if err := writeFile(d.opt.ConfigPath, raw, 0o600); err != nil {
+	if err := replacePrivateFile(d.opt.ConfigPath, raw); err != nil {
 		return fmt.Errorf("configuration was not saved: %w", err)
 	}
 	return nil
@@ -462,14 +462,14 @@ func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 
 // persistRecoveryConfig stages the main YAML before publishing its backup.
 // If the final rename fails, the original rollback snapshot can be restored
-// without allocating disk space. Ordinary active applies keep their best-effort
-// persistence behavior.
+// without allocating disk space. Ordinary active applies replace each file in
+// turn and report a failure without restoring the other.
 func persistRecoveryConfig(path string, original, next []byte) error {
 	mainChanged := !bytes.Equal(original, next)
 	var mainTemp string
 	if mainChanged {
 		var err error
-		mainTemp, err = stagePrivateFile(path, next, false)
+		mainTemp, err = stagePrivateFile(path, next)
 		if err != nil {
 			return fmt.Errorf("configuration was not saved: %w", err)
 		}
@@ -486,7 +486,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 	var rollbackTemp string
 	if previousChanged {
 		if mainChanged && !missing {
-			rollbackTemp, err = stagePrivateFile(previousPath+".recovery", previous, false)
+			rollbackTemp, err = stagePrivateFile(previousPath+".recovery", previous)
 			if err != nil {
 				return fmt.Errorf("rollback snapshot was not saved: %w", err)
 			}
@@ -496,7 +496,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 				}
 			}()
 		}
-		previousTemp, err := stagePrivateFile(previousPath, original, false)
+		previousTemp, err := stagePrivateFile(previousPath, original)
 		if err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
 		}
@@ -507,6 +507,11 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 	}
 
 	if !mainChanged {
+		if previousChanged {
+			if err := syncDir(filepath.Dir(path)); err != nil {
+				return fmt.Errorf("previous configuration was not saved: %w", err)
+			}
+		}
 		return nil
 	}
 	if err := os.Rename(mainTemp, path); err != nil {
@@ -524,16 +529,41 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 		}
 		return saveErr
 	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("configuration was not saved: %w", err)
+	}
 	return nil
 }
 
-func stagePrivateFile(path string, data []byte, syncData bool) (string, error) {
+// replacePrivateFile atomically replaces path with a mode 0600 file holding
+// data and leaves a file that already holds data alone. The data is synced
+// before the rename and the directory after it, so after a crash path holds
+// the old or the new bytes. The daemon writes its configuration, the
+// configuration's rollback copy and subscription snapshots this way.
+func replacePrivateFile(path string, data []byte) error {
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
+		return nil
+	}
+	temp, err := stagePrivateFile(path, data)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temp, path); err != nil {
+		os.Remove(temp)
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// stagePrivateFile writes data to a new synced mode 0600 file beside path and
+// returns its name. The caller renames it into place or removes it.
+func stagePrivateFile(path string, data []byte) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return "", err
 	}
 	_, err = f.Write(data)
-	if err == nil && syncData {
+	if err == nil {
 		err = f.Sync()
 	}
 	if err := errors.Join(err, f.Close()); err != nil {
@@ -541,6 +571,15 @@ func stagePrivateFile(path string, data []byte, syncData bool) (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
+}
+
+// syncDir makes entries created or renamed in dir durable.
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
 }
 
 // applyLocked reconciles runtime state with cfg while d.mu is held.

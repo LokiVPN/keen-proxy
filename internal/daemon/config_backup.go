@@ -14,8 +14,9 @@ import (
 // backupV1Config keeps raw, a configuration that older releases read, beside
 // path as config.v1.yaml, or as config.v1.<unix seconds>.yaml when that name
 // is taken. The installer restores config.v1.yaml when it rolls back to such a
-// release. The copy has mode 0600, is synced before return and never replaces
-// an existing file. It returns the backup path.
+// release. The copy has mode 0600, never replaces an existing file, and it and
+// its directory entry are synced before return, so a crash after the original
+// is replaced cannot lose both. It returns the backup path.
 func backupV1Config(path string, raw []byte, now time.Time) (string, error) {
 	dir := filepath.Dir(path)
 	for _, name := range []string{"config.v1.yaml", fmt.Sprintf("config.v1.%d.yaml", now.Unix())} {
@@ -31,8 +32,13 @@ func backupV1Config(path string, raw []byte, now time.Time) (string, error) {
 		if err == nil {
 			err = f.Sync()
 		}
-		if err := errors.Join(err, f.Close()); err != nil {
-			// A partial copy must not occupy the name the installer restores.
+		err = errors.Join(err, f.Close())
+		if err == nil {
+			err = syncDir(dir)
+		}
+		if err != nil {
+			// A copy that is partial or may not survive a crash must not
+			// occupy the name the installer restores.
 			os.Remove(backup)
 			return "", err
 		}
