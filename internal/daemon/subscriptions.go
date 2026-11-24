@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -71,6 +72,11 @@ type subscriptionRuntime struct {
 	probeWake          chan struct{}
 	preferCatalogCheck bool
 
+	// geoDestination tells whether a geo file download may connect to an
+	// address: publicDestination, which tests serving geo files on loopback
+	// replace.
+	geoDestination func(netip.AddrPort) bool
+
 	states     map[string]appliedSubscription
 	previews   map[subscription.Source]subscriptionAttempt
 	selectors  []compile.SubscriptionSelector
@@ -125,6 +131,8 @@ func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
 		wake:      make(chan struct{}, 1),
 		probeWake: make(chan struct{}, 1),
 		previews:  make(map[subscription.Source]subscriptionAttempt),
+
+		geoDestination: publicDestination,
 	}
 }
 

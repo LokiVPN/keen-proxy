@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,17 +30,18 @@ import (
 // routing header and the profile's dat files, counting requests by path.
 type rulesProvider struct {
 	*httptest.Server
-	mu       sync.Mutex
-	routing  string
-	enable   string
-	files    map[string][]byte
-	held     map[string]chan struct{}
-	requests map[string]int
+	mu        sync.Mutex
+	routing   string
+	enable    string
+	files     map[string][]byte
+	redirects map[string]string // path to Location
+	held      map[string]chan struct{}
+	requests  map[string]int
 }
 
 func newRulesProvider(t *testing.T) *rulesProvider {
 	t.Helper()
-	p := &rulesProvider{files: map[string][]byte{}, held: map[string]chan struct{}{}, requests: map[string]int{}}
+	p := &rulesProvider{files: map[string][]byte{}, redirects: map[string]string{}, held: map[string]chan struct{}{}, requests: map[string]int{}}
 	p.Server = httptest.NewTLSServer(http.HandlerFunc(p.serve))
 	t.Cleanup(p.Close)
 	return p
@@ -71,6 +73,10 @@ func (p *rulesProvider) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if data, ok := p.files[r.URL.Path]; ok {
 		_, _ = w.Write(data)
+		return
+	}
+	if to, ok := p.redirects[r.URL.Path]; ok {
+		http.Redirect(w, r, to, http.StatusFound)
 		return
 	}
 	http.NotFound(w, r)
@@ -159,6 +165,8 @@ func newRulesTestDaemon(t *testing.T) (*Daemon, *model.Config, *rulesProvider) {
 	})
 	p.useProfile("/geosite.dat", "/geoip.dat")
 	d, cfg := newSubscriptionTestDaemon(t, p.Client().Transport)
+	// The provider serves its geo files on loopback, which downloads refuse.
+	d.subscriptions.geoDestination = func(netip.AddrPort) bool { return true }
 	cfg.Subscriptions = []subscription.Source{{ID: "sample", URL: p.URL + "/sub"}}
 	cfg.ProviderRules = &model.ProviderRulesSettings{Source: "sample", Disabled: []string{"block:geosite:ads"}}
 	return d, cfg, p
@@ -320,6 +328,85 @@ func TestProviderRulesKeepLastGoodRulesOnFailures(t *testing.T) {
 	}
 	if p.count("/geosite.dat") != 1 || p.count("/geoip.dat") != 1 {
 		t.Fatalf("unchanged dat files were downloaded again: geosite %d, geoip %d", p.count("/geosite.dat"), p.count("/geoip.dat"))
+	}
+}
+
+// Geo file URLs come from the provider: downloads never connect to the
+// router itself, the LAN, link-local, unspecified or multicast addresses,
+// checked on the address dialed. The subscription itself is not affected.
+func TestGeoDownloadsRefuseInternalDestinations(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	d.subscriptions.geoDestination = publicDestination
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	rules, _, state := d.ProviderRules()
+	if state != ProviderRulesPartial || providerRule(t, rules, "proxy:geosite:video").Unavailable != "geosite file could not be downloaded" ||
+		providerRule(t, rules, "direct:geoip:direct").Unavailable != "geoip file could not be downloaded" {
+		t.Fatalf("rules from loopback geo files: %s %+v", state, rules)
+	}
+	if p.count("/sub") != 1 || p.count("/geosite.dat")+p.count("/geoip.dat") != 0 {
+		t.Fatalf("requests: sub %d, geosite %d, geoip %d", p.count("/sub"), p.count("/geosite.dat"), p.count("/geoip.dat"))
+	}
+	for addr, public := range map[string]bool{
+		"127.0.0.1": false, "::1": false, "10.1.2.3": false, "172.16.0.1": false, "192.168.1.1": false,
+		"fd00::1": false, "169.254.1.1": false, "fe80::1": false, "0.0.0.0": false, "::": false,
+		"224.0.0.251": false, "ff02::1": false, "::ffff:192.168.1.1": false,
+		"203.0.113.7": true, "1.1.1.1": true, "2606:4700::1111": true, "::ffff:1.1.1.1": true,
+	} {
+		if got := publicDestination(netip.AddrPortFrom(netip.MustParseAddr(addr), 443)); got != public {
+			t.Errorf("publicDestination(%s) = %v", addr, got)
+		}
+	}
+}
+
+// Geo file downloads follow at most three redirects, only to HTTPS and only
+// to destinations they may reach: a refused redirect sends no request.
+func TestGeoDownloadRedirects(t *testing.T) {
+	d, _, p := newRulesTestDaemon(t)
+	var plainRequests, otherRequests atomic.Int32
+	serve := func(count *atomic.Int32) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			count.Add(1)
+			_, _ = w.Write(testGeositeData)
+		})
+	}
+	plain := httptest.NewServer(serve(&plainRequests))
+	t.Cleanup(plain.Close)
+	other := httptest.NewTLSServer(serve(&otherRequests))
+	t.Cleanup(other.Close)
+	p.update(func(p *rulesProvider) {
+		p.redirects["/r1"], p.redirects["/r2"], p.redirects["/r3"], p.redirects["/r4"] = "/geosite.dat", "/r1", "/r2", "/r3"
+		p.redirects["/to-plain"] = plain.URL + "/geosite.dat"
+		p.redirects["/to-other"] = other.URL + "/geosite.dat"
+	})
+	otherPort := netip.MustParseAddrPort(other.Listener.Addr().String()).Port()
+	for _, tc := range []struct {
+		name, path string
+		allowed    func(netip.AddrPort) bool
+		ok         bool
+	}{
+		{"three redirects", "/r3", nil, true},
+		{"four redirects", "/r4", nil, false},
+		{"a redirect to plain HTTP", "/to-plain", nil, false},
+		{"a redirect to another HTTPS server", "/to-other", nil, true},
+		{"a redirect to a refused destination", "/to-other", func(ap netip.AddrPort) bool { return ap.Port() != otherPort }, false},
+	} {
+		d.subscriptions.geoDestination = func(netip.AddrPort) bool { return true }
+		if tc.allowed != nil {
+			d.subscriptions.geoDestination = tc.allowed
+		}
+		before := otherRequests.Load()
+		data, failure := d.downloadGeoFile(t.Context(), "geosite", p.URL+tc.path)
+		if tc.ok != (failure == "" && slices.Equal(data, testGeositeData)) || !tc.ok && failure != "geosite file could not be downloaded" {
+			t.Errorf("%s: %d bytes, failure %q", tc.name, len(data), failure)
+		}
+		if !tc.ok && otherRequests.Load() != before {
+			t.Errorf("%s: the refused destination got a request", tc.name)
+		}
+	}
+	if plainRequests.Load() != 0 {
+		t.Error("a plain HTTP redirect target got a request")
 	}
 }
 
@@ -796,7 +883,7 @@ func TestProviderRulesEvaluatedOnTheFirstWorkerPassAfterStartup(t *testing.T) {
 	opt.Config.ProviderRules = settings
 	reopened := New(opt)
 	t.Cleanup(reopened.shutdown)
-	reopened.subscriptions.fetcher = d.subscriptions.fetcher
+	reopened.subscriptions.fetcher, reopened.subscriptions.geoDestination = d.subscriptions.fetcher, d.subscriptions.geoDestination
 	if _, err := reopened.startLocked(t.Context()); err != nil {
 		t.Fatal(err)
 	}

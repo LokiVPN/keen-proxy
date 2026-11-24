@@ -6,10 +6,12 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/compile"
@@ -38,7 +40,10 @@ const (
 	rulesRetryMax   = time.Hour
 )
 
-var errGeoRedirect = errors.New("geo file redirect rejected")
+var (
+	errGeoRedirect    = errors.New("geo file redirect rejected")
+	errGeoDestination = errors.New("geo file destination refused")
+)
 
 // rulesSnapshot is the private provider-rules state of the configured source:
 // the rules in use, the geo files their data came from and the latest failure.
@@ -367,19 +372,22 @@ func (g geoFile[T]) load(ctx context.Context, d *Daemon, previous *rulesSnapshot
 }
 
 // downloadGeoFile fetches one geo file directly over the subscription
-// transport: HTTPS only, at most maxGeoFileBytes, within geoFileTimeout.
-// Failures are fixed messages; the URL may carry a token and is never shown.
+// transport: HTTPS only, at most maxGeoFileBytes, within geoFileTimeout, and
+// only from destinations geoDestination allows. Failures are fixed messages;
+// the URL may carry a token and is never shown.
 func (d *Daemon) downloadGeoFile(ctx context.Context, name, url string) ([]byte, string) {
 	failed := name + " file could not be downloaded"
 	tooLarge := name + " file is larger than 16 MiB"
 	ctx, cancel := context.WithTimeout(ctx, geoFileTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil || req.URL.Scheme != "https" {
+	transport := geoTransport(d.subscriptions.fetcher.Transport(), d.subscriptions.geoDestination)
+	if err != nil || req.URL.Scheme != "https" || transport == nil {
 		return nil, failed
 	}
+	defer transport.CloseIdleConnections()
 	req.Header.Set("User-Agent", "KeenProxy/1")
-	client := http.Client{Transport: d.subscriptions.fetcher.Transport(), CheckRedirect: geoFileRedirect}
+	client := http.Client{Transport: transport, CheckRedirect: geoFileRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, failed
@@ -403,6 +411,27 @@ func (d *Daemon) downloadGeoFile(ctx context.Context, name, url string) ([]byte,
 	return buf.Bytes(), ""
 }
 
+// geoTransport returns base, the subscription's direct transport, dialing
+// every connection itself and only to destinations allowed accepts. The
+// dialer checks the address it connects to, so names that resolve to the
+// LAN and redirect targets are covered as well. It returns nil when base is
+// not an *http.Transport, whose dialing cannot be guarded.
+func geoTransport(base http.RoundTripper, allowed func(netip.AddrPort) bool) *http.Transport {
+	t, ok := base.(*http.Transport)
+	if !ok {
+		return nil
+	}
+	t = t.Clone()
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		if ap, err := netip.ParseAddrPort(address); err != nil || !allowed(ap) {
+			return errGeoDestination
+		}
+		return nil
+	}}
+	t.Proxy, t.DialTLSContext, t.DialContext = nil, nil, dialer.DialContext
+	return t
+}
+
 // geoFileRedirect follows at most three HTTPS redirects, such as a release
 // download, without passing the previous URL on as Referer.
 func geoFileRedirect(req *http.Request, via []*http.Request) error {
@@ -411,6 +440,15 @@ func geoFileRedirect(req *http.Request, via []*http.Request) error {
 	}
 	req.Header.Del("Referer")
 	return nil
+}
+
+// publicDestination refuses the destinations a provider's geo file URL must
+// not reach through the router: the router itself, the local network
+// (RFC 1918 and unique local addresses), link-local, unspecified and
+// multicast addresses.
+func publicDestination(ap netip.AddrPort) bool {
+	a := ap.Addr().Unmap()
+	return a.IsValid() && !a.IsLoopback() && !a.IsPrivate() && !a.IsLinkLocalUnicast() && !a.IsUnspecified() && !a.IsMulticast()
 }
 
 // countryLookup serves built-in country prefixes to the rules of a profile
