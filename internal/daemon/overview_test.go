@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -149,8 +150,8 @@ func TestRoutingHidesLegacyRulesWithoutVerifiedHWID(t *testing.T) {
 			}
 			status := d.Subscriptions()[0]
 			if len(status.Nodes) != 1 || status.Metadata.Title != title || status.Nodes[0].Name != nodeName ||
-				status.RulesWithheld || !status.Refreshing {
-				t.Error("restore should retain the catalog, drop unverified text and queue a fresh evaluation")
+				!status.RulesWithheld || !status.Refreshing {
+				t.Error("restore should retain the catalog and withholding, drop unverified text and queue a fresh evaluation")
 			}
 			for _, role := range []ui.Role{ui.RoleView, ui.RoleManage} {
 				page := ui.New(overviewTestDeps{d: d}, ui.Options{Role: func(*http.Request) ui.Role { return role }})
@@ -378,6 +379,10 @@ type overviewTestDeps struct {
 }
 
 func (v overviewTestDeps) Config() *model.Config { return v.d.Config() }
+func (v overviewTestDeps) Apply(ctx context.Context, cfg *model.Config, revision string) error {
+	return v.d.ApplyIfCurrent(ctx, cfg, revision)
+}
+
 func (v overviewTestDeps) OverviewStatus() ui.OverviewStatus {
 	routing := v.d.RoutingStatus()
 	status := ui.OverviewStatus{Ready: routing.Ready, Devices: routing.Devices, ManagedDevices: routing.ManagedDevices,

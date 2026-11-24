@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,6 +25,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
+	"github.com/ordo-systems/keen-proxy/internal/ui"
 )
 
 // rulesProvider is an HTTPS provider that serves one subscription with a Happ
@@ -712,6 +714,8 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 
 func TestProviderWithholdingSurvivesOffAndRestart(t *testing.T) {
 	d, cfg, provider := newRulesTestDaemon(t)
+	cfg.Subscriptions[0].SendHWID = true
+	cfg.RouteHomeThroughSubscription("sample", netip.MustParsePrefix("192.0.2.0/24"))
 	provider.update(func(p *rulesProvider) { p.enable = "0" })
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
@@ -721,9 +725,22 @@ func TestProviderWithholdingSurvivesOffAndRestart(t *testing.T) {
 	}
 	off := cfg.Clone()
 	off.ProviderRules.Off = true
+	off.Networks[0].Default = model.TargetDirect
 	if err := d.Apply(t.Context(), off); err != nil {
 		t.Fatal(err)
 	}
+	// A saved snapshot from before identity binding contains withholding status
+	// but has no record of the HWID used for the fetch.
+	saved := d.subscriptions.states["sample"]
+	if saved.snapshot.HWIDFingerprint == "" {
+		t.Fatal("fixture did not fetch with an HWID")
+	}
+	saved.snapshot.HWIDFingerprint = ""
+	d.subscriptions.states["sample"] = saved
+	if err := d.saveSubscriptionSnapshotsLocked(off); err != nil {
+		t.Fatal(err)
+	}
+	fetches := provider.count("/sub")
 	d.shutdown()
 	reopened := New(d.opt)
 	reopened.subscriptions.fetcher = d.subscriptions.fetcher
@@ -733,6 +750,31 @@ func TestProviderWithholdingSurvivesOffAndRestart(t *testing.T) {
 	}
 	if status := reopened.Subscriptions()[0]; !status.RulesWithheld || status.RulesState != "" {
 		t.Errorf("reopened subscription withheld=%v state=%q", status.RulesWithheld, status.RulesState)
+	}
+	page := ui.New(overviewTestDeps{d: reopened}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	const withheld = "The provider does not supply routing rules."
+	get := httptest.NewRecorder()
+	page.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/routing", nil))
+	if body := get.Body.String(); get.Code != http.StatusOK ||
+		!strings.Contains(body, `id="routing-mode-all" required>`) ||
+		!strings.Contains(body, `id="routing-mode-provider" required disabled>`) ||
+		!strings.Contains(body, withheld) {
+		t.Errorf("GET /routing = %d, want provider mode disabled with the withholding reason and VPN mode available", get.Code)
+	}
+	revision := ui.Revision(reopened.Config())
+	form := url.Values{"rev": {revision}, "mode": {"provider"}}
+	request := httptest.NewRequest(http.MethodPost, "/routing", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	post := httptest.NewRecorder()
+	page.ServeHTTP(post, request)
+	if post.Code != http.StatusUnprocessableEntity || !strings.Contains(post.Body.String(), withheld) {
+		t.Errorf("POST /routing = %d, want 422 with the withholding reason", post.Code)
+	}
+	if ui.Revision(reopened.Config()) != revision {
+		t.Fatal("POST changed the applied routing configuration")
+	}
+	if provider.count("/sub") != fetches {
+		t.Fatal("restored result should be used until the next refresh")
 	}
 	provider.update(func(p *rulesProvider) { p.enable = "1" })
 	runSubscriptionTestWorker(t, reopened)

@@ -111,6 +111,7 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 
 // restoreSnapshotDisplay keeps dial data when the catalog's display context is
 // unverified. Rules need a verified context of their own before activation.
+// The last fetch's withholding decision is independent of the display context.
 func (d *Daemon) restoreSnapshotDisplay(source subscription.Source, snapshot *subscriptionSnapshot) {
 	displayCategory := d.subscriptions.fetcher.SanitizeSnapshotDisplay(
 		source, &snapshot.Metadata, snapshot.Nodes, snapshot.LinksChecked, snapshot.HWIDFingerprint)
@@ -121,7 +122,7 @@ func (d *Daemon) restoreSnapshotDisplay(source subscription.Source, snapshot *su
 		for i := range snapshot.Nodes {
 			snapshot.Nodes[i].Name = ""
 		}
-		snapshot.Rules, snapshot.RulesWithheld = nil, false
+		snapshot.Rules = nil
 		return
 	}
 	rules := snapshot.Rules
@@ -129,7 +130,7 @@ func (d *Daemon) restoreSnapshotDisplay(source subscription.Source, snapshot *su
 		return
 	}
 	if rules.HWIDFingerprint != snapshot.HWIDFingerprint {
-		snapshot.Rules, snapshot.RulesWithheld = nil, false
+		snapshot.Rules = nil
 		return
 	}
 	// Older snapshots only recorded withholding on the evaluated source.
