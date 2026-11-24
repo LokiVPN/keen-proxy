@@ -82,7 +82,7 @@ func TestActivationEntriesAndEmptyGeo(t *testing.T) {
 	if strings.Contains(string(out.SingBox), `"192.0.2.0/24"`) {
 		t.Fatal("disabled network prefix remains in routing")
 	}
-	sets := DNSRuleSets(cfg, map[string][]string{"example.com": {"198.51.100.1"}, "active.example": {"198.51.100.2"}})
+	sets := DNSRuleSets(cfg, nil, map[string][]string{"example.com": {"198.51.100.1"}, "active.example": {"198.51.100.2"}})
 	for _, raw := range sets {
 		if strings.Contains(string(raw), "198.51.100.1") {
 			t.Fatal("disabled domain leaked into DNS routing")

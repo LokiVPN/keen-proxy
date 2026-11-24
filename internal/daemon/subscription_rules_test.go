@@ -10,8 +10,10 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -580,5 +582,123 @@ func TestProviderRulesRetryActivationFailureWaitsForTheNextRetry(t *testing.T) {
 	}
 	if claimSubscriptionRequest(d, time.Minute) != nil || claimSubscriptionRequest(d, 2*time.Minute+time.Second) == nil {
 		t.Fatal("a failed activation did not wait for the next retry")
+	}
+}
+
+// ruleSetFiles lists the rule-set files of d whose names start with prefix.
+func ruleSetFiles(t *testing.T, d *Daemon, prefix string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(d.opt.RuleSetDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), ".json") {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
+}
+
+// providerRuleSetWith returns the tag of the provider rule set of d whose
+// file holds text, or "" when none does.
+func providerRuleSetWith(t *testing.T, d *Daemon, text string) string {
+	t.Helper()
+	var found []string
+	for _, name := range ruleSetFiles(t, d, "provider-") {
+		raw, err := os.ReadFile(filepath.Join(d.opt.RuleSetDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), text) {
+			found = append(found, strings.TrimSuffix(name, ".json"))
+		}
+	}
+	if len(found) > 1 {
+		t.Fatalf("%s is in several provider rule sets: %v", text, found)
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	return found[0]
+}
+
+func requireCompiledRuleSets(t *testing.T, d *Daemon, tags ...string) {
+	t.Helper()
+	d.mu.Lock()
+	out, err := d.compileRuntimeLocked()
+	d.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range tags {
+		if tag == "" || !strings.Contains(string(out.SingBox), `"`+tag+`"`) {
+			t.Fatalf("the compiled configuration does not use rule set %q", tag)
+		}
+	}
+}
+
+func TestProviderRulesReachTheCoreAfterRestart(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	video, direct := providerRuleSetWith(t, d, `"video.example"`), providerRuleSetWith(t, d, `"192.0.2.0/24"`)
+	requireCompiledRuleSets(t, d, video, direct)
+	if providerRuleSetWith(t, d, `"ads.example"`) != "" {
+		t.Fatal("the switched-off rule has a rule set")
+	}
+	// The DNS fallback sets of the two provider domain rules survive the
+	// cleanup of stale sets next to the one of the Video group.
+	dnsSets := ruleSetFiles(t, d, "dns-")
+	d.flushDomains()
+	if got := ruleSetFiles(t, d, "dns-"); len(dnsSets) != 3 || !slices.Equal(got, dnsSets) {
+		t.Fatalf("DNS fallback sets %v, after cleanup %v", dnsSets, got)
+	}
+
+	p.Close()
+	d.shutdown()
+	for _, name := range append(ruleSetFiles(t, d, "provider-"), dnsSets...) {
+		if err := os.Remove(filepath.Join(d.opt.RuleSetDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The restarted core starts with rule sets written from the snapshot.
+	reopened := New(d.opt)
+	t.Cleanup(reopened.shutdown)
+	if _, err := reopened.startLocked(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := providerRuleSetWith(t, reopened, `"video.example"`); got != video {
+		t.Fatalf("rule set after restart %q, want %q", got, video)
+	}
+	requireCompiledRuleSets(t, reopened, video, direct)
+}
+
+func TestProviderRulesRefreshRewritesRuleSets(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	video := providerRuleSetWith(t, d, `"video.example"`)
+	runSubscriptionTestWorker(t, d)
+
+	// A rule the provider adds reaches the running core without an Apply.
+	p.useProfile("/geosite.dat", "/geoip.dat", "geosite:unused")
+	refreshProviderRules(t, d, func(got SubscriptionStatus) bool { return got.State == subscription.StateReady })
+	requireCompiledRuleSets(t, d, video, providerRuleSetWith(t, d, `"unused.example"`))
+
+	// New data for a rule replaces its file under the same tag, which the
+	// running core watches.
+	p.update(func(p *rulesProvider) {
+		p.files["/v2/geosite.dat"] = testGeosite(map[string][]string{
+			"VIDEO": {"video2.example"}, "ADS": {"ads.example"}, "UNUSED": {"unused.example"},
+		})
+	})
+	p.useProfile("/v2/geosite.dat", "/geoip.dat", "geosite:unused")
+	refreshProviderRules(t, d, func(got SubscriptionStatus) bool { return got.State == subscription.StateReady })
+	if got := providerRuleSetWith(t, d, `"video2.example"`); got != video {
+		t.Fatalf("updated rule set %q, want %q", got, video)
 	}
 }

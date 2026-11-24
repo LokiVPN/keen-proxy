@@ -133,7 +133,8 @@ func TestDifferentDefaultsDoNotMerge(t *testing.T) {
 	hasLines(t, got, "192.168.7.0/24  → fi", "192.168.8.0/24,192.168.9.0/24  → direct")
 }
 
-func TestProfileDefaultCompilesAsDirect(t *testing.T) {
+// profile follows the network target, so a network without one stays direct.
+func TestProfileDefaultWithoutTargetStaysDirect(t *testing.T) {
 	out := compileDefault(t, "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: profile}\n")
 	hasLines(t, routeLines(t, out), "192.168.7.0/24  → direct")
 }

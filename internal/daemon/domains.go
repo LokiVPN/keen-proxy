@@ -69,7 +69,7 @@ func (d *Daemon) flushDomains() {
 
 // writeDNSLocked writes changed DNS fallback sets and records write progress while d.mu is held.
 func (d *Daemon) writeDNSLocked() {
-	sets := compile.DNSRuleSets(d.cfg, recordsMap(d.domainRecords()))
+	sets := compile.DNSRuleSets(d.cfg, d.providerRulesLocked(), recordsMap(d.domainRecords()))
 	fingerprint, _ := json.Marshal(sets)
 	if bytes.Equal(fingerprint, d.domainFingerprint) && d.domainError == "" {
 		return
@@ -340,7 +340,7 @@ func dnsRouteNote(cfg *model.Config, records []domaincache.Record, raw, ip strin
 
 // Called after Apply/rollback is finished, never while the old engine still uses its files.
 func (d *Daemon) cleanDNSFilesLocked() {
-	keep := compile.DNSRuleSets(d.cfg, nil)
+	keep := compile.DNSRuleSets(d.cfg, d.providerRulesLocked(), nil)
 	entries, err := os.ReadDir(d.opt.RuleSetDir)
 	if err != nil {
 		return

@@ -70,12 +70,24 @@ Periodic health checks measure HTTP requests, not ICMP ping. They are separate f
 
 ## Default route for split policies { #default-route }
 
-In split mode, traffic that matches no group goes direct. A network can set `default` to send that traffic elsewhere: a connection ID or a managed subscription target tunnels it, `direct` (or empty) keeps it direct, and `profile` is accepted but still compiles as direct until the provider profile is applied. `block` is rejected; add a block group instead. Devices in the network that split inherit its default. Groups always win over the default.
+In split mode, traffic that matches no group goes direct. A network can set `default` to send that traffic elsewhere: a connection ID or a managed subscription target tunnels it, `direct` (or empty) keeps it direct, and `profile` follows the [provider rules](#provider-rules): such traffic uses the policy's target, unless the applied provider profile says `GlobalProxy: false`, which keeps it direct. Without provider rules, `profile` uses the target too. `block` is rejected; add a block group instead. Devices in the network that split inherit its default. Groups always win over the default.
 
 ```yaml
 networks:
   - {name: Home, cidr: 192.168.7.0/24, mode: split, default: fi}
 ```
+
+## Provider rules { #provider-rules }
+
+`provider_rules` applies the routing rules that a subscription's provider sends in its Happ routing profile. `source` names the subscription. `disabled` lists the keys of rules to switch off: `<action>:<entry>`, for example `block:geosite:category-ads`, or `<action>:literals:site` and `<action>:literals:ip` for the domains and addresses the provider lists itself.
+
+```yaml
+provider_rules:
+  source: provider
+  disabled: ["block:geosite:category-ads"]
+```
+
+Every split policy, for a network or a device, applies the rules after its own groups: first the provider's domain rules in the profile's `RouteOrder` (block, direct, proxy by default), then its address rules in the same order, then country groups and the default route. Proxy rules use the policy's own target, direct rules go direct, and block rules reject the connection. A domain in two lists follows the list that comes first in `RouteOrder`. Rules without provider data and entries that sing-box cannot use are skipped. Devices that are off and a paused router are not affected.
 
 ## Reserve for a subscription { #subscription-reserve }
 

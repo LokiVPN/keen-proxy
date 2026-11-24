@@ -663,6 +663,7 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	if err != nil {
 		return err
 	}
+	d.warnDroppedProviderEntries(out)
 	restarted, err := d.applyCoreLocked(out)
 	if err != nil {
 		return err
@@ -904,6 +905,7 @@ func (d *Daemon) compileRuntimeLocked() (compile.Output, error) {
 	return compile.Compile(compile.Input{
 		Config: d.cfg, Neighbors: d.neighbors, RuleSetDir: d.opt.RuleSetDir,
 		Subscriptions: d.subscriptionCompileInputLocked(),
+		ProviderRules: d.providerRulesLocked(),
 	})
 }
 

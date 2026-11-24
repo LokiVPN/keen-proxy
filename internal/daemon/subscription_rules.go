@@ -202,6 +202,30 @@ func (d *Daemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSet
 	return *rules.Built, &settings, true
 }
 
+// warnDroppedProviderEntries reports provider entries compile left out when
+// rules are activated; watchdog recompilations do not repeat it.
+func (d *Daemon) warnDroppedProviderEntries(out compile.Output) {
+	if out.DroppedProviderEntries > 0 {
+		d.log.Warn("provider rule entries that sing-box cannot use were skipped", "count", out.DroppedProviderEntries)
+	}
+}
+
+// providerRulesLocked returns the provider rules held for each subscription,
+// as compile.Input expects them; compile applies those of the configured
+// source. The rules share storage with the snapshots.
+func (d *Daemon) providerRulesLocked() map[string]compile.ProviderRules {
+	var out map[string]compile.ProviderRules
+	for id, state := range d.subscriptions.states {
+		if rules := state.snapshot.Rules; rules != nil && rules.Built != nil {
+			if out == nil {
+				out = map[string]compile.ProviderRules{}
+			}
+			out[id] = *rules.Built
+		}
+	}
+	return out
+}
+
 // evaluateProviderRules builds the rules of one successful fetch of the
 // configured source. It downloads geo files and must run without d.mu.
 // previous is the source's current state: its data is reused for unchanged

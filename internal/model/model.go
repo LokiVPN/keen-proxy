@@ -332,13 +332,16 @@ const DefaultProfile = "profile"
 
 // Network applies a routing policy to a CIDR unless a client overrides it.
 type Network struct {
-	Name   string `yaml:"name" json:"name"`
-	CIDR   string `yaml:"cidr" json:"cidr"`
-	Mode   Mode   `yaml:"mode" json:"mode"`
-	Target string `yaml:"target,omitempty" json:"target,omitempty"` // connection for full mode and inherited client targets
-	// Default routes split traffic that matches no group: empty or direct goes
-	// direct, a connection or managed target tunnels it, and profile resolves
-	// it from the provider profile (compiled as direct until resolved).
+	Name string `yaml:"name" json:"name"`
+	CIDR string `yaml:"cidr" json:"cidr"`
+	Mode Mode   `yaml:"mode" json:"mode"`
+	// Target tunnels full mode; in split mode it receives provider proxy rules
+	// and the profile default. Clients without their own target inherit it.
+	Target string `yaml:"target,omitempty" json:"target,omitempty"`
+	// Default routes split traffic that matches no rule: empty or direct goes
+	// direct, a connection or managed target tunnels it, and profile follows
+	// the provider profile: the policy target unless the applied provider
+	// rules say GlobalProxy false.
 	Default string `yaml:"default,omitempty" json:"default,omitempty"`
 }
 

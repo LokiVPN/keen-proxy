@@ -1,12 +1,16 @@
 package compile
 
 import (
+	"encoding/json"
 	"net/netip"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/ordo-systems/keen-proxy/internal/geodata"
+	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
@@ -377,4 +381,192 @@ func (b *providerBuilder) addUnsupported(entry string) {
 		b.unsupported[entry] = true
 		b.out.Unsupported = append(b.out.Unsupported, entry)
 	}
+}
+
+// providerRuleTag names the local rule set of one provider rule. It depends
+// only on the rule key, so new provider data rewrites the same file, which
+// the running core watches, without a restart.
+func providerRuleTag(key string) string { return "provider-" + shortHash([]byte(key)) }
+
+// providerDNSTag names the DNS fallback set of one provider domain rule.
+func providerDNSTag(key string) string { return "dns-" + shortHash([]byte(key)) }
+
+// providerProfile returns the provider rules that apply to c: those of the
+// configured source when the daemon supplied them, otherwise nil.
+func providerProfile(c *model.Config, all map[string]ProviderRules) *ProviderRules {
+	if c.ProviderRules == nil {
+		return nil
+	}
+	rules, ok := all[c.ProviderRules.Source]
+	if !ok {
+		return nil
+	}
+	return &rules
+}
+
+// enabledProviderRules returns the rules of p that route traffic, in profile
+// order: available, not switched off and of a known action and kind.
+func enabledProviderRules(c *model.Config, p *ProviderRules) []ProviderRule {
+	if p == nil {
+		return nil
+	}
+	var out []ProviderRule
+	for _, r := range p.Rules {
+		known := (r.Kind == providerSite || r.Kind == providerIP) &&
+			(r.Action == providerProxy || r.Action == providerDirect || r.Action == providerBlock)
+		if known && r.Unavailable == "" && !slices.Contains(c.ProviderRules.Disabled, r.Key) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// providerActions returns the rule actions in RouteOrder. The profile parser
+// normalizes the order; anything else falls back to Happ's default.
+func providerActions(order string) []string {
+	actions := strings.Split(order, "-")
+	if !slices.Equal(slices.Sorted(slices.Values(actions)), []string{providerBlock, providerDirect, providerProxy}) {
+		return []string{providerBlock, providerDirect, providerProxy}
+	}
+	return actions
+}
+
+// providerRouting is the compiled form of the provider rules that apply: one
+// rule-set file per rule, shared by every policy, and the steps each split
+// policy takes between its own lists and its country groups.
+type providerRouting struct {
+	sets    []obj
+	steps   []groupSet
+	files   map[string][]byte
+	dropped int
+}
+
+// compileProviderRules orders the enabled rules for split policies: domain
+// rules in RouteOrder, DNS fallback for those with domain names, then
+// address rules in RouteOrder. Within an action rules keep profile order.
+// Proxy rules go to each policy's own target, direct rules direct, and block
+// rules are rejected inside the policy, so own lists still win over them.
+func compileProviderRules(c *model.Config, p *ProviderRules, dir string) providerRouting {
+	out := providerRouting{files: map[string][]byte{}}
+	rules := enabledProviderRules(c, p)
+	if len(rules) == 0 {
+		return out
+	}
+	var dns, ips []groupSet
+	for _, kind := range []string{providerSite, providerIP} {
+		for _, action := range providerActions(p.RouteOrder) {
+			for _, r := range rules {
+				if r.Kind != kind || r.Action != action {
+					continue
+				}
+				tag := providerRuleTag(r.Key)
+				if out.files[tag+".json"] != nil {
+					continue // a repeated key would declare its set twice, which sing-box rejects
+				}
+				raw, dropped := providerRuleSet(r)
+				out.dropped += dropped
+				if raw == nil {
+					continue
+				}
+				out.files[tag+".json"] = raw
+				out.sets = append(out.sets, localRuleSet(tag, dir))
+				step := providerStep(action, tag)
+				if kind == providerIP {
+					ips = append(ips, step)
+					continue
+				}
+				out.steps = append(out.steps, step)
+				if providerDNSNames(r) {
+					step.tags, step.dns = []string{providerDNSTag(r.Key)}, true
+					out.sets = append(out.sets, localRuleSet(step.tags[0], dir))
+					dns = append(dns, step)
+				}
+			}
+		}
+	}
+	out.steps = append(append(out.steps, dns...), ips...)
+	return out
+}
+
+// providerStep is the split policy step of a rule with action that matches
+// the rule set tag.
+func providerStep(action, tag string) groupSet {
+	switch action {
+	case providerProxy:
+		return groupSet{tags: []string{tag}, proxy: true}
+	case providerBlock:
+		return groupSet{tags: []string{tag}, target: model.TargetBlock}
+	}
+	return groupSet{tags: []string{tag}, target: model.TargetDirect}
+}
+
+// providerRuleSet encodes one rule as a local rule-set file. Geosite data
+// reaches it unchecked, so entries that would break routing are dropped and
+// counted: an empty value matches every name or fails the configuration, and
+// sing-box rejects the whole configuration for one invalid regex. raw is nil
+// when no entry remains.
+func providerRuleSet(r ProviderRule) (raw []byte, dropped int) {
+	rule := obj{}
+	add := func(field string, entries []string, valid func(string) bool) {
+		kept, n := usableEntries(entries, valid)
+		dropped += n
+		if len(kept) > 0 {
+			rule[field] = kept
+		}
+	}
+	if r.Kind == providerIP {
+		add("ip_cidr", r.CIDR, nonEmpty) // canonical prefixes
+	} else {
+		add("domain", r.Full, nonEmpty)
+		add("domain_suffix", r.Suffix, nonEmpty)
+		add("domain_keyword", r.Keyword, nonEmpty)
+		add("domain_regex", r.Regex, validRegex)
+	}
+	if len(rule) == 0 {
+		return nil, dropped
+	}
+	raw, _ = json.Marshal(obj{"version": 3, "rules": []obj{rule}})
+	return raw, dropped
+}
+
+// usableEntries returns the entries valid accepts and how many it rejected.
+// The entries belong to the daemon's state: they are copied only when one is
+// dropped and never modified.
+func usableEntries(entries []string, valid func(string) bool) ([]string, int) {
+	for i, e := range entries {
+		if valid(e) {
+			continue
+		}
+		kept := slices.Clone(entries[:i])
+		for _, e := range entries[i+1:] {
+			if valid(e) {
+				kept = append(kept, e)
+			}
+		}
+		return kept, len(entries) - len(kept)
+	}
+	return entries, 0
+}
+
+func nonEmpty(s string) bool { return s != "" }
+
+// validRegex accepts what sing-box compiles, with the same regexp package.
+func validRegex(s string) bool {
+	if s == "" {
+		return false
+	}
+	_, err := regexp.Compile(s)
+	return err == nil
+}
+
+// providerDNSNames reports whether a rule has domain names whose DNS answers
+// can stand in for them: suffix or exact entries, not keywords or regexes.
+func providerDNSNames(r ProviderRule) bool {
+	return r.Kind == providerSite && (slices.ContainsFunc(r.Suffix, nonEmpty) || slices.ContainsFunc(r.Full, nonEmpty))
+}
+
+// localRuleSet declares a rule set read from dir/<tag>.json, which the daemon
+// writes and sing-box watches.
+func localRuleSet(tag, dir string) obj {
+	return obj{"type": "local", "tag": tag, "format": "source", "path": filepath.Join(dir, tag+".json")}
 }

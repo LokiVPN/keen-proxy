@@ -580,13 +580,15 @@ func (d *Daemon) activateSubscriptionStateLocked(id string, state appliedSubscri
 	return before, err
 }
 
-// applySubscriptionCoreLocked only reconciles the core. Managed nodes do not
-// change firewall exemptions, DNS, or the contents of watched rule-set files.
+// applySubscriptionCoreLocked reconciles the core with the subscription
+// state. Managed nodes do not change firewall exemptions or DNS, but provider
+// rules live in rule-set files, which are written before the core reads them.
 func (d *Daemon) applySubscriptionCoreLocked() error {
-	out, err := d.compileRuntimeLocked()
+	out, err := d.compileLocked()
 	if err != nil {
 		return err
 	}
+	d.warnDroppedProviderEntries(out)
 	_, err = d.applyCoreLocked(out)
 	return err
 }

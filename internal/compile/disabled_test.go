@@ -9,10 +9,10 @@ import (
 func TestDisabledPresetHasNoDNSOrRouting(t *testing.T) {
 	c := &model.Config{Groups: []model.Group{{Name: "installed but off", Target: "direct", Disabled: true, Entries: []string{"example.com"}}}}
 	c.Defaults()
-	if len(DomainNames(c)) != 0 || MatchesDomain(c, "example.com") || len(DNSRuleSets(c, nil)) != 0 {
+	if len(DomainNames(c)) != 0 || MatchesDomain(c, "example.com") || len(DNSRuleSets(c, nil, nil)) != 0 {
 		t.Fatal("disabled preset participates in DNS")
 	}
-	sets, block, routed, _ := groupRuleSets(c.Groups, t.TempDir())
+	sets, block, routed, _ := groupRuleSets(c.Groups, t.TempDir(), nil)
 	if len(sets)+len(block)+len(routed) != 0 {
 		t.Fatal("disabled preset compiled")
 	}

@@ -36,7 +36,7 @@ func TestDNSFallbackOnlyWithoutDomain(t *testing.T) {
 func TestDuplicateGroupsDoNotDuplicateDNSDeclarations(t *testing.T) {
 	g := model.Group{Name: "same", Target: "direct", Entries: []string{"example.com"}}
 	cfg := &model.Config{Groups: []model.Group{g, g}}
-	sets, _, _, _ := groupRuleSets(cfg.Groups, t.TempDir())
+	sets, _, _, _ := groupRuleSets(cfg.Groups, t.TempDir(), nil)
 	seen := map[string]bool{}
 	for _, set := range sets {
 		tag := set["tag"].(string)
@@ -51,14 +51,14 @@ func TestDuplicateGroupsDoNotDuplicateDNSDeclarations(t *testing.T) {
 func TestFallbackGroupsReordered(t *testing.T) {
 	g := model.Group{Name: "one", Target: "direct", Entries: []string{"example.com"}}
 	cfg := &model.Config{Groups: []model.Group{g}}
-	sets := DNSRuleSets(cfg, map[string][]string{"www.example.com": {"203.0.113.1"}, "notexample.com": {"203.0.113.2"}})
+	sets := DNSRuleSets(cfg, nil, map[string][]string{"www.example.com": {"203.0.113.1"}, "notexample.com": {"203.0.113.2"}})
 	raw := sets[DomainTag(g)+".json"]
 	if !bytes.Contains(raw, []byte("203.0.113.1/32")) || bytes.Contains(raw, []byte("203.0.113.2")) {
 		t.Fatal(string(raw))
 	}
 	tag := DomainTag(g)
 	cfg.Groups = append([]model.Group{{Name: "new"}}, g)
-	if !bytes.Equal(raw, DNSRuleSets(cfg, map[string][]string{"www.example.com": {"203.0.113.1"}})[tag+".json"]) {
+	if !bytes.Equal(raw, DNSRuleSets(cfg, nil, map[string][]string{"www.example.com": {"203.0.113.1"}})[tag+".json"]) {
 		t.Fatal("identity depends on index")
 	}
 	g.Target = "block"

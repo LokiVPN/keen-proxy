@@ -13,8 +13,13 @@ import (
 // DomainTag is stable when unrelated groups move and changes with group content.
 func DomainTag(g model.Group) string {
 	raw, _ := json.Marshal(g)
-	sum := sha256.Sum256(raw)
-	return "dns-" + hex.EncodeToString(sum[:8])
+	return "dns-" + shortHash(raw)
+}
+
+// shortHash names generated rule sets after their identity.
+func shortHash(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
 }
 
 // DomainNames returns sorted, unique domain roots from enabled groups.
@@ -67,9 +72,11 @@ func (m *DomainMatcher) Match(name string) bool {
 // MatchesDomain checks whether a name belongs to an enabled routing group.
 func MatchesDomain(c *model.Config, name string) bool { return NewDomainMatcher(c).Match(name) }
 
-// DNSRuleSets builds deterministic IPv4 fallback sets for enabled entry groups.
-// The caller must supply only fresh cache addresses; empty sets match nothing.
-func DNSRuleSets(c *model.Config, records map[string][]string) map[string][]byte {
+// DNSRuleSets builds deterministic IPv4 fallback sets for enabled entry groups
+// and for the applied provider domain rules (providers as in Input). The
+// caller must supply only fresh cache addresses; empty sets match nothing.
+// The result names every dns-* file the configuration uses.
+func DNSRuleSets(c *model.Config, providers map[string]ProviderRules, records map[string][]string) map[string][]byte {
 	out := map[string][]byte{}
 	for _, g := range c.Groups {
 		if g.Disabled {
@@ -107,6 +114,13 @@ func DNSRuleSets(c *model.Config, records map[string][]string) map[string][]byte
 			cidrs = []string{noSource}
 		}
 		out[DomainTag(g)+".json"], _ = json.Marshal(obj{"version": 3, "rules": []obj{{"ip_cidr": cidrs}}})
+	}
+	// Provider sets are declared empty; observed answers do not fill them yet.
+	empty, _ := json.Marshal(obj{"version": 3, "rules": []obj{{"ip_cidr": []string{noSource}}}})
+	for _, r := range enabledProviderRules(c, providerProfile(c, providers)) {
+		if providerDNSNames(r) {
+			out[providerDNSTag(r.Key)+".json"] = empty
+		}
 	}
 	return out
 }

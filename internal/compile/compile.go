@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net"
 	"net/netip"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -34,6 +33,10 @@ type Input struct {
 	RuleSetDir string
 	// Subscriptions provides already validated node snapshots, keyed by source ID.
 	Subscriptions map[string][]subscription.Node
+	// ProviderRules holds the provider rules of subscriptions, keyed by source
+	// ID. Only those of Config.ProviderRules.Source apply. Compile only reads
+	// them: they share storage with the daemon's state.
+	ProviderRules map[string]ProviderRules
 }
 
 // Output contains the engine configuration and runtime artifacts to apply.
@@ -60,11 +63,15 @@ type Output struct {
 	SubscriptionBalances []SubscriptionBalance
 	// SubscriptionOutbounds identifies the managed nodes that exist in the engine.
 	SubscriptionOutbounds []string
-	Plan                  netfilter.Plan
+	// DroppedProviderEntries counts provider rule entries left out because
+	// sing-box would reject them or they would match every name: invalid
+	// regexes and empty values.
+	DroppedProviderEntries int
+	Plan                   netfilter.Plan
 }
 
-// Client classes depend only on configured connections; address updates change
-// file contents without changing the class set.
+// Client classes depend only on configuration; address updates change file
+// contents without changing the class set.
 const (
 	classOff     = "clients-off"
 	classSplit   = "clients-split"
@@ -80,17 +87,33 @@ type policy struct {
 	source netip.Prefix
 	mode   model.Mode
 	target string
-	// fallback is the outbound for split traffic matching no group; empty means direct.
+	// fallback is the outbound for split traffic matching no rule; empty means direct.
 	fallback string
+	// proxy is the outbound of provider proxy rules in split mode; empty means
+	// direct. It stays empty while no provider rules apply, so it separates
+	// policies only when provider rules use it.
+	proxy string
 }
 
-// splitFallback maps a Network.Default to a compiled target; profile is not yet
-// resolved and compiles as direct.
-func splitFallback(d string) string {
-	if d == model.TargetDirect || d == model.DefaultProfile {
-		return ""
+// splitRoute resolves where a split policy with target and network default
+// def sends provider proxy rules and unmatched traffic; "" means direct.
+// profile follows the applied provider profile: direct when it says
+// GlobalProxy false, otherwise and without provider rules the target, so a
+// missing profile never sends tunnel traffic direct.
+func splitRoute(def, target string, rules *ProviderRules) (fallback, proxy string) {
+	if rules != nil {
+		proxy = target
 	}
-	return d
+	if def == model.DefaultProfile {
+		def = target
+		if rules != nil && !rules.GlobalProxy {
+			def = ""
+		}
+	}
+	if def == model.TargetDirect {
+		def = ""
+	}
+	return def, proxy
 }
 
 // Compile builds runtime artifacts from a configuration that has passed Validate.
@@ -99,7 +122,8 @@ func Compile(in Input) (Output, error) {
 		in.Config = pausedConfig(in.Config)
 	}
 	c := in.Config
-	clients, networks, excluded := policies(in)
+	rules := providerProfile(c, in.ProviderRules)
+	clients, networks, excluded := policies(in, rules)
 
 	var sources []netip.Prefix
 	for _, p := range append(append([]policy{}, clients...), networks...) {
@@ -135,28 +159,32 @@ func Compile(in Input) (Output, error) {
 		return Output{}, err
 	}
 	conns.outbounds = append(conns.outbounds, managed.outbounds...)
-	sb, err := json.MarshalIndent(singBox(c, in.RuleSetDir, networks, conns, chains, tags, managed), "", "  ")
+	classes := clientClasses(c, rules)
+	provider := compileProviderRules(c, rules, in.RuleSetDir)
+	sb, err := json.MarshalIndent(singBox(c, in.RuleSetDir, networks, conns, chains, tags, managed, classes, provider), "", "  ")
 	if err != nil {
 		return Output{}, err
 	}
-	_, _, _, geo := groupRuleSets(c.Groups, in.RuleSetDir)
-	sets, err := clientRuleSets(c, clients)
+	_, _, _, geo := groupRuleSets(c.Groups, in.RuleSetDir, nil)
+	sets, err := clientRuleSets(clients, classes)
 	if err != nil {
 		return Output{}, err
 	}
-	for name, raw := range DNSRuleSets(c, nil) {
+	maps.Copy(sets, provider.files)
+	for name, raw := range DNSRuleSets(c, in.ProviderRules, nil) {
 		sets[name] = raw
 	}
 	return Output{
-		SingBox:               sb,
-		RuleSets:              sets,
-		Countries:             geo.countries,
-		Categories:            geo.categories,
-		ServerHosts:           conns.hosts,
-		Failover:              chains,
-		SubscriptionSelectors: managed.selectors,
-		SubscriptionBalances:  managed.balances,
-		SubscriptionOutbounds: managed.nodeTags,
+		SingBox:                sb,
+		RuleSets:               sets,
+		Countries:              geo.countries,
+		Categories:             geo.categories,
+		ServerHosts:            conns.hosts,
+		Failover:               chains,
+		SubscriptionSelectors:  managed.selectors,
+		SubscriptionBalances:   managed.balances,
+		SubscriptionOutbounds:  managed.nodeTags,
+		DroppedProviderEntries: provider.dropped,
 		Plan: netfilter.Plan{
 			BlockEncryptedDNS: c.DNS.BlockEncrypted,
 			DNSBypassSources:  dnsBypass,
@@ -190,8 +218,8 @@ func pausedConfig(src *model.Config) *model.Config {
 
 // policies resolves client inheritance and network rules. Client rules take
 // precedence over networks; excluded clients bypass interception even inside
-// participating networks.
-func policies(in Input) (clients, networks []policy, excluded []netip.Addr) {
+// participating networks. rules are the applied provider rules, or nil.
+func policies(in Input, rules *ProviderRules) (clients, networks []policy, excluded []netip.Addr) {
 	c := in.Config
 	type netPol struct {
 		prefix netip.Prefix
@@ -201,7 +229,9 @@ func policies(in Input) (clients, networks []policy, excluded []netip.Addr) {
 	for _, n := range c.Networks {
 		p, _ := netip.ParsePrefix(n.CIDR)
 		nets = append(nets, netPol{p.Masked(), n})
-		networks = append(networks, policy{p.Masked(), n.Mode, n.Target, splitFallback(n.Default)})
+		pol := policy{source: p.Masked(), mode: n.Mode, target: n.Target}
+		pol.fallback, pol.proxy = splitRoute(n.Default, n.Target, rules)
+		networks = append(networks, pol)
 	}
 	for _, cl := range c.Clients {
 		ip, ok := clientIP(cl, in.Neighbors)
@@ -215,21 +245,12 @@ func policies(in Input) (clients, networks []policy, excluded []netip.Addr) {
 				break
 			}
 		}
-		mode, target := cl.Mode, cl.Target
-		if mode == model.ModeInherit {
-			if network == nil {
-				continue
-			}
-			mode = network.Mode
+		pol, ok := clientPolicy(cl, network, rules)
+		if !ok {
+			continue
 		}
-		if target == "" && network != nil {
-			target = network.Target
-		}
-		pol := policy{source: netip.PrefixFrom(ip, ip.BitLen()), mode: mode, target: target}
-		if network != nil {
-			pol.fallback = splitFallback(network.Default)
-		}
-		if mode == model.ModeOff {
+		pol.source = netip.PrefixFrom(ip, ip.BitLen())
+		if pol.mode == model.ModeOff {
 			if network != nil && network.Mode != model.ModeOff {
 				excluded = append(excluded, ip)
 				clients = append(clients, pol)
@@ -239,6 +260,27 @@ func policies(in Input) (clients, networks []policy, excluded []netip.Addr) {
 		clients = append(clients, pol)
 	}
 	return clients, networks, excluded
+}
+
+// clientPolicy applies a client's own mode and target over the network that
+// contains its address (nil for none); ok is false when the client inherits
+// from no network. The result has no source.
+func clientPolicy(cl model.Client, network *model.Network, rules *ProviderRules) (policy, bool) {
+	p := policy{mode: cl.Mode, target: cl.Target}
+	var def string
+	if network != nil {
+		if p.mode == model.ModeInherit {
+			p.mode = network.Mode
+		}
+		if p.target == "" {
+			p.target = network.Target
+		}
+		def = network.Default
+	} else if p.mode == model.ModeInherit {
+		return policy{}, false
+	}
+	p.fallback, p.proxy = splitRoute(def, p.target, rules)
+	return p, true
 }
 
 // clientIP prefers a configured static address over a normalized MAC neighbor lookup.
@@ -285,7 +327,7 @@ func failover(c *model.Config) ([]FailoverChain, map[string]string) {
 }
 
 // singBox orders global blocks, client policies, and network policies after sniffing.
-func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOut, chains []FailoverChain, tags map[string]string, managed subscriptionRouting) obj {
+func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOut, chains []FailoverChain, tags map[string]string, managed subscriptionRouting, classes []class, provider providerRouting) obj {
 	inbounds := []obj{{"type": "redirect", "tag": tagTCPIn, "listen": "0.0.0.0", "listen_port": c.Intercept.TCPPort}}
 	sniffIn := []string{tagTCPIn}
 	if c.Intercept.Mode == model.InterceptTProxy {
@@ -293,7 +335,8 @@ func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOu
 		sniffIn = append(sniffIn, tagUDPIn)
 	}
 
-	ruleSets, blockSets, groupSets, _ := groupRuleSets(c.Groups, ruleSetDir)
+	ruleSets, blockSets, groupSets, _ := groupRuleSets(c.Groups, ruleSetDir, provider.steps)
+	ruleSets = append(ruleSets, provider.sets...)
 	rules := []obj{
 		{"inbound": sniffIn, "action": "sniff"},
 		{"ip_is_private": true, "outbound": tagDirect},
@@ -303,7 +346,7 @@ func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOu
 		r["action"] = "reject"
 		rules = append(rules, r)
 	}
-	clientSets, clientRules := clientRouting(c, ruleSetDir, groupSets, tags)
+	clientSets, clientRules := clientRouting(ruleSetDir, groupSets, tags, classes)
 	ruleSets = append(clientSets, ruleSets...)
 	rules = append(rules, clientRules...)
 	rules = append(rules, sourceRules(networks, groupSets, tags)...)
@@ -363,10 +406,14 @@ func managedOutbounds(chains []FailoverChain, managed subscriptionRouting) []obj
 	return out
 }
 
-// groupSet associates shared match sets with a target and optional country exclusion.
+// groupSet associates shared match sets with a target and optional country
+// exclusion. In a split policy it is one step of the rule chain.
 type groupSet struct {
 	tags   []string // one set per country for country groups
-	target string
+	target string   // block rejects in a split policy
+	// proxy sends matching traffic to the policy's proxy outbound instead of
+	// target (provider proxy rules).
+	proxy bool
 	// invert matches addresses outside the union of country sets.
 	invert bool
 	dns    bool
@@ -384,6 +431,21 @@ func (g groupSet) match() obj {
 	return m
 }
 
+// send completes a split policy rule with where its traffic goes: reject for
+// a block step, the policy's proxy outbound for a provider proxy step,
+// otherwise the step's target.
+func (g groupSet) send(rule obj, p policy, tags map[string]string) obj {
+	switch {
+	case g.target == model.TargetBlock:
+		rule["action"] = "reject"
+	case g.proxy:
+		rule["outbound"] = outboundTag(p.proxy, tags)
+	default:
+		rule["outbound"] = outboundTag(g.target, tags)
+	}
+	return rule
+}
+
 // Rule-set tag prefixes of the local sets the daemon fills from IP databases.
 const (
 	CountryTagPrefix  = "geoip-"
@@ -396,8 +458,10 @@ type geoCodes struct{ countries, categories []string }
 
 // groupRuleSets shares inline entry sets across sources and references local
 // geoip-<code> and geocat-<label> sets for IP-database groups. Explicit domain
-// and address groups precede those groups regardless of configuration order.
-func groupRuleSets(groups []model.Group, dir string) (sets []obj, block, routed []groupSet, geo geoCodes) {
+// and address groups precede those groups regardless of configuration order;
+// the provider steps go between them, so own lists win over provider rules
+// and country groups stay last.
+func groupRuleSets(groups []model.Group, dir string, provider []groupSet) (sets []obj, block, routed []groupSet, geo geoCodes) {
 	var countryBlock, countryRouted []groupSet
 	seen := map[string]bool{}
 	for i, g := range groups {
@@ -412,7 +476,7 @@ func groupRuleSets(groups []model.Group, dir string) (sets []obj, block, routed 
 				if !seen[tag] {
 					seen[tag] = true
 					*list = append(*list, code)
-					sets = append(sets, obj{"type": "local", "tag": tag, "format": "source", "path": filepath.Join(dir, tag+".json")})
+					sets = append(sets, localRuleSet(tag, dir))
 				}
 			}
 			for cc := range g.ActiveCountries() {
@@ -474,7 +538,7 @@ func groupRuleSets(groups []model.Group, dir string) (sets []obj, block, routed 
 		}
 		tag := DomainTag(g)
 		if !declaredDNS[tag] {
-			sets = append(sets, obj{"type": "local", "tag": tag, "format": "source", "path": filepath.Join(dir, tag+".json")})
+			sets = append(sets, localRuleSet(tag, dir))
 			declaredDNS[tag] = true
 		}
 		gs := groupSet{tags: []string{tag}, target: g.Target, dns: true}
@@ -486,7 +550,8 @@ func groupRuleSets(groups []model.Group, dir string) (sets []obj, block, routed 
 	}
 	sort.Strings(geo.countries)
 	sort.Strings(geo.categories)
-	return sets, append(append(block, countryBlock...), dnsBlock...), append(append(routed, dnsRouted...), countryRouted...), geo
+	routed = append(append(routed, dnsRouted...), provider...)
+	return sets, append(append(block, countryBlock...), dnsBlock...), append(routed, countryRouted...), geo
 }
 
 // sourceRules preserves policy order while merging adjacent policies with
@@ -496,7 +561,7 @@ func sourceRules(pols []policy, groups []groupSet, tags map[string]string) []obj
 	var rules []obj
 	for i := 0; i < len(pols); {
 		j := i + 1
-		for j < len(pols) && pols[j].mode == pols[i].mode && ((pols[i].mode == model.ModeSplit && pols[j].fallback == pols[i].fallback) || (pols[i].mode != model.ModeSplit && pols[j].target == pols[i].target)) {
+		for j < len(pols) && pols[j].mode == pols[i].mode && ((pols[i].mode == model.ModeSplit && pols[j].fallback == pols[i].fallback && pols[j].proxy == pols[i].proxy) || (pols[i].mode != model.ModeSplit && pols[j].target == pols[i].target)) {
 			j++
 		}
 		var src []string
@@ -513,14 +578,13 @@ func sourceRules(pols []policy, groups []groupSet, tags map[string]string) []obj
 			for _, g := range groups {
 				if g.invert || g.dns {
 					// A top-level invert would also negate the source condition.
-					rules = append(rules, obj{
+					rules = append(rules, g.send(obj{
 						"type": "logical", "mode": "and",
-						"rules":    []obj{{"source_ip_cidr": src}, g.match()},
-						"outbound": outbound(g.target),
-					})
+						"rules": []obj{{"source_ip_cidr": src}, g.match()},
+					}, pols[i], tags))
 					continue
 				}
-				rules = append(rules, obj{"source_ip_cidr": src, "rule_set": g.tags, "outbound": outbound(g.target)})
+				rules = append(rules, g.send(obj{"source_ip_cidr": src, "rule_set": g.tags}, pols[i], tags))
 			}
 			rules = append(rules, obj{"source_ip_cidr": src, "outbound": outbound(pols[i].fallback)})
 		}
@@ -529,9 +593,21 @@ func sourceRules(pols []policy, groups []groupSet, tags map[string]string) []obj
 	return rules
 }
 
-// clientClass maps a resolved client policy to its shared address set.
+// class is a stable address set of clients that route alike, with the
+// routing they share (pol has no source).
+type class struct {
+	name string
+	pol  policy
+}
+
+// clientClass maps a resolved client policy to its shared address set. A
+// split class with a provider proxy outbound is named after a hash of its
+// route: connection IDs are free text, so joining two of them into a name
+// could make different routes share a class.
 func clientClass(p policy) string {
 	switch {
+	case p.mode == model.ModeSplit && p.proxy != "":
+		return classSplit + "-" + shortHash([]byte(p.proxy+"\x00"+p.fallback))
 	case p.mode == model.ModeSplit && p.fallback != "":
 		return classSplitTo + p.fallback
 	case p.mode == model.ModeSplit:
@@ -543,71 +619,73 @@ func clientClass(p policy) string {
 	}
 }
 
-// clientClasses lists stable class names even when no clients currently occupy them.
-func clientClasses(c *model.Config) []string {
-	classes := []string{classOff}
+// clientClasses lists stable classes even when no clients currently occupy
+// them. Split classes cover every route a configured client can take in any
+// network, or outside them, so address changes never change the set.
+func clientClasses(c *model.Config, rules *ProviderRules) []class {
+	classes := []class{{classOff, policy{mode: model.ModeOff}}}
 	for _, cn := range c.Connections {
-		classes = append(classes, classFull+cn.ID)
+		classes = append(classes, class{classFull + cn.ID, policy{mode: model.ModeFull, target: cn.ID}})
 	}
 	for _, target := range subscriptionTargets(c) {
-		classes = append(classes, classFull+target)
+		classes = append(classes, class{classFull + target, policy{mode: model.ModeFull, target: target}})
 	}
-	classes = append(classes, classSplit)
-	// A client that overrides to split inherits its network's default whatever
-	// the network mode, so every network default needs a class (the same
-	// mapping policies uses to set policy.fallback).
-	used := map[string]bool{}
-	for _, n := range c.Networks {
-		if splitFallback(n.Default) != "" {
-			used[splitFallback(n.Default)] = true
+	classes = append(classes, class{classSplit, policy{mode: model.ModeSplit}})
+	split := map[string]policy{}
+	add := func(p policy, ok bool) {
+		if !ok || p.mode != model.ModeSplit {
+			return
+		}
+		if name := clientClass(p); name != classSplit {
+			split[name] = p
 		}
 	}
-	for _, t := range slices.Sorted(maps.Keys(used)) {
-		classes = append(classes, classSplitTo+t)
+	for _, cl := range c.Clients {
+		add(clientPolicy(cl, nil, rules))
+		for i := range c.Networks {
+			add(clientPolicy(cl, &c.Networks[i], rules))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(split)) {
+		classes = append(classes, class{name, split[name]})
 	}
 	return classes
 }
 
 // clientRouting orders client class rules before network rules: disabled
 // clients, full-tunnel classes by connection, then split routing.
-func clientRouting(c *model.Config, dir string, groups []groupSet, tags map[string]string) (sets, rules []obj) {
-	outbound := func(target string) string { return outboundTag(target, tags) }
-	for _, class := range clientClasses(c) {
-		sets = append(sets, obj{"type": "local", "tag": class, "format": "source", "path": filepath.Join(dir, class+".json")})
-		switch {
-		case class == classOff:
-			rules = append(rules, obj{"rule_set": []string{class}, "outbound": tagDirect})
-		case strings.HasPrefix(class, classFull):
-			rules = append(rules, obj{"rule_set": []string{class}, "outbound": outbound(strings.TrimPrefix(class, classFull))})
-		case class == classSplit || strings.HasPrefix(class, classSplitTo):
-			fallback := tagDirect
-			if class != classSplit {
-				fallback = outbound(strings.TrimPrefix(class, classSplitTo))
-			}
+func clientRouting(dir string, groups []groupSet, tags map[string]string, classes []class) (sets, rules []obj) {
+	for _, cl := range classes {
+		sets = append(sets, localRuleSet(cl.name, dir))
+		switch cl.pol.mode {
+		case model.ModeOff:
+			rules = append(rules, obj{"rule_set": []string{cl.name}, "outbound": tagDirect})
+		case model.ModeFull:
+			rules = append(rules, obj{"rule_set": []string{cl.name}, "outbound": outboundTag(cl.pol.target, tags)})
+		case model.ModeSplit:
 			for _, g := range groups {
 				// Multiple rule_set values are ORed; use a logical rule for AND.
-				rules = append(rules, obj{
+				rules = append(rules, g.send(obj{
 					"type": "logical", "mode": "and",
-					"rules":    []obj{{"rule_set": []string{class}}, g.match()},
-					"outbound": outbound(g.target),
-				})
+					"rules": []obj{{"rule_set": []string{cl.name}}, g.match()},
+				}, cl.pol, tags))
 			}
-			rules = append(rules, obj{"rule_set": []string{class}, "outbound": fallback})
+			rules = append(rules, obj{"rule_set": []string{cl.name}, "outbound": outboundTag(cl.pol.fallback, tags)})
 		}
 	}
 	return sets, rules
 }
 
 // clientRuleSets fills stable classes with current addresses and nonmatching empty placeholders.
-func clientRuleSets(c *model.Config, clients []policy) (map[string][]byte, error) {
+func clientRuleSets(clients []policy, classes []class) (map[string][]byte, error) {
 	byClass := map[string][]string{}
 	for _, p := range clients {
 		cl := clientClass(p)
 		byClass[cl] = append(byClass[cl], p.source.String())
 	}
 	out := map[string][]byte{}
-	for _, class := range clientClasses(c) {
-		src := byClass[class]
+	for _, cl := range classes {
+		src := byClass[cl.name]
 		if len(src) == 0 {
 			src = []string{noSource}
 		}
@@ -616,7 +694,7 @@ func clientRuleSets(c *model.Config, clients []policy) (map[string][]byte, error
 		if err != nil {
 			return nil, err
 		}
-		out[class+".json"] = raw
+		out[cl.name+".json"] = raw
 	}
 	return out, nil
 }
