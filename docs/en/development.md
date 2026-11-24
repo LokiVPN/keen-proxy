@@ -303,6 +303,11 @@ New configurations are written with `schema_version: 2`.
   and its log names only the file, because the error can quote credentials.
   Run `keenproxy -dry-run -config <path>` on the router to see the error on
   the terminal. `-dry-run` and `--url` use the reset without writing.
+- `keenproxy -dry-run` compiles the configuration without subscription nodes
+  and without provider rules, because it neither fetches subscriptions nor
+  downloads geo files. A subscription target is therefore empty and its
+  provider rules are absent in that output, which differs from what the
+  running daemon compiles.
 - This release's `tools/bootstrap.sh` also snapshots the configuration before
   installing and restores it if the update fails. When the target release
   cannot read schema 2 at all, it atomically switches to the newest kept
