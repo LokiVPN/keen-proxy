@@ -111,6 +111,20 @@ func TestOverviewStatusUsesTheSelectedConnection(t *testing.T) {
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Working</span>`, "Cabin · 35 ms", `>Expired</span>`)
 }
 
+func TestOverviewOmitsBlockingReserveName(t *testing.T) {
+	f := newOverviewFixture()
+	f.cfg.Subscriptions[0].Fallback = model.TargetBlock
+	f.subs[0].Unavailable = true
+	f.subs[0].Nodes, f.subs[0].ActiveNode = nil, ""
+	delete(f.status.Connections, f.cfg.Networks[0].Target)
+
+	body := setupRequest(New(f, setupTestOptions(RoleView)), "/", nil).Body.String()
+	assertContains(t, body, `>No connection</span>`, "No subscription node is available.")
+	if strings.Contains(body, "Using reserve ") || strings.Contains(body, "Current connection · block") {
+		t.Error("overview named a reserve connection for the blocking fallback")
+	}
+}
+
 func TestOverviewKeepsTargetClassWhileFailoverIsBlocked(t *testing.T) {
 	f := newOverviewFixture()
 	network := &f.cfg.Networks[0]

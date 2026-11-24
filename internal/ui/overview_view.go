@@ -132,13 +132,7 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 		return overviewChip{text["overview_home_off"], ""}, text["overview_home_off_hint"]
 	case network.Target == "":
 		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_choose_connection"]
-	case selection.Class == stats.TargetDirect:
-		detail := text["overview_direct_hint"]
-		if selection.Reserve != "" {
-			detail = text["overview_direct_reserve"]
-		}
-		return overviewChip{text["overview_direct"], ""}, detail
-	case selection.Health == connectionUnavailable && selection.Class != stats.TargetMixed:
+	case selection.Health == connectionUnavailable:
 		message := text["overview_connection_down"]
 		if selection.Subscription {
 			message = text["overview_subscription_down"]
@@ -147,6 +141,12 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 			}
 		}
 		return overviewChip{text["overview_no_connection"], "warn"}, message
+	case selection.Class == stats.TargetDirect:
+		detail := text["overview_direct_hint"]
+		if selection.Reserve != "" {
+			detail = text["overview_direct_reserve"]
+		}
+		return overviewChip{text["overview_direct"], ""}, detail
 	}
 	detail := selection.Detail
 	if selection.Class == stats.TargetMixed {

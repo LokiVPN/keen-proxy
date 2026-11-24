@@ -152,11 +152,12 @@ func TestOverviewUsesStaticLeavesOfRawGroups(t *testing.T) {
 	const target = "test-route"
 	for _, tc := range []struct {
 		name, banner, detail, summary string
-		direct, mixed                 bool
+		direct, mixed, roundRobin     bool
 	}{
-		{"five selectors ending in direct", "Direct connection", "routes directly", "Direct connection", true, false},
-		{"mixed round robin", "Connection routing", "Traffic follows connection Test route", "Traffic follows connection Test route", false, true},
-		{"pure tunnel selector", "Working", "Test route", "All traffic through VPN", false, false},
+		{"five selectors ending in direct", "Direct connection", "routes directly", "Direct connection", true, false, false},
+		{"mixed round robin", "Connection routing", "Traffic follows connection Test route", "Traffic follows connection Test route", false, true, true},
+		{"mixed selector", "Connection routing", "Traffic follows connection Test route", "Traffic follows connection Test route", false, true, false},
+		{"pure tunnel selector", "Working", "Test route", "All traffic through VPN", false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			holdMemoryLimit(t)
@@ -176,8 +177,12 @@ func TestOverviewUsesStaticLeavesOfRawGroups(t *testing.T) {
 			} else {
 				group := map[string]any{"type": "selector", "outbounds": []string{"vpn"}}
 				if tc.mixed {
-					group = map[string]any{"type": "urltest", "mode": "round_robin", "outbounds": []string{"direct", "vpn"},
-						"url": "http://127.0.0.1:1/generate_204"}
+					group["outbounds"] = []string{model.TargetDirect, "vpn"}
+					if tc.roundRobin {
+						group["type"], group["mode"], group["url"] = "urltest", "round_robin", "http://127.0.0.1:1/generate_204"
+					} else {
+						group["default"] = "vpn"
+					}
 				}
 				cfg.Connections = []model.Connection{
 					{ID: "vpn", Type: model.ConnLink, Link: subscriptionFirst},
@@ -200,6 +205,18 @@ func TestOverviewUsesStaticLeavesOfRawGroups(t *testing.T) {
 			if tc.mixed && (strings.Contains(page, "All traffic through VPN") || strings.Contains(page, "Direct connection") ||
 				strings.Contains(page, "New devices connect directly by default")) {
 				t.Error("mixed target was presented as one type of route")
+			}
+
+			d.mu.Lock()
+			d.health[target].record(false, 0, "probe failed", time.Now())
+			d.mu.Unlock()
+			page = viewOverview(t, d)
+			banner, _, _ = strings.Cut(page, `aria-label="KeenProxy sections"`)
+			if !strings.Contains(banner, `>No connection</span>`) || !strings.Contains(banner, "The main connection is unavailable.") {
+				t.Error("overview did not warn about the failed main-connection probe")
+			}
+			if !strings.Contains(page, `<p class="clip">`+tc.summary) || !strings.Contains(page, "KeenProxy handles 1 of 1 devices") {
+				t.Error("the failed probe changed the routing summary or device coverage")
 			}
 		})
 	}

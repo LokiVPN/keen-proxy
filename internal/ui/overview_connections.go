@@ -207,33 +207,35 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 }
 
 func selectedManualConnection(cfg *model.Config, target string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
-	class := connectionClass(target, health)
 	active := cmp.Or(health[target].Active, target)
-	switch class {
+	probe := health[active]
+	selection := connectionSelection{Class: connectionClass(target, health)}
+	if probe.Checked {
+		selection.Health = connectionUnavailable
+		if probe.Available {
+			selection.Health = connectionAvailable
+		}
+	}
+	switch selection.Class {
 	case stats.TargetDirect:
-		selection := connectionSelection{Detail: text["overview_direct"], Class: class}
+		selection.Detail = text["overview_direct"]
 		if active != target {
 			selection.Reserve = selection.Detail
 		}
 		return selection
 	case stats.TargetMixed:
-		return connectionSelection{Name: connectionName(cfg, target), Class: class}
+		selection.Name = cmp.Or(connectionName(cfg, target), target)
+		return selection
 	}
 	for _, conn := range cfg.Connections {
 		if conn.ID != active || conn.Disabled {
 			continue
 		}
-		probe := health[active]
-		selection := connectionSelection{Class: class, Detail: cmp.Or(conn.Name, conn.ID) + " · " + connectionProbe(probe, text)}
-		if probe.Checked {
-			selection.Health = connectionUnavailable
-			if probe.Available {
-				selection.Health = connectionAvailable
-			}
-		}
+		selection.Detail = cmp.Or(conn.Name, conn.ID) + " · " + connectionProbe(probe, text)
 		return selection
 	}
-	return connectionSelection{Class: class, Health: connectionUnavailable}
+	selection.Health = connectionUnavailable
+	return selection
 }
 
 func subscriptionReserve(cfg *model.Config, id string, health map[string]ConnectionStatus, text map[string]string) (string, stats.TargetClass) {
@@ -256,7 +258,7 @@ func connectionName(cfg *model.Config, target string) string {
 			return cmp.Or(conn.Name, conn.ID)
 		}
 	}
-	return target
+	return ""
 }
 
 func connectionClass(target string, health map[string]ConnectionStatus) stats.TargetClass {
