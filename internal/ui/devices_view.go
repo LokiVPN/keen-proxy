@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"maps"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -13,12 +14,16 @@ type devicesPage struct {
 	Revision, Validation       string
 	Rows                       []deviceRow
 	HasHome, NewDevices, Draft bool
+	Skipped                    int
 }
 
 type deviceRow struct {
-	MAC, Name string
-	IP        netip.Addr
-	Mode      model.Mode
+	MAC, Name, EnableProblem string
+	IP                       netip.Addr
+	Mode                     model.Mode
+	Keep, inheritsHome       bool
+	savedMode                model.Mode
+	clientTarget             string
 }
 
 func (p pages) renderDevices(w http.ResponseWriter, r *http.Request, status int, cfg *model.Config, draft *devicesDraft, messageKey, detail string) {
@@ -33,19 +38,20 @@ func (p pages) renderDevices(w http.ResponseWriter, r *http.Request, status int,
 		page := &devicesPage{
 			Revision: Revision(cfg), Validation: detail, Draft: draft != nil,
 			HasHome: home != nil, NewDevices: home != nil && home.Mode != model.ModeOff,
-			Rows: deviceRows(cfg, p.deps.Devices(), home, draft),
 		}
 		if draft != nil {
-			page.NewDevices = draft.NewDevices
+			page.Rows, page.NewDevices, page.Skipped = draft.Rows, draft.NewDevices, draft.Skipped
+		} else {
+			page.Rows = slices.Collect(maps.Values(deviceSnapshot(cfg, home, p.deps.Devices())))
 		}
+		slices.SortFunc(page.Rows, compareDevices)
 		data.Devices = page
 	}
 	render(w, r, status, "devices", data)
 }
 
-// deviceRows joins cached observations and configured clients by MAC. A
-// submitted draft keeps its row set even when the neighbor cache changes.
-func deviceRows(cfg *model.Config, discovered []DiscoveredDevice, home *model.Network, draft *devicesDraft) []deviceRow {
+// deviceSnapshot joins cached observations and configured clients by MAC.
+func deviceSnapshot(cfg *model.Config, home *model.Network, discovered []DiscoveredDevice) map[string]deviceRow {
 	byMAC := make(map[string]deviceRow, len(discovered)+len(cfg.Clients))
 	for _, device := range discovered {
 		if mac := deviceMAC(device.MAC); mac != "" {
@@ -59,7 +65,7 @@ func deviceRows(cfg *model.Config, discovered []DiscoveredDevice, home *model.Ne
 			continue
 		}
 		row := byMAC[mac]
-		row.MAC, row.Mode = mac, client.Mode
+		row.MAC, row.savedMode, row.clientTarget = mac, client.Mode, client.Target
 		if strings.TrimSpace(client.Name) != "" {
 			row.Name = client.Name
 		}
@@ -68,44 +74,48 @@ func deviceRows(cfg *model.Config, discovered []DiscoveredDevice, home *model.Ne
 		}
 		byMAC[mac] = row
 	}
-	rows := make([]deviceRow, 0, len(byMAC))
-	if draft != nil {
-		for mac, mode := range draft.Modes {
-			row := byMAC[mac]
-			row.MAC, row.Mode = mac, mode
-			rows = append(rows, row)
-		}
-	} else {
-		for _, row := range byMAC {
-			if row.Mode == model.ModeInherit {
-				row.Mode = inheritedDeviceMode(row.IP, cfg.Networks, home)
-			}
-			rows = append(rows, row)
-		}
+	for mac, row := range byMAC {
+		byMAC[mac] = resolveDevicePolicy(row, cfg.Networks, home)
 	}
-	slices.SortFunc(rows, compareDevices)
-	return rows
+	return byMAC
 }
 
-// inheritedDeviceMode follows the first matching network for a known IP.
-// Without an address, the Home policy supplies the initial switch state.
-func inheritedDeviceMode(ip netip.Addr, networks []model.Network, home *model.Network) model.Mode {
-	mode := model.ModeOff
-	if !ip.IsValid() && home != nil {
-		mode = home.Mode
-	} else {
-		for _, network := range networks {
-			prefix, err := netip.ParsePrefix(network.CIDR)
-			if err == nil && prefix.Contains(ip) {
-				mode = network.Mode
-				break
-			}
+func resolveDevicePolicy(row deviceRow, networks []model.Network, home *model.Network) deviceRow {
+	network := deviceNetwork(row.IP, networks, home)
+	row.Mode = row.savedMode
+	if row.Mode == model.ModeInherit {
+		row.Mode = model.ModeOff
+		if network != nil {
+			row.Mode = network.Mode
+			row.inheritsHome = network == home
 		}
 	}
-	if mode == model.ModeSplit || mode == model.ModeFull {
-		return model.ModeSplit
+	if row.clientTarget == "" && (network == nil || network.Target == "") {
+		row.EnableProblem = "devices_no_vpn_target"
+		if row.IP.IsValid() && (network == nil || (home != nil && !deviceNetworkContains(home, row.IP))) {
+			row.EnableProblem = "devices_outside_home"
+		}
 	}
-	return model.ModeOff
+	return row
+}
+
+// deviceNetwork follows the compiler's first matching CIDR for a known
+// address. MAC-only rows use the usual Home policy until an address is known.
+func deviceNetwork(ip netip.Addr, networks []model.Network, home *model.Network) *model.Network {
+	if !ip.IsValid() {
+		return home
+	}
+	for i := range networks {
+		if deviceNetworkContains(&networks[i], ip) {
+			return &networks[i]
+		}
+	}
+	return nil
+}
+
+func deviceNetworkContains(network *model.Network, ip netip.Addr) bool {
+	prefix, err := netip.ParsePrefix(network.CIDR)
+	return err == nil && prefix.Contains(ip)
 }
 
 func compareDevices(a, b deviceRow) int {

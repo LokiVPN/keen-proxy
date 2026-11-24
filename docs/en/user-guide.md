@@ -191,7 +191,7 @@ See [Country rules](routing.md#country-rules) for an illustrated setup, country 
 
 Open **Devices**. The list includes devices discovered on the LAN and saved devices that are offline. A manually assigned name takes priority over a discovered name. You can identify an unnamed device by its MAC address.
 
-Turn on **VPN** for a device to use the selected routing rules. Turn it off to bypass KeenProxy interception. **Enable for all** and **Disable for all** set the switches for every listed device. A device configured for a full tunnel keeps that mode until you edit its switch or use a bulk action.
+Turn on **VPN** for a device to use the selected routing rules. Turn it off to bypass KeenProxy interception. **Enable for all** skips devices without a VPN target and shows how many it skipped. **Disable for all** switches off every listed device. A device using a full tunnel, including one that inherits it from its network, keeps that mode until you edit its switch or a bulk action changes it.
 
 **New devices use the VPN right away** sets the default for the home network. When you select **Save**, KeenProxy records the displayed switches so listed devices keep their chosen states when the default changes. If validation rejects a change, read the error on the Devices page and correct the settings before saving again.
 

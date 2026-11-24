@@ -35,7 +35,8 @@
   document.addEventListener("reset", clearDirty);
   document.addEventListener("submit", (event) => {
     const button = event.submitter;
-    if (button?.matches("[data-device-bulk]")) {
+    // The server stages constrained rows and reports how many it skipped.
+    if (button?.matches("[data-device-bulk]") && !event.target.querySelector("[data-device-constrained]")) {
       event.preventDefault();
       for (const control of event.target.querySelectorAll("[data-device-switch]")) {
         control.name = "split";

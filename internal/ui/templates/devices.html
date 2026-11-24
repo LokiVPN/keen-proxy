@@ -17,23 +17,25 @@
             <span class="muted" aria-hidden="true">·</span>
             <button class="linkbtn" type="submit" name="bulk" value="off" data-device-bulk>{{.Text.devices_disable_all}}</button>
           </div>
+          {{if .Devices.Skipped}}<p class="note" role="status">{{printf .Text.devices_bulk_skipped .Devices.Skipped}}</p>{{end}}
           <table class="tbl devices-table">
             <thead><tr><th scope="col">{{.Text.devices_device}}</th><th scope="col" class="c-ip">{{.Text.devices_ip}}</th><th scope="col" class="c-tg">VPN</th></tr></thead>
             <tbody>
               {{range .Devices.Rows}}
               {{$name := .Name}}{{if not $name}}{{$name = $.Text.devices_unnamed}}{{end}}
-              <tr>
+              <tr{{if or .EnableProblem .Keep}} data-device-constrained{{end}}>
                 <td>
                   <span class="clip" title="{{$name}}">{{$name}}</span>
                   {{if not .Name}}<span class="device-detail muted small">MAC {{.MAC}}</span>{{end}}
                   {{if eq .Mode "full"}}<span class="device-detail muted small device-full-note">{{$.Text.devices_full}}</span>{{end}}
+                  {{if .EnableProblem}}<span class="device-detail muted small" id="device-note-{{.MAC}}">{{index $.Text .EnableProblem}}</span>{{end}}
                   {{if .IP.IsValid}}<span class="dev-ip muted small">{{.IP}}</span>{{end}}
                 </td>
                 <td class="c-ip">{{if .IP.IsValid}}{{.IP}}{{else}}<span class="muted">—</span>{{end}}</td>
                 <td class="c-tg">
-                  <input type="hidden" name="device" value="{{.MAC}}">
+                  <input type="hidden" name="{{if .Keep}}keep{{else}}device{{end}}" value="{{.MAC}}">
                   <label class="tg">
-                    <input type="checkbox" role="switch" name="{{if eq .Mode "full"}}full{{else}}split{{end}}" value="{{.MAC}}"{{if ne .Mode "off"}} checked{{end}} aria-label="{{$name}}{{if not .Name}} ({{.MAC}}){{end}}" data-device-switch>
+                    <input type="checkbox" role="switch" name="{{if eq .Mode "full"}}full{{else}}split{{end}}" value="{{.MAC}}"{{if ne .Mode "off"}} checked{{end}} aria-label="{{$name}}{{if not .Name}} ({{.MAC}}){{end}}"{{if .EnableProblem}} aria-describedby="device-note-{{.MAC}}"{{end}}{{if or .Keep (and .EnableProblem (eq .Mode "off"))}} disabled{{end}} data-device-switch>
                     <span class="tg-track" aria-hidden="true"></span>
                   </label>
                 </td>

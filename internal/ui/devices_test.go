@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/netip"
@@ -13,6 +14,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
@@ -73,6 +75,51 @@ func TestDevicesSavePinsInheritedModesAndPreservesClientFields(t *testing.T) {
 		!slices.Contains(reloaded["split"], deviceTVMAC) || reloaded.Get("full") != deviceFullMAC {
 		t.Fatalf("persisted switches: %v", reloaded)
 	}
+}
+
+func TestDevicesKeepsInheritedFullRouteWhenHomeTurnsOff(t *testing.T) {
+	const mac, ip, fullSet = "02:00:00:00:00:25", "192.0.2.25", "clients-full-manual"
+	f := newDevicesFixture(t)
+	f.cfg.Clients = nil
+	home := &f.cfg.Networks[0]
+	home.Mode, home.Target, home.Default = model.ModeFull, "manual", ""
+	f.discovered = []DiscoveredDevice{{MAC: mac, IP: ip, Name: "Laptop"}}
+	h := New(f, setupTestOptions(RoleManage))
+	page := setupRequest(h, "/devices", nil)
+	form := readDevicesForm(t, page.Body.String())
+	form.Del("new")
+	if w := setupRequest(h, "/devices", form); w.Code != http.StatusSeeOther || f.applies != 1 {
+		t.Fatalf("Home Save = HTTP %d, Apply calls %d", w.Code, f.applies)
+	}
+	if f.cfg.Networks[0].Mode != model.ModeOff || f.cfg.Networks[0].Target != "manual" ||
+		!slices.Equal(f.cfg.Clients, []model.Client{{MAC: mac, Mode: model.ModeFull}}) {
+		t.Errorf("Home is %+v, saved laptop is %+v", f.cfg.Networks[0], f.cfg.Clients)
+	}
+	assertContains(t, page.Body.String(), "Full tunnel")
+	compiled, err := compile.Compile(compile.Input{
+		Config: f.Config(), Neighbors: map[string]netip.Addr{mac: netip.MustParseAddr(ip)}, RuleSetDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var engine struct {
+		Route struct {
+			Rules []struct {
+				RuleSet  []string `json:"rule_set"`
+				Outbound string   `json:"outbound"`
+			} `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(compiled.SingBox, &engine); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range engine.Route.Rules {
+		if slices.Equal(rule.RuleSet, []string{fullSet}) && rule.Outbound == "manual" &&
+			strings.Contains(string(compiled.RuleSets[fullSet+".json"]), `"`+ip+`/32"`) {
+			return
+		}
+	}
+	t.Error("saved laptop no longer matches the full-tunnel rule for the manual outbound")
 }
 
 func TestDevicesBulkStagesAllListedModesUntilSave(t *testing.T) {
@@ -136,18 +183,18 @@ func TestDevicesRejectsInvalidSplitMode(t *testing.T) {
 		name    string
 		prepare func(*model.Config)
 		change  func(url.Values)
-		label   string
+		want    []string
 	}{
 		{
 			"targetless Home", func(cfg *model.Config) {
 				cfg.Clients = nil
 				cfg.Networks[0].Mode, cfg.Networks[0].Target, cfg.Networks[0].Default = model.ModeOff, "", ""
-			}, func(form url.Values) { form.Set("new", "1") }, `networks[0]`,
+			}, func(form url.Values) { form.Set("new", "1") }, []string{`networks[0]`, "split mode needs a target"},
 		},
 		{
 			"static address outside any network", func(cfg *model.Config) {
 				cfg.Clients[1].IP, cfg.Clients[1].Target = "203.0.113.12", ""
-			}, func(form url.Values) { form.Add("split", deviceTVMAC) }, `clients[1]`,
+			}, func(form url.Values) { form.Add("split", deviceTVMAC) }, []string{"Outside the home network"},
 		},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -164,8 +211,111 @@ func TestDevicesRejectsInvalidSplitMode(t *testing.T) {
 			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(before, f.Config()) {
 				t.Fatalf("invalid split = HTTP %d, Apply calls %d", w.Code, f.applies)
 			}
-			assertContains(t, w.Body.String(), scenario.label, "split mode needs a target")
+			assertContains(t, w.Body.String(), scenario.want...)
 		})
+	}
+}
+
+func TestDevicesRefusesSplitWithoutAnObservedNetworkTarget(t *testing.T) {
+	const mac = "02:00:00:00:00:25"
+	for _, tc := range []struct {
+		name, seenIP, submittedIP string
+		first                     *model.Network
+		want                      string
+	}{
+		{"outside Home", "203.0.113.25", "203.0.113.25", nil, "Outside the home network"},
+		{"moved after GET", "192.0.2.25", "203.0.113.25", nil, "Outside the home network"},
+		{"in a guest network without a target", "198.51.100.25", "198.51.100.25",
+			&model.Network{Name: "Isolated", CIDR: "198.51.100.0/24", Mode: model.ModeOff}, "Outside the home network"},
+		{"first matching network has no target", "192.0.2.25", "192.0.2.25",
+			&model.Network{Name: "Isolated", CIDR: "192.0.2.0/25", Mode: model.ModeOff}, "No VPN target for this device"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDevicesFixture(t)
+			f.cfg.Clients = nil
+			if tc.first != nil {
+				f.cfg.Networks = append([]model.Network{*tc.first}, f.cfg.Networks...)
+			}
+			f.discovered = []DiscoveredDevice{{MAC: mac, IP: tc.seenIP, Name: "Laptop"}}
+			before := f.Config()
+			h := New(f, setupTestOptions(RoleManage))
+			page := setupRequest(h, "/devices", nil)
+			form := readDevicesForm(t, page.Body.String())
+			form.Set("split", mac)
+			f.discovered[0].IP = tc.submittedIP
+			w := setupRequest(h, "/devices", form)
+			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(before, f.Config()) {
+				t.Fatalf("outside device Save = HTTP %d, Apply calls %d", w.Code, f.applies)
+			}
+			assertContains(t, w.Body.String(), "Laptop", tc.want)
+			if tc.seenIP == tc.submittedIP {
+				assertContains(t, page.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestDevicesEnableAllSkipsOutsideHomeWithoutAddingAClient(t *testing.T) {
+	const inside, outside = "02:00:00:00:00:25", "02:00:00:00:00:26"
+	f := newDevicesFixture(t)
+	f.cfg.Clients = nil
+	f.cfg.Networks[0].Mode = model.ModeOff
+	f.discovered = []DiscoveredDevice{
+		{MAC: inside, IP: "192.0.2.25", Name: "Laptop"},
+		{MAC: outside, IP: "203.0.113.26", Name: "Outside laptop"},
+	}
+	h := New(f, setupTestOptions(RoleManage))
+	form := readDevicesForm(t, setupRequest(h, "/devices", nil).Body.String())
+	form.Set("bulk", "split")
+	w := setupRequest(h, "/devices", form)
+	if w.Code != http.StatusOK || f.applies != 0 {
+		t.Fatalf("Enable for all draft = HTTP %d, Apply calls %d", w.Code, f.applies)
+	}
+	assertContains(t, w.Body.String(), "Skipped devices without a VPN target (1).")
+	staged := readDevicesForm(t, w.Body.String())
+	if !slices.Equal(staged["split"], []string{inside}) {
+		t.Fatalf("Enable for all staged %v", staged["split"])
+	}
+	f.discovered = f.discovered[:1] // The skipped row may vanish before Save.
+	if w := setupRequest(h, "/devices", staged); w.Code != http.StatusSeeOther || f.applies != 1 {
+		t.Fatalf("bulk Save = HTTP %d, Apply calls %d", w.Code, f.applies)
+	}
+	if f.cfg.Networks[0].Mode != model.ModeOff || !slices.Equal(f.cfg.Clients, []model.Client{{MAC: inside, Mode: model.ModeSplit}}) {
+		t.Fatalf("bulk Save wrote skipped or observed fields: %+v", f.cfg.Clients)
+	}
+}
+
+func TestDevicesCanEnableOutsideClientWithAnExistingTarget(t *testing.T) {
+	f := newDevicesFixture(t)
+	client := &f.cfg.Clients[1]
+	client.IP = "203.0.113.25"
+	want := *client
+	want.Mode = model.ModeSplit
+	h := New(f, setupTestOptions(RoleManage))
+	form := readDevicesForm(t, setupRequest(h, "/devices", nil).Body.String())
+	form.Add("split", deviceTVMAC)
+	if w := setupRequest(h, "/devices", form); w.Code != http.StatusSeeOther || f.cfg.Clients[1] != want {
+		t.Fatalf("existing manual target Save = HTTP %d and client %+v", w.Code, f.cfg.Clients[1])
+	}
+}
+
+func TestDevicesHomeChangeCannotEnableASkippedDevice(t *testing.T) {
+	f := newDevicesFixture(t)
+	f.cfg.Clients = nil
+	f.cfg.ProviderRules.Off = true
+	f.cfg.Networks[0].Mode, f.cfg.Networks[0].Target, f.cfg.Networks[0].Default = model.ModeOff, "", ""
+	f.discovered = []DiscoveredDevice{{MAC: deviceHomeMAC, IP: "192.0.2.25", Name: "Laptop"}}
+	h := New(f, setupTestOptions(RoleManage))
+	form := readDevicesForm(t, setupRequest(h, "/devices", nil).Body.String())
+	form.Set("new", "1")
+	form.Set("bulk", "split")
+	staged := setupRequest(h, "/devices", form)
+	if staged.Code != http.StatusOK {
+		t.Fatalf("bulk draft = HTTP %d", staged.Code)
+	}
+	if w := setupRequest(h, "/devices", readDevicesForm(t, staged.Body.String())); w.Code != http.StatusUnprocessableEntity ||
+		f.applies != 0 || f.cfg.Networks[0].Mode != model.ModeOff || len(f.cfg.Clients) != 0 {
+		t.Fatalf("Home change bypassed the skipped switch, HTTP %d, applies %d", w.Code, f.applies)
 	}
 }
 
@@ -303,7 +453,8 @@ func readDevicesForm(t *testing.T, body string) url.Values {
 			}
 		case "input":
 			_, checked := attrs["checked"]
-			if inForm && !disabled && attrs["name"] != "" && (attrs["type"] != "checkbox" || checked) {
+			_, inputDisabled := attrs["disabled"]
+			if inForm && !disabled && !inputDisabled && attrs["name"] != "" && (attrs["type"] != "checkbox" || checked) {
 				form.Add(attrs["name"], attrs["value"])
 			}
 		}
