@@ -210,6 +210,117 @@ func TestApplyReclassifiesCachedProviderNames(t *testing.T) {
 	}
 }
 
+// restoreHookRunner delivers a device answer while Apply is installing the
+// candidate's firewall rules. The next restore can then succeed or fail.
+type restoreHookRunner struct {
+	gateRunner
+	beforeRestore func() error
+}
+
+func (r *restoreHookRunner) Run(ctx context.Context, input, name string, args ...string) error {
+	if name == "iptables-restore" && r.beforeRestore != nil {
+		hook := r.beforeRestore
+		r.beforeRestore = nil
+		if err := hook(); err != nil {
+			return err
+		}
+	}
+	return r.gateRunner.Run(ctx, input, name, args...)
+}
+
+func TestDNSCacheEvictionFollowsPublishedOwnLists(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rollback bool
+	}{
+		{name: "promotion during firewall installation"},
+		{name: "restored list before flush", rollback: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, cfg, _ := newRulesTestDaemon(t)
+			runner := &restoreHookRunner{}
+			d.opt.Firewall.Run = runner
+			now := time.Now()
+			d.domains = domaincache.New(func() time.Time { return now })
+			own := model.Group{Name: "Own", Target: model.TargetDirect, Entries: []string{"selected.direct.example"}}
+			if tc.rollback {
+				cfg.Groups = append(cfg.Groups, own)
+			}
+			if err := d.Apply(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			const name, newest = "www.selected.direct.example.", "new.direct.example."
+			observe := func(name string, ip net.IP) {
+				now = now.Add(time.Millisecond)
+				d.observeDomain(name, answerA(name, 300, ip))
+			}
+			fill := func() {
+				for i := range fullCache {
+					observe(fmt.Sprintf("n%d.direct.example.", i), net.IPv4(10, 0, byte(i>>8), byte(i)))
+				}
+			}
+			observe(name, net.IPv4(203, 0, 113, 1))
+			next := cfg.Clone()
+			compete := func() { observe(newest, net.IPv4(203, 0, 113, 2)) }
+			want := "203.0.113.1"
+			var wantErr error
+			if tc.rollback {
+				want = "203.0.113.3"
+				wantErr = errors.New("synthetic firewall install failure")
+				next.Groups = next.Groups[:len(next.Groups)-1]
+				runner.beforeRestore = func() error {
+					observe(name, net.ParseIP(want))
+					fill()
+					return wantErr
+				}
+			} else {
+				fill()
+				next.Groups = append(next.Groups, own)
+				runner.beforeRestore = func() error {
+					compete()
+					return nil
+				}
+			}
+			if err := d.Apply(t.Context(), next); !errors.Is(err, wantErr) {
+				t.Fatalf("Apply returned %v, want %v", err, wantErr)
+			}
+			if tc.rollback {
+				compete() // the restored matcher is published, and no worker has flushed
+			}
+
+			d.flushDomains()
+			if !fileHolds(t, dnsSetFile(d, compile.DomainTag(own)), `"`+want+`/32"`) {
+				t.Error("a provider-only answer evicted the own-list subdomain's address")
+			}
+			names := observedNames(d)
+			if !slices.Contains(names, domaincache.Normalize(newest)) || slices.Contains(names, "n0.direct.example") {
+				t.Error("the newest provider answer should replace the oldest provider-only answer")
+			}
+		})
+	}
+}
+
+func TestApplyDropsAddresslessDemotedDomain(t *testing.T) {
+	d, cfg, _ := newRulesTestDaemon(t)
+	now := time.Now()
+	d.domains = domaincache.New(func() time.Time { return now })
+	cfg.Groups = append(cfg.Groups, model.Group{Name: "Own", Target: model.TargetDirect, Entries: []string{"direct.example"}})
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	const name = "www.direct.example"
+	d.observeDomain(name, answerA(dns.Fqdn(name), 5, net.IPv4(203, 0, 113, 1)))
+	now = now.Add(6 * time.Second)
+	next := cfg.Clone()
+	next.Groups = next.Groups[:len(next.Groups)-1]
+	if err := d.Apply(t.Context(), next); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(observedNames(d), name) {
+		t.Fatal("committed demotion kept an addressless provider-only name")
+	}
+}
+
 func TestProviderObservationRefreshesAfterJoiningOwnList(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -230,6 +341,7 @@ func TestProviderObservationRefreshesAfterJoiningOwnList(t *testing.T) {
 			if err := d.Apply(t.Context(), cfg); err != nil {
 				t.Fatal(err)
 			}
+			previous := d.publishedDNSNames()
 			const name = "www.direct.example"
 			answer := answerA(dns.Fqdn(name), tc.ttl, net.IPv4(203, 0, 113, 7))
 			d.observeDomain(name, answer)
@@ -243,8 +355,11 @@ func TestProviderObservationRefreshesAfterJoiningOwnList(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.race {
-				// A DNS goroutine that read the previous names can store its answer after Apply.
-				d.domains.Observe(name, answer, "observed", true)
+				// Deliver an answer that passed the previous matcher's observation check.
+				if !previous.Observed(name) || previous.InGroups(name) {
+					t.Fatal("test needs a provider-only name before Apply")
+				}
+				d.domains.Observe(name, answer, "observed")
 			}
 			if !tc.expiredAtApply {
 				now = now.Add(32 * time.Second)

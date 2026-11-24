@@ -26,12 +26,12 @@ import (
 // rules. Provider names are learned only this way, never resolved by the
 // daemon (see refreshDomainNames), so their records are spare: they give way
 // to own-list records in a full cache and leave once their answers expire.
-// It runs on DNS goroutines without d.mu. A callback holding an older
-// matcher can store an old priority, which the next answer or commit corrects.
+// It runs on DNS goroutines without d.mu. The cache uses its installed
+// matcher even when the decision to observe used an older publication.
 func (d *Daemon) observeDomain(name string, m *dns.Msg) {
 	name = domaincache.Normalize(name)
 	if names := d.publishedDNSNames(); names != nil && names.Observed(name) {
-		d.domains.Observe(name, m, "observed", !names.InGroups(name))
+		d.domains.Observe(name, m, "observed")
 	}
 }
 
@@ -62,26 +62,24 @@ func (d *Daemon) dnsNamesLocked() *compile.DNSNames {
 		return s.names
 	}
 	names := compile.NewDNSNames(d.cfg, d.providerRulesLocked())
-	d.dnsNames.Store(&dnsNamesState{cfg: d.cfg, rules: rules, names: names})
+	state := &dnsNamesState{cfg: d.cfg, rules: rules, names: names}
+	accepted := d.acceptedDNSNames
+	// Keep accepted own names until Apply succeeds, including during rollback.
+	d.domains.SetRetentionPolicy(func(name string) bool {
+		return names.InGroups(name) || (accepted != nil && accepted.InGroups(name))
+	}, func() { d.dnsNames.Store(state) })
 	return names
 }
 
-// commitDomainCacheLocked updates the cache priority after activation.
-// During the next Apply, expiry keeps history for both the last accepted
-// own lists and any own lists published while preparing rule sets.
+// commitDomainCacheLocked keeps only the accepted own lists in the policy
+// after activation, releasing any addressless records demoted by Apply.
 func (d *Daemon) commitDomainCacheLocked() {
 	names := d.publishedDNSNames()
-	if names == nil || d.cacheDNSNames == names {
+	if names == nil || d.acceptedDNSNames == names {
 		return
 	}
-	d.domains.Reclassify(func(name string) bool {
-		if names.InGroups(name) {
-			return false
-		}
-		published := d.publishedDNSNames()
-		return published == names || published == nil || !published.InGroups(name)
-	})
-	d.cacheDNSNames = names
+	d.domains.SetRetentionPolicy(names.InGroups, nil)
+	d.acceptedDNSNames = names
 }
 
 // publishedDNSNames returns the DNS names for readers without d.mu, or nil
@@ -235,7 +233,7 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string) error {
 				cache.SetError(name, "DNS: "+dns.RcodeToString[resp.Rcode])
 				return
 			}
-			cache.Observe(name, resp, "resolved", false)
+			cache.Observe(name, resp, "resolved")
 		}(name)
 	}
 	wg.Wait()
@@ -271,8 +269,7 @@ func (d *Daemon) runDomains(ctx context.Context) {
 			if state == nil || state.cfg != cfg {
 				return
 			}
-			// Current own lists decide which names are eligible, even if an
-			// observation raced publication and used the previous priority.
+			// Schedule only names in the current own lists.
 			records := d.domains.Snapshot(func(r domaincache.Record) bool {
 				return state.names.InGroups(r.Name)
 			})

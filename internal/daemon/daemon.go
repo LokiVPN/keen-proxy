@@ -116,8 +116,8 @@ type Daemon struct {
 	// dnsNames publishes the matcher built during compilation to the DNS
 	// frontend's goroutines, which read it without d.mu.
 	dnsNames atomic.Pointer[dnsNamesState]
-	// cacheDNSNames identifies the last DNS names accepted for cache priority.
-	cacheDNSNames *compile.DNSNames
+	// acceptedDNSNames keeps the accepted own lists through Apply and rollback.
+	acceptedDNSNames *compile.DNSNames
 	// split publishes which devices follow split policies, from the latest
 	// compilation, to the DNS frontend's goroutines. Only compileLocked
 	// stores it.

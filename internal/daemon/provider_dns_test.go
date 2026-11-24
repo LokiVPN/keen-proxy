@@ -264,11 +264,11 @@ func TestProviderDNSNamesBuiltOncePerChange(t *testing.T) {
 // their refresh, also when a provider rule lists them too.
 func TestExpiredProviderAnswersLeaveTheCache(t *testing.T) {
 	d, cfg, _ := newRulesTestDaemon(t)
+	now := time.Now()
+	d.domains = domaincache.New(func() time.Time { return now })
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now()
-	d.domains = domaincache.New(func() time.Time { return now })
 	d.observeDomain("www.direct.example.", dnsAnswer(t, "www.direct.example. 5 IN A 203.0.113.7"))
 	d.observeDomain("cdn.direct.example.", dnsAnswer(t, "cdn.direct.example. 60 IN A 203.0.113.8"))
 	d.observeDomain("www.video.example.", dnsAnswer(t, "www.video.example. 5 IN A 203.0.113.9")) // the Video group

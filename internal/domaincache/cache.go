@@ -32,10 +32,6 @@ type Record struct {
 	Error       string    `json:"error,omitempty"`
 	Source      string    `json:"source"`
 	Limited     bool      `json:"limited,omitempty"`
-	// Spare marks an answer that nobody refreshes, such as one for a provider
-	// name: the record gives way to the others when the cache is full and
-	// leaves once its addresses expire.
-	Spare bool `json:"spare,omitempty"`
 }
 
 // Cache synchronizes a bounded set of DNS observations using an injected clock.
@@ -43,9 +39,9 @@ type Cache struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	records map[string]Record
-	// classifySpare decides whose history follows the address TTL. A record's
-	// eviction priority may come from a DNS callback holding an older matcher.
-	classifySpare func(string) bool
+	// retain identifies own-list names, which keep their history after expiry
+	// and have priority at capacity. A nil policy retains every name.
+	retain func(string) bool
 	// generation changes whenever a name gains or loses an address, so
 	// readers can skip work while it stays the same.
 	generation uint64
@@ -62,28 +58,27 @@ func Normalize(name string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 }
 
-// Reclassify updates eviction priority in one pass and installs the policy
-// for later expiry decisions. isSpare runs under the cache lock and must
-// avoid calling cache methods.
-func (c *Cache) Reclassify(isSpare func(name string) bool) {
+// SetRetentionPolicy installs the matcher for eviction and expiry and removes
+// empty records outside it. It runs the optional publish callback with the
+// same lock held so matcher publication and eviction cannot interleave.
+// retain and publish must avoid calling cache methods.
+func (c *Cache) SetRetentionPolicy(retain func(name string) bool, publish func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.classifySpare = isSpare
+	c.retain = retain
 	for name, r := range c.records {
-		if spare := isSpare(name); spare != r.Spare {
-			r.Spare = spare
-			c.records[name] = r
+		if len(r.Addresses) == 0 && c.spareLocked(name) {
+			delete(c.records, name)
 		}
+	}
+	if publish != nil {
+		publish()
 	}
 }
 
-// spareHistoryLocked uses the current policy when deciding to discard name
-// history, regardless of the priority a DNS callback stored with the answer.
-func (c *Cache) spareHistoryLocked(r Record) bool {
-	if c.classifySpare != nil {
-		return c.classifySpare(r.Name)
-	}
-	return r.Spare
+// spareLocked identifies names outside the installed retention policy.
+func (c *Cache) spareLocked(name string) bool {
+	return c.retain != nil && !c.retain(name)
 }
 
 // put stores r; the caller holds mu. A new name at the limit first evicts
@@ -94,13 +89,20 @@ func (c *Cache) put(r Record) {
 	old, exists := c.records[r.Name]
 	if !exists && len(c.records) >= maxNames {
 		var victim string
-		var oldest Record
+		var oldest time.Time
+		var victimSpare bool
 		for name, v := range c.records {
-			if victim == "" || (v.Spare && !oldest.Spare) || (v.Spare == oldest.Spare && v.AttemptedAt.Before(oldest.AttemptedAt)) {
-				victim, oldest = name, v
+			earlier := victim == "" || v.AttemptedAt.Before(oldest)
+			// Only an older spare can replace a spare victim.
+			if victimSpare && !earlier {
+				continue
+			}
+			spare := c.spareLocked(name)
+			if (spare && !victimSpare) || (spare == victimSpare && earlier) {
+				victim, oldest, victimSpare = name, v.AttemptedAt, spare
 			}
 		}
-		if r.Spare && !oldest.Spare {
+		if !victimSpare && c.spareLocked(r.Name) {
 			return
 		}
 		c.removeLocked(victim)
@@ -138,9 +140,8 @@ func earliestExpiry(at time.Time, addrs []Address) time.Time {
 
 // Observe retains only the question's A/CNAME chain, bounded by 32 IPs and the shortest TTL.
 // Only device observations advance ObservedAt; service refreshes preserve it.
-// spare marks the record as one nobody refreshes; a spare answer without an
-// address is not kept.
-func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
+// Answers without addresses retain history only for names covered by the policy.
+func (c *Cache) Observe(name string, m *dns.Msg, source string) {
 	if m == nil || m.Rcode != dns.RcodeSuccess {
 		return
 	}
@@ -149,7 +150,7 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
 		return
 	}
 	now := c.now()
-	r := Record{Name: name, Source: source, CheckedAt: now, AttemptedAt: now, Addresses: []Address{}, Spare: spare}
+	r := Record{Name: name, Source: source, CheckedAt: now, AttemptedAt: now, Addresses: []Address{}}
 	// Follow only the answer chain belonging to the question, regardless of RR order.
 	current := name
 	ttl := uint32(^uint32(0))
@@ -172,7 +173,7 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
 		current = next
 	}
 	if !terminal {
-		c.setError(name, "CNAME chain is cyclic or too long", spare)
+		c.SetError(name, "CNAME chain is cyclic or too long")
 		return
 	}
 	unique := map[string]bool{}
@@ -196,7 +197,7 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
 	slices.SortFunc(r.Addresses, func(a, b Address) int { return strings.Compare(a.IP, b.IP) })
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(r.Addresses) == 0 && c.spareHistoryLocked(r) {
+	if len(r.Addresses) == 0 && c.spareLocked(name) {
 		c.removeLocked(name)
 		return
 	}
@@ -208,17 +209,14 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
 	c.put(r)
 }
 
-// SetError records a failed attempt while retaining still-valid answers.
+// SetError records a failed attempt for a cached or retained name while
+// preserving its still-valid answers.
 func (c *Cache) SetError(name, message string) {
-	c.setError(Normalize(name), message, false)
-}
-
-// setError retains failure history for a spare name only if it already has a record.
-func (c *Cache) setError(name, message string, existingOnly bool) {
+	name = Normalize(name)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r, exists := c.records[name]
-	if existingOnly && !exists {
+	if !exists && c.spareLocked(name) {
 		return
 	}
 	r.Name = name
@@ -248,7 +246,7 @@ func (c *Cache) pruneLocked() {
 					live = append(live, a)
 				}
 			}
-			if len(live) == 0 && c.spareHistoryLocked(r) {
+			if len(live) == 0 && c.spareLocked(name) {
 				delete(c.records, name)
 				continue
 			}
