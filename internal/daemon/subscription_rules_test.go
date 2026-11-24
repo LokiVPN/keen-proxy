@@ -224,6 +224,7 @@ func refreshProviderRules(t *testing.T, d *Daemon, check func(SubscriptionStatus
 
 func TestProviderRulesAppliedAndRestoredWithoutProvider(t *testing.T) {
 	d, cfg, p := newRulesTestDaemon(t)
+	cfg.Subscriptions[0].SendHWID = true
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -238,6 +239,7 @@ func TestProviderRulesAppliedAndRestoredWithoutProvider(t *testing.T) {
 	p.Close()
 	d.shutdown()
 	reopened := New(d.opt)
+	reopened.subscriptions.fetcher = d.subscriptions.fetcher
 	t.Cleanup(reopened.shutdown)
 	if _, err := reopened.startLocked(t.Context()); err != nil {
 		t.Fatal(err)

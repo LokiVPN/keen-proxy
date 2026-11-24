@@ -100,6 +100,66 @@ func TestRoutingHTMLRedactsProviderRuleKeysAndLabels(t *testing.T) {
 	}
 }
 
+func TestRoutingClassifiesManagedTargetsThroughCompiledReserves(t *testing.T) {
+	for _, tc := range []struct {
+		name, node, reserve, chainFallback, label string
+		class                                     stats.TargetClass
+	}{
+		{"VPN reserve", "auto", "reserve", "", "All traffic through VPN", stats.TargetVPN},
+		{"missing pin with mixed reserve", strings.Repeat("a", 32), "reserve", model.TargetDirect, "All traffic through VPN", stats.TargetMixed},
+		{"direct reserve", "auto", model.TargetDirect, "", "The main connection for the home network routes directly.", stats.TargetDirect},
+		{"blocking without reserve", "auto", "", "", "The main connection blocks traffic.", stats.TargetBlock},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := model.ManagedTarget("fixture", tc.node)
+			cfg := &model.Config{
+				Failover: model.Failover{URL: "http://127.0.0.1:1/probe"},
+				Subscriptions: []subscription.Source{
+					{ID: "fixture", URL: "https://127.0.0.1:1/catalog", Fallback: tc.reserve},
+				},
+				Connections: []model.Connection{
+					{ID: "reserve", Type: model.ConnLink, Link: "socks5://127.0.0.1:1", Fallback: tc.chainFallback},
+				},
+				Networks: []model.Network{
+					{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeSplit, Target: target, Default: model.TargetDirect},
+				},
+			}
+			cfg.Defaults()
+			saved, err := cfg.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, path := writeConfigFile(t, string(saved))
+			d := startDaemon(t, path, cfg)
+			deps := uiDeps{daemon: d}
+			if subs := deps.Subscriptions(); len(subs) != 1 || len(subs[0].Nodes) != 0 {
+				t.Fatal("the adapter fixture must start with an empty catalog")
+			}
+			if class := deps.OverviewStatus().Connections[target].Class; class != tc.class {
+				t.Errorf("managed target class = %v, want %v", class, tc.class)
+			}
+			page := ui.New(deps, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+			get := httptest.NewRecorder()
+			page.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/routing", nil))
+			if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), tc.label) {
+				t.Errorf("routing page HTTP %d, missing reserve copy %q", get.Code, tc.label)
+			}
+			form := url.Values{"rev": {ui.Revision(d.Config())}, "mode": {"all"}}
+			request := httptest.NewRequest(http.MethodPost, "/routing", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			response := httptest.NewRecorder()
+			page.ServeHTTP(response, request)
+			wantCode, wantDefault := http.StatusUnprocessableEntity, model.TargetDirect
+			if tc.class == stats.TargetVPN || tc.class == stats.TargetMixed {
+				wantCode, wantDefault = http.StatusSeeOther, target
+			}
+			if response.Code != wantCode || d.Config().Networks[0].Default != wantDefault {
+				t.Errorf("routing POST HTTP %d, want %d and default %q", response.Code, wantCode, wantDefault)
+			}
+		})
+	}
+}
+
 type routingRoundTrip func(*http.Request) (*http.Response, error)
 
 func (run routingRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return run(r) }

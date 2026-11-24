@@ -59,17 +59,23 @@ func (f *Fetcher) Transport() http.RoundTripper { return f.transport }
 // restored metadata and names. Legacy links cannot use the same-origin
 // account exception because their original redirect paths are unavailable.
 // It returns the same display protection for legacy routing categories.
+// A nil result means the caller must omit the cached provider text.
 // Restoring a snapshot never creates an installation identity.
-func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nodes []Node, linksChecked bool) func(string) string {
+func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nodes []Node, linksChecked bool, fingerprint string) func(string) string {
 	u, origin, err := parseSource(source)
 	if err != nil {
-		return func(entry string) string { return entry } // Snapshots require a validated source.
+		return nil
 	}
 	sensitive := sourceDisplayRedactor(u)
 	sensitive.blockSameHostLinks = !linksChecked
 	if source.SendHWID {
-		if secret, err := readIdentity(f.identityPath); err == nil {
-			sensitive.hwid = deriveOriginHWID(secret, origin)
+		secret, err := readIdentity(f.identityPath)
+		if err != nil {
+			return nil
+		}
+		sensitive.hwid = deriveOriginHWID(secret, origin)
+		if hwidFingerprint(sensitive.hwid) != fingerprint {
+			return nil
 		}
 	}
 	metadata.Title = displayText(metadata.Title, titleLimit, sensitive)
@@ -143,7 +149,9 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 		return failure(StateNetworkError, "Could not download the subscription")
 	}
 	defer resp.Body.Close()
-	return readResponse(ctx, resp, sensitive)
+	result := readResponse(ctx, resp, sensitive)
+	result.HWIDFingerprint = hwidFingerprint(sensitive.hwid)
+	return result
 }
 
 func readResponse(ctx context.Context, resp *http.Response, sensitive displayRedactor) Result {

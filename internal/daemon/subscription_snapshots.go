@@ -27,6 +27,8 @@ type subscriptionSnapshot struct {
 	Selection   subscriptionSelection `json:"selection"`
 	// LinksChecked records a fetch that filtered metadata links against its redirect paths.
 	LinksChecked bool `json:"links_checked,omitempty"`
+	// HWIDFingerprint binds the catalog's provider text to its redaction context.
+	HWIDFingerprint string `json:"hwid_fingerprint,omitempty"`
 	// RulesWithheld is observed during refresh independently of rule evaluation.
 	RulesWithheld bool `json:"rules_withheld,omitempty"`
 	// Rules exists only for the source named by provider_rules.
@@ -93,21 +95,8 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 		default:
 			nodes, skipped := supportedSubscriptionNodes(ctx, snapshot.Nodes)
 			if len(nodes) > 0 {
-				displayCategory := d.subscriptions.fetcher.SanitizeSnapshotDisplay(source, &snapshot.Metadata, nodes, snapshot.LinksChecked)
 				snapshot.Nodes, snapshot.Skipped = nodes, snapshot.Skipped+skipped
-				// Older snapshots only recorded withholding on the evaluated source.
-				if snapshot.Rules.state() == ProviderRulesWithheld {
-					snapshot.RulesWithheld = true
-				}
-				if snapshot.Rules != nil && snapshot.Rules.Built != nil {
-					rules := snapshot.Rules
-					for i := range rules.Built.Rules {
-						rule := &rules.Built.Rules[i]
-						ref := rule.Reference()
-						rule.ProtectCategory(rules.Profile.RestoreCategoryDisplay(ref, displayCategory(ref)))
-					}
-					rules.Built.MarkUnusableRules()
-				}
+				d.restoreSnapshotDisplay(source, &snapshot)
 				state.snapshot = snapshot
 				state.recordAttempt(subscriptionAttempt{at: snapshot.LastSuccess, result: subscription.Result{
 					State: subscription.StateReady,
@@ -118,6 +107,44 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 		states[source.ID] = state
 	}
 	d.subscriptions.states = states
+}
+
+// restoreSnapshotDisplay keeps dial data when the catalog's display context is
+// unverified. Rules need a verified context of their own before activation.
+func (d *Daemon) restoreSnapshotDisplay(source subscription.Source, snapshot *subscriptionSnapshot) {
+	displayCategory := d.subscriptions.fetcher.SanitizeSnapshotDisplay(
+		source, &snapshot.Metadata, snapshot.Nodes, snapshot.LinksChecked, snapshot.HWIDFingerprint)
+	if displayCategory == nil {
+		snapshot.Metadata = subscription.Metadata{
+			Usage: snapshot.Metadata.Usage, UpdateIntervalHours: snapshot.Metadata.UpdateIntervalHours,
+		}
+		for i := range snapshot.Nodes {
+			snapshot.Nodes[i].Name = ""
+		}
+		snapshot.Rules, snapshot.RulesWithheld = nil, false
+		return
+	}
+	rules := snapshot.Rules
+	if rules == nil {
+		return
+	}
+	if rules.HWIDFingerprint != snapshot.HWIDFingerprint {
+		snapshot.Rules, snapshot.RulesWithheld = nil, false
+		return
+	}
+	// Older snapshots only recorded withholding on the evaluated source.
+	if rules.state() == ProviderRulesWithheld {
+		snapshot.RulesWithheld = true
+	}
+	if rules.Built == nil {
+		return
+	}
+	for i := range rules.Built.Rules {
+		rule := &rules.Built.Rules[i]
+		ref := rule.Reference()
+		rule.ProtectCategory(rules.Profile.RestoreCategoryDisplay(ref, displayCategory(ref)))
+	}
+	rules.Built.MarkUnusableRules()
 }
 
 // validSnapshotNodeIDs prevents a corrupted private file from rebinding a pin.

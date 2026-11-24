@@ -116,6 +116,32 @@ func TestRoutingRejectsTheSameEntryInBothLists(t *testing.T) {
 	}
 }
 
+func TestRoutingModeSaveIgnoresOverlapsInReadOnlyLists(t *testing.T) {
+	for _, name := range []string{"disabled lists", "advanced list", "main routes directly"} {
+		t.Run(name, func(t *testing.T) {
+			f := newRoutingFixture()
+			f.cfg.Groups[0].Entries = []string{"shared.example"}
+			f.cfg.Groups[1].Entries = []string{"*.SHARED.example."}
+			switch name {
+			case "disabled lists":
+				f.cfg.Groups[0].Disabled, f.cfg.Groups[1].Disabled = true, true
+			case "advanced list":
+				f.cfg.Groups[0].Target = "old"
+			case "main routes directly":
+				f.status.Connections[f.cfg.Networks[0].Target] = ConnectionStatus{Class: stats.TargetDirect}
+			}
+			want := f.Config()
+			want.ProviderRules.Off = true
+			want.Networks[0].Default = model.TargetDirect
+			h := New(f, setupTestOptions(RoleManage))
+			w := setupRequest(h, "/routing", url.Values{"rev": {Revision(f.Config())}, "mode": {"own"}})
+			if w.Code != http.StatusSeeOther || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
+				t.Fatalf("mode-only save returned HTTP %d with %d applies", w.Code, f.applies)
+			}
+		})
+	}
+}
+
 func TestRoutingCreatesOwnGroupsAndSelectsTheMainSubscription(t *testing.T) {
 	f := newRoutingFixture()
 	f.cfg.ProviderRules = nil

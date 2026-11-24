@@ -10,7 +10,7 @@ Choose how the home split policy handles traffic and select **Save** to apply th
 - **All traffic through VPN** uses the main connection for unmatched traffic. Add exceptions under **Always direct**.
 - **Only my sites** sends unmatched traffic directly. Enter sites for the main connection under **Always through VPN**.
 
-Both lists are visible in every mode. Enter one domain, IP address, or subnet per line. Domains include their subdomains. Each entry can belong to one list. Your lists take priority over provider rules. A line error or an entry in both lists stops the save. Rules you switched off stay off when you return to the subscription mode. A direct or blocking main connection makes the VPN option unavailable. Groups with advanced settings are read-only on this tab. Additional configured groups keep their existing routes and ordering, and device policies continue to decide which devices use the routing settings.
+Both lists are visible in every mode. Enter one domain, IP address, or subnet per line. Domains include their subdomains. Your lists take priority over provider rules. A line error or the same entry in both editable lists stops the save. Groups with advanced settings are read-only on this tab and their entries don't count toward that check. Rules you switched off stay off when you return to the subscription mode. A direct or blocking main connection makes the VPN option unavailable. If a subscription has no nodes for the selected target, the option follows the [reserve](#subscription-reserve) used for that target. Additional configured groups keep their existing routes and ordering, and device policies continue to determine which devices use these settings.
 
 ## Policy building blocks
 
@@ -121,7 +121,7 @@ Categories come from the `Geositeurl` and `Geoipurl` data files that the profile
 
 Apply spends at most 20 seconds on these downloads and stops 15 seconds before its own deadline; with less than a second left, it skips them. Rules that lack a data file are installed anyway, and the missing files are downloaded again in the background after 1 minute, then 2, 4 and so on up to 1 hour, without refetching the subscription. Data from an unchanged file is reused for up to one week.
 
-The built rules and the profile they came from are saved with the subscription snapshot in the state directory (private, mode 0600) and restored at start before interception begins. If a refresh fails after complete rules were built, the previous complete rules stay in use and the error is shown; incomplete rules are replaced by a successful attempt. Turning `provider_rules` off frees them.
+The built rules and the profile they came from are saved with the subscription snapshot in the state directory (private, mode 0600) and restored at start before interception begins. For subscriptions that send an HWID, KeenProxy restores cached provider text and rules only when the current installation identity matches the identity used for the fetch. Rules without a match are evaluated again on the next fetch. If a refresh fails after complete rules were built for the same identity, those rules stay in use and the error is shown. A successful attempt replaces incomplete rules. Turning `provider_rules` off frees them.
 
 ## Reserve for a subscription { #subscription-reserve }
 

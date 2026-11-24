@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"slices"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -56,7 +57,7 @@ func (d *Daemon) RoutingStatus() RoutingStatus {
 	for _, network := range d.cfg.Networks {
 		for _, target := range []string{network.Target, network.Default} {
 			if _, _, managed := model.ParseManagedTarget(target); managed {
-				status.TargetClasses[target] = d.eng.TargetClass(target)
+				status.TargetClasses[target] = d.eng.TargetClass(cmp.Or(d.targetAliases[target], target))
 			}
 		}
 	}

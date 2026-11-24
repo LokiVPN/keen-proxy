@@ -58,6 +58,8 @@ type rulesSnapshot struct {
 	Geosite geoFileRecord                `json:"geosite,omitzero"`
 	Geoip   geoFileRecord                `json:"geoip,omitzero"`
 	Error   string                       `json:"error,omitempty"` // fixed English text
+	// HWIDFingerprint tracks the fetch that provided the retained profile.
+	HWIDFingerprint string `json:"hwid_fingerprint,omitempty"`
 }
 
 // geoFileRecord names the geo file whose data the rules hold. Downloaded is
@@ -288,12 +290,15 @@ func (d *Daemon) providerRulesLocked() map[string]compile.ProviderRules {
 // previous is the source's current state: its data is reused for unchanged
 // files, and complete previous rules stay when this attempt fails.
 func (d *Daemon) evaluateProviderRules(ctx context.Context, result subscription.Result, previous *rulesSnapshot) *rulesSnapshot {
+	if previous != nil && previous.HWIDFingerprint != result.HWIDFingerprint {
+		previous = nil
+	}
 	profile := result.Routing
 	if profile == nil {
-		if result.RoutingError == "" {
-			return &rulesSnapshot{} // the provider sends no rules
+		if result.RoutingError != "" && previous != nil {
+			return keptRules(previous, result.RoutingError)
 		}
-		return keptRules(previous, result.RoutingError)
+		return &rulesSnapshot{Error: result.RoutingError, HWIDFingerprint: result.HWIDFingerprint}
 	}
 	var held rulesSnapshot
 	if previous != nil {
@@ -326,7 +331,10 @@ func (d *Daemon) evaluateProviderRules(ctx context.Context, result subscription.
 	rules := compile.BuildProviderRules(profile, sites, ips, d.countryLookup(profile, ipRefs))
 	markUnavailable(&rules, "geosite:", siteFailure)
 	markUnavailable(&rules, "geoip:", ipFailure)
-	return &rulesSnapshot{Built: &rules, Profile: profile, Geosite: siteFile, Geoip: ipFile, Error: failure}
+	return &rulesSnapshot{
+		Built: &rules, Profile: profile, Geosite: siteFile, Geoip: ipFile,
+		Error: failure, HWIDFingerprint: result.HWIDFingerprint,
+	}
 }
 
 // markUnavailable replaces the builder's generic reason on the rules of a geo

@@ -29,6 +29,16 @@ func deriveOriginHWID(secret []byte, origin string) string {
 	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 
+// hwidFingerprint binds a private snapshot to the per-origin HWID sent on
+// its fetch without storing the identifier itself.
+func hwidFingerprint(hwid string) string {
+	if hwid == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte("keenproxy-snapshot-hwid-v1\x00" + hwid))
+	return hex.EncodeToString(digest[:])
+}
+
 func installationSecret(path string) ([]byte, error) {
 	if path == "" {
 		return nil, errors.New("installation identity path is required")

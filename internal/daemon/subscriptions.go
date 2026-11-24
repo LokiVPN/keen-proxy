@@ -520,7 +520,7 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 			// an older snapshot. Keep that success if the lookup failed.
 			current := state.snapshot.Rules
 			if !replaced && candidate.rules != nil && candidate.rules.Error != "" &&
-				current != candidate.rulesBase && current.complete() {
+				current != candidate.rulesBase && current.complete() && current.HWIDFingerprint == candidate.result.HWIDFingerprint {
 				// A different profile's failure remains relevant to this check.
 				if !reflect.DeepEqual(current.Profile, candidate.result.Routing) {
 					current = keptRules(current, candidate.rules.Error)
@@ -626,7 +626,9 @@ func (d *Daemon) runSubscriptions(ctx context.Context) {
 // d.mu and the result is committed under it.
 func (d *Daemon) runSubscriptionRequest(ctx context.Context, request *subscriptionRefresh) {
 	if request.rulesOnly {
-		rules := d.evaluateProviderRules(ctx, subscription.Result{Routing: request.previous.Profile}, request.previous)
+		rules := d.evaluateProviderRules(ctx, subscription.Result{
+			Routing: request.previous.Profile, HWIDFingerprint: request.previous.HWIDFingerprint,
+		}, request.previous)
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		if d.applyAdmissionLocked(ctx) == nil {
@@ -813,6 +815,7 @@ func (s *appliedSubscription) accept(attempt subscriptionAttempt) {
 	s.snapshot.Nodes = result.Nodes
 	s.snapshot.Metadata = result.Metadata
 	s.snapshot.LinksChecked = true
+	s.snapshot.HWIDFingerprint = result.HWIDFingerprint
 	s.snapshot.RulesWithheld = result.Routing == nil && result.RoutingError == ""
 	s.snapshot.Skipped = result.Skipped
 	s.snapshot.LastSuccess = attempt.at

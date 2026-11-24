@@ -57,6 +57,8 @@ type Output struct {
 	ServerHosts map[string]string
 	// Failover describes chains the daemon probes and switches through selectors.
 	Failover []FailoverChain
+	// TargetAliases maps configured targets to their compiled outbound tags.
+	TargetAliases map[string]string
 	// SubscriptionSelectors retain provider priority for the daemon's selection policy.
 	SubscriptionSelectors []SubscriptionSelector
 	// SubscriptionBalances lists targets whose eligibility is supplied by the daemon.
@@ -185,6 +187,7 @@ func Compile(in Input) (Output, error) {
 		Categories:             geo.categories,
 		ServerHosts:            conns.hosts,
 		Failover:               chains,
+		TargetAliases:          tags,
 		SubscriptionSelectors:  managed.selectors,
 		SubscriptionBalances:   managed.balances,
 		SubscriptionOutbounds:  managed.nodeTags,

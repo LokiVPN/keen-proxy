@@ -110,7 +110,9 @@ type Daemon struct {
 	firewallWake chan struct{}
 	// serverHosts maps connection IDs to server hosts from the latest compilation.
 	serverHosts map[string]string
-	journals    journal.Set
+	// targetAliases records the route aliases installed with the running core.
+	targetAliases map[string]string
+	journals      journal.Set
 	// live publishes the current configuration to route logging without d.mu.
 	live atomic.Pointer[model.Config]
 	// dnsNames publishes the matcher built during compilation to the DNS
@@ -947,6 +949,7 @@ func (d *Daemon) applyCoreLocked(out compile.Output) (bool, error) {
 	if err := d.restoreSubscriptionSelectorsLocked(out, restarted, time.Now()); err != nil {
 		return restarted, err
 	}
+	d.targetAliases = out.TargetAliases
 	d.reselectLocked()
 	return restarted, nil
 }

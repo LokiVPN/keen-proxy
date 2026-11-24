@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
@@ -75,6 +77,93 @@ func TestOverviewRedactsLegacySubscriptionSnapshot(t *testing.T) {
 	}
 	if strings.Contains(page, "synthetic-token") || strings.Contains(page, "legacy-private-path") || provider.requests.Load() != 1 {
 		t.Error("view overview exposed a cached credential or fetched the provider again")
+	}
+}
+
+func TestRoutingHidesLegacyRulesWithoutVerifiedHWID(t *testing.T) {
+	source := subscription.Source{ID: "sample", URL: "https://fixture.example/catalog", SendHWID: true}
+	var hwid string
+	transport := diagnosticTransport(func(req *http.Request) (*http.Response, error) {
+		hwid = req.Header.Get("X-HWID")
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(subscriptionFirst)),
+		}, nil
+	})
+	original := filepath.Join(t.TempDir(), "identity")
+	result := subscription.NewFetcher(original, transport).Fetch(t.Context(), source)
+	if result.State != subscription.StateReady || hwid == "" {
+		t.Fatal("fixture did not produce a catalog with an HWID")
+	}
+	ref := "geosite:archived-device-" + hwid
+	result.Nodes[0].Name = "Archived node " + hwid
+	if result.HWIDFingerprint == "" || strings.Contains(result.HWIDFingerprint, hwid) {
+		t.Fatal("fetch did not provide an opaque identity fingerprint")
+	}
+	for _, name := range []string{"missing", "different", "legacy without proof", "rules from another identity"} {
+		t.Run(name, func(t *testing.T) {
+			d := newOverviewTestDaemon(t, source)
+			identity := filepath.Join(t.TempDir(), "identity")
+			catalogFingerprint, rulesFingerprint := result.HWIDFingerprint, result.HWIDFingerprint
+			var title, nodeName string
+			switch name {
+			case "different":
+				if err := os.WriteFile(identity, []byte(strings.Repeat("b", 32)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "legacy without proof":
+				identity = original
+				catalogFingerprint, rulesFingerprint = "", ""
+			case "rules from another identity":
+				identity = original
+				rulesFingerprint = "different-fingerprint"
+				title, nodeName = "Archived provider [redacted]", "Archived node [redacted]"
+			}
+			raw, err := json.Marshal(map[string]subscriptionSnapshot{
+				subscriptionFingerprint(source): {
+					Nodes: result.Nodes, LastSuccess: time.Now(), RulesWithheld: true,
+					HWIDFingerprint: catalogFingerprint,
+					Metadata:        subscription.Metadata{Title: "Archived provider " + hwid},
+					Rules: &rulesSnapshot{HWIDFingerprint: rulesFingerprint, Built: &compile.ProviderRules{
+						RouteOrder: "block-direct-proxy",
+						Rules: []compile.ProviderRule{{Key: "proxy:" + ref, Source: ref, Label: hwid,
+							Action: "proxy", Kind: "site", Suffix: []string{"fixture-only.example"}}},
+					}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.subscriptions.fetcher = subscription.NewFetcher(identity, transport)
+			path := d.subscriptionSnapshotPath(d.cfg)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			d.loadSubscriptionSnapshotsLocked(t.Context(), d.cfg)
+			rules, _, state := d.ProviderRules()
+			if state != ProviderRulesPending || len(rules.Rules) != 0 {
+				t.Errorf("restored unverified rules with state %q and %d rule rows", state, len(rules.Rules))
+			}
+			status := d.Subscriptions()[0]
+			if len(status.Nodes) != 1 || status.Metadata.Title != title || status.Nodes[0].Name != nodeName ||
+				status.RulesWithheld || !status.Refreshing {
+				t.Error("restore should retain the catalog, drop unverified text and queue a fresh evaluation")
+			}
+			for _, role := range []ui.Role{ui.RoleView, ui.RoleManage} {
+				page := ui.New(overviewTestDeps{d: d}, ui.Options{Role: func(*http.Request) ui.Role { return role }})
+				w := httptest.NewRecorder()
+				page.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/routing", nil))
+				if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Provider rules are pending evaluation.") {
+					t.Errorf("routing did not render pending rules for role %v", role)
+				}
+				if strings.Contains(w.Body.String(), hwid) || strings.Contains(w.Body.String(), `name="rule"`) {
+					t.Errorf("routing rendered an unverified label or key for role %v", role)
+				}
+			}
+		})
 	}
 }
 
@@ -320,6 +409,7 @@ func (v overviewTestDeps) Subscriptions() []ui.AppliedSubscription {
 	sub := ui.AppliedSubscription{
 		ID: status.ID, State: status.State, Metadata: status.Metadata, Unavailable: status.Unavailable,
 		ActiveNode: status.ActiveNode, SwitchReason: status.SwitchReason,
+		RulesWithheld: status.RulesWithheld,
 	}
 	if status.LastSuccess != nil {
 		sub.LastSuccess = *status.LastSuccess
@@ -328,4 +418,18 @@ func (v overviewTestDeps) Subscriptions() []ui.AppliedSubscription {
 		sub.Nodes = append(sub.Nodes, ui.SubscriptionNode{ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS})
 	}
 	return []ui.AppliedSubscription{sub}
+}
+
+func (v overviewTestDeps) ProviderRules() ui.RoutingRules {
+	rules, settings, state := v.d.ProviderRules()
+	result := ui.RoutingRules{State: string(state), HasProfile: rules.RouteOrder != "", GlobalProxy: rules.GlobalProxy}
+	if settings != nil {
+		result.Source = settings.Source
+	}
+	for _, rule := range rules.Rules {
+		result.Rules = append(result.Rules, ui.RoutingRule{
+			Key: rule.Key, Source: rule.Source, Action: rule.Action, Kind: rule.Kind, Unavailable: rule.Unavailable,
+		})
+	}
+	return result
 }

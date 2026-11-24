@@ -91,6 +91,8 @@ type Result struct {
 	RoutingError string          `json:"-"`
 	// RoutingSummary carries only redacted display strings and list counts.
 	RoutingSummary *RoutingSummary `json:"-"`
+	// HWIDFingerprint identifies the redaction context of this fetch in private state.
+	HWIDFingerprint string `json:"-"`
 	// Transient tells the refresh scheduler to retry with bounded backoff.
 	Transient bool `json:"-"`
 }

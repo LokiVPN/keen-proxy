@@ -99,7 +99,8 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 
 	draft := routingDraft{Mode: mode}
 	vpn, direct := routingOwnGroups(cfg, ownVPNGroup, network.Target), routingOwnGroups(cfg, ownDirectGroup, model.TargetDirect)
-	if (form.Has(ownVPNGroup) && (vpn.readOnly() || !state.canUseVPN())) || (form.Has(ownDirectGroup) && direct.readOnly()) {
+	vpnEditable, directEditable := state.canUseVPN() && !vpn.readOnly(), !direct.readOnly()
+	if (form.Has(ownVPNGroup) && !vpnEditable) || (form.Has(ownDirectGroup) && !directEditable) {
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "routing_list_read_only")
 		return
 	}
@@ -120,7 +121,8 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "")
 		return
 	}
-	draft.Overlap = routingListsOverlap(vpn.effectiveEntries(draft.VPN), direct.effectiveEntries(draft.Direct))
+	draft.Overlap = vpnEditable && directEditable &&
+		routingListsOverlap(vpn.effectiveEntries(draft.VPN), direct.effectiveEntries(draft.Direct))
 	if draft.Overlap {
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "")
 		return
