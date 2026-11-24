@@ -452,8 +452,9 @@ ACTIVATION_TMP=""
 trap - 0 1 2 15
 ok "activation: disabled primary and intermediate bypassed; all-off network/client references block; explicit direct and re-enable restore"
 
-# --- Provider rules in DNS: a block rule answers locally unless an own list
-# holds the name, and a domain rule learns addresses only from device answers.
+# --- Provider rules in DNS: for split devices a block rule answers locally
+# unless an own list holds the name; a full tunnel device (.11) gets the real
+# answer. A domain rule learns addresses only from device answers.
 api_get config >/tmp/provider-baseline.json
 provider_apply() { # JSON list of switched-off provider rule keys
 	python3 - "$1" >/tmp/provider-config.json <<'PY'
@@ -462,6 +463,7 @@ c = json.load(open("/tmp/provider-baseline.json"))
 c["subscriptions"] = [{"id": "prov", "url": "https://198.51.100.2:8444/sub"}]
 c["provider_rules"] = {"source": "prov", "disabled": json.loads(sys.argv[1])}
 c["groups"].append({"name": "Provider exception", "target": "direct", "entries": ["keep.provads.test"]})
+c["clients"] = [{"name": "Full tunnel", "mac": "02:00:00:00:00:88", "ip": "192.168.77.11", "mode": "full", "target": "ss"}]
 print(json.dumps(c))
 PY
 	curl -fsS -m 30 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -477,9 +479,13 @@ a=$(dig_a www.keep.provads.test)
 [ "$a" = "198.51.100.3" ] || fail "an own list must win over a provider block rule: '$a'"
 a=$(dig_a x.ads.test)
 [ "$a" = "0.0.0.0" ] || fail "block group next to provider rules: '$a'"
+a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @8.8.8.8 x.provads.test A)
+[ "$a" = "198.51.100.3" ] || fail "a full tunnel device must get the real answer for a provider block name: '$a'"
+a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @8.8.8.8 x.ads.test A)
+[ "$a" = "0.0.0.0" ] || fail "block group for a full tunnel device: '$a'"
 api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x["host"]=="x.provads.test." and x.get("source")=="provider" for x in json.load(sys.stdin)["entries"])' ||
 	fail "the provider DNS block is not journaled"
-ok "provider block rule answers DNS locally; an own list and a block group keep their rules"
+ok "provider block rule answers DNS locally for split devices only; an own list and a block group keep their rules"
 
 # Without a name, .4 takes the country tunnel (FI → ss). A device answer for
 # provdirect.test sends it directly until the answer's 5-second TTL ends.

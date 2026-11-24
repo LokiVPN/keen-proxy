@@ -80,6 +80,9 @@ func (m *DomainMatcher) Match(name string) bool {
 type DNSNames struct {
 	sets  []dnsSet
 	index lists.DomainIndex // list positions are positions in sets
+	// keywords of the provider domain rules RouteOrder puts before block,
+	// which decide a name before any block rule does
+	keywords []string
 }
 
 // dnsSet is one DNS fallback rule set: an enabled group that is not a country
@@ -95,22 +98,25 @@ type dnsSetKind uint8
 const (
 	setOwn           dnsSetKind = iota // a group that routes traffic: an own list
 	setOwnBlock                        // a block group, which DNS blocks on its own
-	setProvider                        // a provider proxy or direct rule
+	setProvider                        // a provider rule RouteOrder puts after block
+	setProviderFirst                   // a provider rule RouteOrder puts before block
 	setProviderBlock                   // a provider block rule
 )
 
 // NewDNSNames indexes the DNS fallback sets of c: its enabled entry groups,
 // then the enabled domain rules of the provider rules that apply to c
 // (providers as in Input) that have suffix or exact names. Keyword and regex
-// entries need a readable name and take no part in DNS.
+// entries need a readable name and fill no set; only the keywords of rules
+// before block take part, in ProviderBlocked.
 func NewDNSNames(c *model.Config, providers map[string]ProviderRules) *DNSNames {
-	sets, names := dnsSets(c, providers)
-	return &DNSNames{sets: sets, index: lists.NewDomainIndex(names)}
+	sets, names, keywords := dnsSets(c, providers)
+	return &DNSNames{sets: sets, index: lists.NewDomainIndex(names), keywords: keywords}
 }
 
 // dnsSets lists the DNS fallback sets of c, groups first, with the names that
-// fill each. Groups with equal content share one set.
-func dnsSets(c *model.Config, providers map[string]ProviderRules) ([]dnsSet, []lists.DomainList) {
+// fill each, and the keywords of the provider domain rules that RouteOrder
+// puts before block. Groups with equal content share one set.
+func dnsSets(c *model.Config, providers map[string]ProviderRules) ([]dnsSet, []lists.DomainList, []string) {
 	var sets []dnsSet
 	var names []lists.DomainList
 	seen := map[string]bool{}
@@ -137,17 +143,44 @@ func dnsSets(c *model.Config, providers map[string]ProviderRules) ([]dnsSet, []l
 		}
 		add(DomainTag(g), kind, lists.DomainList{Suffix: suffix})
 	}
-	for _, r := range enabledProviderRules(c, providerProfile(c, providers)) {
+	profile := providerProfile(c, providers)
+	first := actionsBeforeBlock(profile)
+	var keywords []string
+	for _, r := range enabledProviderRules(c, profile) {
+		if r.Kind == providerSite && first[r.Action] {
+			kept, _ := usableEntries(r.Keyword, nonEmpty) // as routing keeps them
+			keywords = append(keywords, kept...)
+		}
 		if !providerDNSNames(r) {
 			continue
 		}
 		kind := setProvider
-		if r.Action == providerBlock {
+		switch {
+		case r.Action == providerBlock:
 			kind = setProviderBlock
+		case first[r.Action]:
+			kind = setProviderFirst
 		}
 		add(providerDNSTag(r.Key), kind, lists.DomainList{Suffix: r.Suffix, Exact: r.Full})
 	}
-	return sets, names
+	return sets, names, keywords
+}
+
+// actionsBeforeBlock returns the actions that RouteOrder puts before block:
+// routing checks their domain rules first, so they decide a name that a
+// block rule lists too.
+func actionsBeforeBlock(p *ProviderRules) map[string]bool {
+	first := map[string]bool{}
+	if p == nil {
+		return first
+	}
+	for _, action := range providerActions(p.RouteOrder) {
+		if action == providerBlock {
+			break
+		}
+		first[action] = true
+	}
+	return first
 }
 
 // Observed reports whether a device answer for name fills a DNS fallback set.
@@ -165,22 +198,29 @@ func (n *DNSNames) InGroups(name string) bool {
 	return found
 }
 
-// ProviderBlocked reports whether an enabled provider block rule lists name as
-// a suffix or exact name while no own list that routes traffic holds it: own
-// lists win over provider rules. Block groups are blocked on their own and
-// exempt nothing.
+// ProviderBlocked reports whether routing rejects name by a provider block
+// rule, so DNS can answer it locally: an enabled block rule lists name as a
+// suffix or exact name, and nothing routing checks earlier matches it by
+// name. Earlier come own lists that route traffic, then the domain, exact and
+// keyword entries of rules RouteOrder puts before block; their regex entries
+// are not checked. Block groups are blocked on their own and exempt nothing.
 func (n *DNSNames) ProviderBlocked(name string) bool {
-	blocked, own := false, false
+	blocked, earlier := false, false
 	n.index.Each(name, func(set int) bool {
 		switch n.sets[set].kind {
 		case setProviderBlock:
 			blocked = true
-		case setOwn:
-			own = true
+		case setOwn, setProviderFirst:
+			earlier = true
 		}
-		return !own
+		return !earlier
 	})
-	return blocked && !own
+	if !blocked || earlier {
+		return false
+	}
+	// Keywords match the lowercased name as given, like sing-box.
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	return !slices.ContainsFunc(n.keywords, func(k string) bool { return strings.Contains(name, k) })
 }
 
 // RuleSets returns the DNS fallback rule-set files: for each set the IPv4

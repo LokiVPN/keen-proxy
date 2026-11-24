@@ -16,7 +16,8 @@ import (
 	"github.com/miekg/dns"
 )
 
-// clientKey carries the requesting client address into DNS block audit callbacks.
+// clientKey carries the requesting client address (see WithClient) into DNS
+// block decisions and audit callbacks.
 type clientKey struct{}
 
 // exchangeTransport uses configured or explicit direct dialing with bootstrap IPs and TLS identity.

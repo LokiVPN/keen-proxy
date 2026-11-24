@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -76,6 +77,15 @@ func (d *Daemon) publishedDNSNames() *compile.DNSNames {
 		return s.names
 	}
 	return nil
+}
+
+// providerBlocked reports whether a provider block rule answers name locally
+// for the device at client. Provider rules route only split policies, so
+// other devices get the real answer. It runs on DNS goroutines and reads
+// only published state, which changes without a DNS restart.
+func (d *Daemon) providerBlocked(name string, client netip.Addr) bool {
+	split, names := d.split.Load(), d.publishedDNSNames()
+	return split != nil && names != nil && split.Contains(client) && names.ProviderBlocked(name)
 }
 
 func recordsMap(records []domaincache.Record) map[string][]string {

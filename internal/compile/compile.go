@@ -68,6 +68,10 @@ type Output struct {
 	// regexes and empty values.
 	DroppedProviderEntries int
 	Plan                   netfilter.Plan
+	// Split tells which device addresses follow a split policy, the only
+	// policies provider rules route; the daemon limits provider DNS blocks
+	// to them.
+	Split SplitAddresses
 }
 
 // Client classes depend only on configuration; address updates change file
@@ -172,7 +176,7 @@ func Compile(in Input) (Output, error) {
 	}
 	maps.Copy(sets, provider.files)
 	// The daemon fills the DNS fallback sets with observed answers.
-	dns, _ := dnsSets(c, in.ProviderRules)
+	dns, _, _ := dnsSets(c, in.ProviderRules)
 	maps.Copy(sets, (&DNSNames{sets: dns}).RuleSets(nil))
 	return Output{
 		SingBox:                sb,
@@ -185,6 +189,7 @@ func Compile(in Input) (Output, error) {
 		SubscriptionBalances:   managed.balances,
 		SubscriptionOutbounds:  managed.nodeTags,
 		DroppedProviderEntries: provider.dropped,
+		Split:                  splitAddresses(clients, networks),
 		Plan: netfilter.Plan{
 			BlockEncryptedDNS: c.DNS.BlockEncrypted,
 			DNSBypassSources:  dnsBypass,
@@ -281,6 +286,41 @@ func clientPolicy(cl model.Client, network *model.Network, rules *ProviderRules)
 	}
 	p.fallback, p.proxy = splitRoute(def, p.target, rules)
 	return p, true
+}
+
+// SplitAddresses resolves whether a device address follows a split policy as
+// the route rules do: the client entry holding the address decides first,
+// otherwise the first network holding it. A paused router has none.
+type SplitAddresses struct {
+	clients  map[netip.Addr]bool
+	networks []policy // in configuration order
+}
+
+// Contains reports whether the device at a follows a split policy.
+func (s SplitAddresses) Contains(a netip.Addr) bool {
+	a = a.Unmap()
+	if split, ok := s.clients[a]; ok {
+		return split
+	}
+	for _, n := range s.networks {
+		if n.source.Contains(a) {
+			return n.mode == model.ModeSplit
+		}
+	}
+	return false
+}
+
+// splitAddresses indexes the resolved policies. Clients that share an
+// address count as split only when all are, because off and full-tunnel
+// classes come before split ones in the route rules.
+func splitAddresses(clients, networks []policy) SplitAddresses {
+	s := SplitAddresses{clients: make(map[netip.Addr]bool, len(clients)), networks: networks}
+	for _, p := range clients {
+		a := p.source.Addr()
+		split, seen := s.clients[a]
+		s.clients[a] = p.mode == model.ModeSplit && (split || !seen)
+	}
+	return s
 }
 
 // clientIP prefers a configured static address over a normalized MAC neighbor lookup.

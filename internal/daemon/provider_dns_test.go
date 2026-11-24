@@ -51,13 +51,21 @@ func dnsServer(d *Daemon) *dnsfront.Server {
 	return d.dns
 }
 
-// resolveA asks srv for the A record of name, as a device would, and returns
-// the first address or the response code.
-func resolveA(t *testing.T, srv *dnsfront.Server, name string) string {
+// lanDevice is a device of the split network withLAN adds, as host:port.
+const lanDevice = "192.168.77.10:5353"
+
+// withLAN adds the split network the DNS tests query from.
+func withLAN(cfg *model.Config) {
+	cfg.Networks = append(cfg.Networks, model.Network{Name: "LAN", CIDR: "192.168.77.0/24", Mode: model.ModeSplit})
+}
+
+// resolveA asks srv for the A record of name as the device at client
+// (host:port) would, and returns the first address or the response code.
+func resolveA(t *testing.T, srv *dnsfront.Server, client, name string) string {
 	t.Helper()
 	q := new(dns.Msg)
 	q.SetQuestion(dns.Fqdn(name), dns.TypeA)
-	r := srv.Resolve(t.Context(), q)
+	r := srv.Resolve(dnsfront.WithClient(t.Context(), client), q)
 	for _, rr := range r.Answer {
 		if a, ok := rr.(*dns.A); ok {
 			return a.A.String()
@@ -141,6 +149,7 @@ func TestProviderBlockRulesAnswerDNSLocally(t *testing.T) {
 	d, cfg, _ := newRulesTestDaemon(t)
 	cfg.DNS.Upstreams = []string{dnsUpstream(t, "198.51.100.7")}
 	cfg.ProviderRules.Disabled = nil
+	withLAN(cfg)
 	cfg.Groups = append(cfg.Groups,
 		model.Group{Name: "Keep", Target: model.TargetDirect, Entries: []string{"keep.ads.example"}},
 		model.Group{Name: "Manual", Target: model.TargetBlock, Entries: []string{"manual.example", "manual.ads.example"}},
@@ -157,7 +166,7 @@ func TestProviderBlockRulesAnswerDNSLocally(t *testing.T) {
 		"x.manual.ads.example": "0.0.0.0",
 		"other.example":        "198.51.100.7",
 	} {
-		if got := resolveA(t, srv, name); got != want {
+		if got := resolveA(t, srv, lanDevice, name); got != want {
 			t.Errorf("%s = %s, want %s", name, got, want)
 		}
 	}
@@ -181,11 +190,12 @@ func TestProviderBlockRulesAnswerDNSLocally(t *testing.T) {
 func TestProviderDNSFollowsRuleChanges(t *testing.T) {
 	d, cfg, p := newRulesTestDaemon(t)
 	cfg.DNS.Upstreams = []string{dnsUpstream(t, "198.51.100.7")}
+	withLAN(cfg)
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	srv := dnsServer(d)
-	if got := resolveA(t, srv, "x.ads.example"); got != "198.51.100.7" {
+	if got := resolveA(t, srv, lanDevice, "x.ads.example"); got != "198.51.100.7" {
 		t.Fatalf("a switched-off block rule answered %s", got)
 	}
 
@@ -194,11 +204,11 @@ func TestProviderDNSFollowsRuleChanges(t *testing.T) {
 	if err := d.Apply(t.Context(), on); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolveA(t, srv, "x.ads.example"); got != "0.0.0.0" {
+	if got := resolveA(t, srv, lanDevice, "x.ads.example"); got != "0.0.0.0" {
 		t.Fatalf("a switched-on block rule answered %s", got)
 	}
 
-	if got := resolveA(t, srv, "x.tracker.example"); got != "198.51.100.7" {
+	if got := resolveA(t, srv, lanDevice, "x.tracker.example"); got != "198.51.100.7" {
 		t.Fatalf("tracker.example answered %s before the provider listed it", got)
 	}
 	d.observeDomain("www.unused.example.", dnsAnswer(t, "www.unused.example. 60 IN A 203.0.113.9"))
@@ -214,7 +224,7 @@ func TestProviderDNSFollowsRuleChanges(t *testing.T) {
 	})
 	p.useProfile("/v2/geosite.dat", "/geoip.dat", "geosite:unused")
 	refreshProviderRules(t, d, func(got SubscriptionStatus) bool { return got.State == subscription.StateReady })
-	if got := resolveA(t, srv, "x.tracker.example"); got != "0.0.0.0" {
+	if got := resolveA(t, srv, lanDevice, "x.tracker.example"); got != "0.0.0.0" {
 		t.Fatalf("a refreshed block rule answered %s", got)
 	}
 	d.observeDomain("www.unused.example.", dnsAnswer(t, "www.unused.example. 60 IN A 203.0.113.9"))
@@ -272,6 +282,7 @@ func TestExpiredProviderAnswersLeaveTheCache(t *testing.T) {
 func TestProviderDNSNamesSwapDuringLookups(t *testing.T) {
 	d, cfg, _ := newRulesTestDaemon(t)
 	cfg.DNS.Upstreams = []string{dnsUpstream(t, "198.51.100.7")}
+	withLAN(cfg)
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +301,7 @@ func TestProviderDNSNamesSwapDuringLookups(t *testing.T) {
 				default:
 				}
 				d.observeDomain("x.ads.example.", answer)
-				if got := resolveA(t, srv, "x.ads.example"); got != "0.0.0.0" && got != "198.51.100.7" {
+				if got := resolveA(t, srv, lanDevice, "x.ads.example"); got != "0.0.0.0" && got != "198.51.100.7" {
 					t.Errorf("x.ads.example = %s", got)
 				}
 				_ = d.domainRecords()
@@ -308,4 +319,43 @@ func TestProviderDNSNamesSwapDuringLookups(t *testing.T) {
 	}
 	close(done)
 	wg.Wait()
+}
+
+// Provider rules route only split policies, so only their devices get local
+// answers for provider block names: a full-tunnel device in the same network
+// gets the real answer, while block groups block every device. A client known
+// only by its MAC counts once a recompilation learns its address.
+func TestProviderBlocksOnlyForSplitDevices(t *testing.T) {
+	d, cfg, _ := newRulesTestDaemon(t)
+	cfg.DNS.Upstreams = []string{dnsUpstream(t, "198.51.100.7")}
+	cfg.ProviderRules.Disabled = nil
+	withLAN(cfg)
+	cfg.Groups = append(cfg.Groups, model.Group{Name: "Manual", Target: model.TargetBlock, Entries: []string{"manual.example"}})
+	cfg.Clients = []model.Client{
+		{Name: "TV", MAC: "02:00:00:00:00:31", IP: "192.168.77.31", Mode: model.ModeFull, Target: "subscription:sample:auto"},
+		{Name: "Console", MAC: "02:00:00:00:00:32", Mode: model.ModeFull, Target: "subscription:sample:auto"},
+	}
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	srv := dnsServer(d)
+	for _, q := range []struct{ client, name, want string }{
+		{lanDevice, "x.ads.example", "0.0.0.0"},
+		{"192.168.77.31:5353", "x.ads.example", "198.51.100.7"},
+		{lanDevice, "www.manual.example", "0.0.0.0"},
+		{"192.168.77.31:5353", "www.manual.example", "0.0.0.0"},
+		{"192.168.77.32:5353", "x.ads.example", "0.0.0.0"}, // Console's address is not known yet
+	} {
+		if got := resolveA(t, srv, q.client, q.name); got != q.want {
+			t.Errorf("%s from %s = %s, want %s", q.name, q.client, got, q.want)
+		}
+	}
+	arp := "IP address HW type Flags HW address Mask Device\n192.168.77.32 0x1 0x2 02:00:00:00:00:32 * br0\n"
+	if err := os.WriteFile(d.opt.ARPPath, []byte(arp), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.watch(t.Context())
+	if got := resolveA(t, srv, "192.168.77.32:5353", "x.ads.example"); got != "198.51.100.7" {
+		t.Errorf("x.ads.example from Console after its address was learned = %s, want the real answer", got)
+	}
 }

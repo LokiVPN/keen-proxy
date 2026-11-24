@@ -117,6 +117,10 @@ type Daemon struct {
 	// provider rules to the DNS frontend's goroutines, which must not take
 	// d.mu. Only dnsNamesLocked stores it.
 	dnsNames atomic.Pointer[dnsNamesState]
+	// split publishes which devices follow split policies, from the latest
+	// compilation, to the DNS frontend's goroutines. Only compileLocked
+	// stores it.
+	split atomic.Pointer[compile.SplitAddresses]
 	// coreRestarted records whether the latest applyLocked restarted the engine.
 	coreRestarted bool
 	// memoryBaseline is the process limit captured before configuration is applied.
@@ -841,12 +845,11 @@ func (d *Daemon) startDNS() error {
 	cfg.DropAAAA = true
 	cfg.Blocked = func(name string) bool { return m.Domain(name) != lists.NoMatch }
 	canary := d.cfg.DNS.FirefoxCanary
-	cfg.BlockReason = func(name string) string {
+	cfg.BlockReason = func(name string, client netip.Addr) string {
 		if canary && strings.EqualFold(strings.TrimSuffix(name, "."), "use-application-dns.net") {
 			return "firefox-canary"
 		}
-		// Provider rules change without a DNS restart: read the published names.
-		if names := d.publishedDNSNames(); names != nil && names.ProviderBlocked(name) {
+		if d.providerBlocked(name, client) {
 			return "provider"
 		}
 		return ""
@@ -947,6 +950,7 @@ func (d *Daemon) compileLocked() (compile.Output, error) {
 	}
 	d.serverHosts = out.ServerHosts
 	d.chains = out.Failover
+	d.split.Store(&out.Split)
 	return out, nil
 }
 

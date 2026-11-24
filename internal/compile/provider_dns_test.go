@@ -3,6 +3,7 @@ package compile
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -171,8 +172,9 @@ func TestDNSNamesLookupsDoNotAllocate(t *testing.T) {
 	for i := range suffix {
 		suffix[i] = fmt.Sprintf("site%06d.example", i)
 	}
-	rules := ProviderRules{RouteOrder: "block-direct-proxy", Rules: []ProviderRule{
-		{Key: "direct:geosite:big", Action: "direct", Kind: "site", Source: "geosite:big", Suffix: suffix},
+	// Direct comes first, so a blocked name is also checked against its keywords.
+	rules := ProviderRules{RouteOrder: "direct-block-proxy", Rules: []ProviderRule{
+		{Key: "direct:geosite:big", Action: "direct", Kind: "site", Source: "geosite:big", Suffix: suffix, Keyword: []string{"metrika", "counter"}},
 		{Key: "block:geosite:ads", Action: "block", Kind: "site", Source: "geosite:ads", Suffix: []string{"ads.example"}},
 	}}
 	names := dnsNamesFor(t, rules, nil)
@@ -184,5 +186,111 @@ func TestDNSNamesLookupsDoNotAllocate(t *testing.T) {
 		if n := testing.AllocsPerRun(100, lookup); n != 0 {
 			t.Errorf("%s: %v allocations per lookup", name, n)
 		}
+	}
+}
+
+// DNS answers a provider block name locally exactly when routing rejects it:
+// rules RouteOrder puts before block decide first by domain, exact name or
+// keyword, and own lists before all provider rules.
+func TestProviderBlockedFollowsRouteOrder(t *testing.T) {
+	rules := ProviderRules{Rules: []ProviderRule{
+		{Key: "direct:literals:site", Action: "direct", Kind: "site", Source: "literals",
+			Suffix: []string{"yandex.example"}, Keyword: []string{"metrika"}},
+		{Key: "proxy:geosite:video", Action: "proxy", Kind: "site", Source: "geosite:video",
+			Suffix: []string{"video.example"}, Full: []string{"clip.example"}},
+		{Key: "block:geosite:ads", Action: "block", Kind: "site", Source: "geosite:ads",
+			Suffix: []string{"an.yandex.example", "ads.video.example", "metrika.ads.example", "plain.ads.example", "bank.example"},
+			Full:   []string{"clip.example"}},
+	}}
+	names := []string{"x.an.yandex.example", "metrika.ads.example", "x.ads.video.example", "clip.example", "plain.ads.example", "www.bank.example"}
+	for order, want := range map[string][]string{
+		"block-direct-proxy": {"clip.example", "metrika.ads.example", "plain.ads.example", "x.ads.video.example", "x.an.yandex.example"},
+		"direct-block-proxy": {"clip.example", "plain.ads.example", "x.ads.video.example"},
+		"proxy-block-direct": {"metrika.ads.example", "plain.ads.example", "x.an.yandex.example"},
+		"direct-proxy-block": {"plain.ads.example"},
+	} {
+		rules.RouteOrder = order
+		dns := dnsNamesFor(t, rules, nil)
+		_, out := compileProvider(t, nil, &rules)
+		var blocked []string
+		for _, name := range names {
+			got := dns.ProviderBlocked(name)
+			if got {
+				blocked = append(blocked, name)
+			}
+			if route := routeOf(t, out, "192.168.7.0/24", name); got != (route == "reject") {
+				t.Errorf("%s: %s is DNS-blocked %v, routed to %s", order, name, got, route)
+			}
+		}
+		slices.Sort(blocked)
+		if !slices.Equal(blocked, want) {
+			t.Errorf("%s: DNS blocks %v, want %v", order, blocked, want)
+		}
+	}
+}
+
+// Provider rules route only split policies. Compile resolves a device
+// address as the route rules do: the client entry holding it first, then the
+// first network holding it.
+func TestSplitAddresses(t *testing.T) {
+	rules := testProviderRules()
+	edit := func(c *model.Config) {
+		c.Networks = append(c.Networks, model.Network{Name: "Guest", CIDR: "192.168.8.0/24", Mode: model.ModeFull, Target: "nl"})
+		c.Clients = []model.Client{
+			{Name: "TV", MAC: "02:00:00:00:00:10", Mode: model.ModeFull, Target: "nl"}, // 192.168.7.104 by neighbors
+			{Name: "Printer", MAC: "02:00:00:00:00:11", Mode: model.ModeOff},           // 192.168.7.105
+			{Name: "Phone", MAC: "02:00:00:00:00:12", Mode: model.ModeInherit},         // 192.168.7.106
+			{Name: "Laptop", MAC: "02:00:00:00:00:20", IP: "192.168.8.50", Mode: model.ModeSplit},
+			{Name: "Console", MAC: "02:00:00:00:00:21", IP: "192.168.8.51", Mode: model.ModeInherit},
+		}
+	}
+	cfg, out := compileProvider(t, edit, &rules)
+	for addr, want := range map[string]bool{
+		"192.168.7.200":        true, // no client entry: the split network decides
+		"::ffff:192.168.7.200": true,
+		"192.168.7.104":        false, // a full-tunnel client in the split network
+		"192.168.7.105":        false, // off
+		"192.168.7.106":        true,  // inherits split
+		"192.168.8.50":         true,  // a split client in the full network
+		"192.168.8.51":         false, // inherits full
+		"192.168.8.200":        false,
+		"10.0.0.1":             false,
+	} {
+		if got := out.Split.Contains(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("Contains(%s) = %v, want %v", addr, got, want)
+		}
+	}
+	// Clients sharing an address: off and full-tunnel classes route first.
+	shared := splitAddresses([]policy{
+		{source: netip.MustParsePrefix("192.168.7.150/32"), mode: model.ModeFull},
+		{source: netip.MustParsePrefix("192.168.7.150/32"), mode: model.ModeSplit},
+		{source: netip.MustParsePrefix("192.168.7.151/32"), mode: model.ModeSplit},
+		{source: netip.MustParsePrefix("192.168.7.151/32"), mode: model.ModeOff},
+		{source: netip.MustParsePrefix("192.168.7.152/32"), mode: model.ModeSplit},
+		{source: netip.MustParsePrefix("192.168.7.152/32"), mode: model.ModeSplit},
+	}, nil)
+	for addr, want := range map[string]bool{"192.168.7.150": false, "192.168.7.151": false, "192.168.7.152": true} {
+		if got := shared.Contains(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("shared address %s: Contains = %v, want %v", addr, got, want)
+		}
+	}
+	// Without its neighbor address a MAC client has no entry: the network decides.
+	in := Input{Config: cfg, RuleSetDir: "/var/keenproxy", ProviderRules: map[string]ProviderRules{"prov": rules}}
+	unresolved, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unresolved.Split.Contains(netip.MustParseAddr("192.168.7.104")) {
+		t.Error("an unresolved MAC client kept its full-tunnel mode")
+	}
+	paused := cfg.Clone()
+	paused.Paused = true
+	in.Config, in.Neighbors = paused, providerNeighbors
+	out, err = Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Split.Contains(netip.MustParseAddr("192.168.7.200")) || out.Split.Contains(netip.MustParseAddr("192.168.8.50")) {
+		t.Error("a paused router has split devices")
 	}
 }
