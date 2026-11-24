@@ -193,7 +193,7 @@ Open **Devices**. The list includes devices discovered on the LAN and saved devi
 
 Turn on **VPN** for a device to use the selected routing rules. Turn it off to bypass KeenProxy interception. **Enable for all** skips devices that need a VPN target for the change and shows how many it skipped. **Disable for all** switches off every listed device. A device using a full tunnel, including one that inherits it from its network, keeps that mode until you edit its switch or a bulk action changes it.
 
-**New devices use the VPN right away** sets the default for the home network. When you select **Save**, KeenProxy records the displayed switches, including off states on skipped devices, so listed devices keep their states when the default changes. If validation rejects a change, read the error on the Devices page and correct the settings before saving again.
+**New devices use the VPN right away** sets the default for the home network. When you select **Save**, KeenProxy records the displayed switches, including off states on skipped devices, so listed devices keep their states when the default changes. Save also checks each device’s current address for split routing. If an address has moved outside VPN coverage, review the marked devices before saving again.
 
 ## 5. Review and Apply
 

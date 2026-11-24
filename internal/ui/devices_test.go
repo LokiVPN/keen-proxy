@@ -286,6 +286,55 @@ func TestDevicesRefusesSplitWithoutAnObservedNetworkTarget(t *testing.T) {
 	}
 }
 
+func TestDevicesRejectsSplitPinAfterAddressMoves(t *testing.T) {
+	const laptop, phone = "02:00:00:00:00:25", "02:00:00:00:00:26"
+	for _, tc := range []struct {
+		name, newIP  string
+		guestDefault bool
+	}{
+		{"outside all networks", "203.0.113.25", false},
+		{"guest has a default but no provider target", "198.51.100.25", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDevicesFixture(t)
+			f.cfg.Clients = nil
+			if tc.guestDefault {
+				f.cfg.Networks[1].Target, f.cfg.Networks[1].Default = "", "manual"
+			}
+			f.discovered = []DiscoveredDevice{
+				{MAC: laptop, IP: "192.0.2.25", Name: "Laptop"},
+				{MAC: phone, IP: "192.0.2.26", Name: "Phone"},
+			}
+			before := f.Config()
+			h := New(f, setupTestOptions(RoleManage))
+			form := readDevicesForm(t, setupRequest(h, "/devices", nil).Body.String())
+			if !slices.Equal(form["split"], []string{laptop, phone}) {
+				t.Fatalf("expected both devices to inherit split, got %v", form["split"])
+			}
+			form.Set("split", laptop) // Leave the laptop on, turn off the phone.
+			form.Del("new")
+			f.discovered[0].IP = tc.newIP
+			w := setupRequest(h, "/devices", form)
+			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(before, f.Config()) {
+				t.Fatalf("Save after the laptop moved = HTTP %d, Apply calls %d", w.Code, f.applies)
+			}
+			assertContains(t, w.Body.String(), "Check the notices in the list", "Laptop", tc.newIP, "Outside the home network")
+			reviewed := readDevicesForm(t, w.Body.String())
+			if reviewed.Get("rev") != form.Get("rev") || reviewed.Has("new") || !slices.Equal(reviewed["split"], []string{laptop}) {
+				t.Fatalf("rejected form did not retain the draft: %v", reviewed)
+			}
+			reviewed.Del("split")
+			if w := setupRequest(h, "/devices", reviewed); w.Code != http.StatusSeeOther || f.applies != 1 {
+				t.Fatalf("Save after switching the moved laptop off = HTTP %d, applies %d", w.Code, f.applies)
+			}
+			want := []model.Client{{MAC: laptop, Mode: model.ModeOff}, {MAC: phone, Mode: model.ModeOff}}
+			if f.cfg.Networks[0].Mode != model.ModeOff || !slices.Equal(f.cfg.Clients, want) {
+				t.Fatalf("reviewed Save stored Home %+v and clients %+v", f.cfg.Networks[0], f.cfg.Clients)
+			}
+		})
+	}
+}
+
 func TestDevicesEnableAllSkipsOutsideHomeAndPinsItOff(t *testing.T) {
 	const inside, outside = "02:00:00:00:00:25", "02:00:00:00:00:26"
 	f := newDevicesFixture(t)

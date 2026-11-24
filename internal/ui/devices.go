@@ -55,12 +55,8 @@ func (p pages) devicesPost(w http.ResponseWriter, r *http.Request) {
 		p.renderDevices(w, r, http.StatusBadRequest, cfg, nil, "devices_invalid_form", "")
 		return
 	}
-	draft.prepareRows(cfg, home, p.deps.Devices())
-	if draft.Blocked {
-		p.renderDevices(w, r, http.StatusUnprocessableEntity, cfg, &draft, "devices_enable_unavailable", "")
-		return
-	}
 	if draft.Bulk != model.ModeInherit {
+		draft.prepareRows(cfg, home, p.deps.Devices())
 		p.renderDevices(w, r, http.StatusOK, cfg, &draft, "", "")
 		return
 	}
@@ -80,11 +76,21 @@ func (p pages) devicesPost(w http.ResponseWriter, r *http.Request) {
 			cfg.Clients = append(cfg.Clients, model.Client{MAC: mac, Mode: mode})
 		}
 	}
+	draft.prepareRows(cfg, home, p.deps.Devices())
+	if draft.Blocked {
+		current := p.deps.Config()
+		if Revision(current) != r.PostForm.Get("rev") {
+			p.renderDevices(w, r, http.StatusConflict, current, nil, "revision_changed", "")
+		} else {
+			p.renderDevices(w, r, http.StatusUnprocessableEntity, current, &draft, "devices_enable_unavailable", "")
+		}
+		return
+	}
 	p.applyDevices(w, r, cfg, &draft)
 }
 
-// prepareRows checks the current address only for an edit to split mode.
-// Every submitted row keeps an explicit mode, including bulk skips.
+// prepareRows stages bulk controls or checks every split row against the
+// proposed configuration and current discovery before Save.
 func (d *devicesDraft) prepareRows(cfg *model.Config, home *model.Network, discovered []DiscoveredDevice) {
 	byMAC := deviceSnapshot(cfg, home, discovered)
 	d.Rows = make([]deviceRow, 0, len(d.Modes))
@@ -104,10 +110,24 @@ func (d *devicesDraft) prepareRows(cfg *model.Config, home *model.Network, disco
 		if mode == model.ModeSplit && blocked {
 			mode = displayed
 			d.Blocked = d.Bulk == model.ModeInherit
+		} else if d.Bulk == model.ModeInherit && mode == model.ModeSplit && splitCoverageMissing(cfg, home, row) {
+			d.Blocked = true
 		}
 		d.Modes[mac], row.Mode = mode, mode
 		d.Rows = append(d.Rows, row)
 	}
+}
+
+// splitCoverageMissing checks a known address with no inherited or manual
+// target. A concrete network default covers split traffic when provider rules
+// are off. Provider proxy rules require the policy target itself.
+func splitCoverageMissing(cfg *model.Config, home *model.Network, row deviceRow) bool {
+	if !row.IP.IsValid() || row.EnableProblem == "" {
+		return false
+	}
+	network := deviceNetwork(row.IP, cfg.Networks, home)
+	return cfg.ActiveProviderRules() != nil || network == nil ||
+		network.Default == "" || network.Default == model.TargetDirect || network.Default == model.DefaultProfile
 }
 
 func (d *devicesDraft) homeMode(home *model.Network) model.Mode {
