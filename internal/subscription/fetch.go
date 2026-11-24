@@ -90,6 +90,10 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 	req.Header.Set("Accept", "text/plain, application/octet-stream")
 	var sensitive displayRedactor
 	sensitive.addURL(req.URL)
+	// A bare root carries no request-specific text.
+	if target := req.URL.RequestURI(); target != "/" {
+		sensitive.requestURI = displayURLComparison(decodeDisplayEscapes(target))
+	}
 	if source.SendHWID {
 		hwid, err := originHWID(f.identityPath, origin)
 		if err != nil {

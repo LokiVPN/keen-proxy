@@ -24,6 +24,10 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	const sourceURL = "https://PROVIDER.example:443/l%69st?token=synthetic%20key%27tail&tag=one&tag=two&blank"
 	const equivalentURL = "https://provider.example/list?blank=&tag=one&tag=two&token=synthetic+key'tail"
 	const aliasedHostURL = "http://%70ROVIDER.example:8443/other?token=synthetic%20key%27tail"
+	const embeddedURL = "https://help.example/ticket?source=https://provider.example/list?token=fixture"
+	const encodedURL = "https://help.example/ticket?source=http%253A%252F%252F%2570ROVIDER%252Eexample%253A8443%252Fother&progress=100%"
+	const requestURI = "/l%2569st?token=synthetic+key'tail&tag=one&tag=two&blank"
+	const supportURL = "https://help.example/ticket?source=provider.example-help&view=account%2Bdetails"
 	const datURL = "https://provider.example/data/geosite.dat"
 	var calls int
 	var hwid string
@@ -50,9 +54,9 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		headers := make(http.Header)
 		headers.Set("routing", "happ://routing/add/"+base64.StdEncoding.EncodeToString(raw))
 		headers.Set("profile-title", "Provider "+equivalentURL+" for review")
-		headers.Set("announce", "100% ready "+equivalentURL+" "+aliasedHostURL+" "+hwid)
-		headers.Set("profile-web-page-url", equivalentURL)
-		headers.Set("support-url", "https://provider.example/help?subscription="+url.QueryEscape(equivalentURL))
+		headers.Set("announce", strings.Join([]string{"100% ready", equivalentURL, aliasedHostURL, embeddedURL, encodedURL, requestURI, hwid, supportURL}, " "))
+		headers.Set("profile-web-page-url", embeddedURL+";view=account")
+		headers.Set("support-url", supportURL)
 		node, _, _ := strings.Cut(subscriptionFirst, "#")
 		body := node + "#" + url.PathEscape("Provider "+equivalentURL)
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body))}, nil
@@ -74,11 +78,16 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	if calls != 1 || len(d.Subscriptions()) != 0 || model.ConfigRevision(d.Config()) != rev {
 		t.Fatal("preview fetched geodata or changed the applied catalog")
 	}
-	if summary.Name != "<profile> [redacted]" || details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != "" ||
+	if summary.Name != "<profile> [redacted]" ||
 		details.Status.Metadata.Title != "Provider [redacted] for review" ||
-		details.Status.Metadata.Announce != "100% ready [redacted] [redacted] [redacted]" ||
 		details.Status.Nodes[0].Name != "Provider [redacted]" {
 		t.Error("a provider-host URL escaped redaction or surrounding text was lost")
+	}
+	if details.Status.Metadata.Announce != "100% ready [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] "+supportURL {
+		t.Error("the announcement leaked an embedded or schemeless URL or lost an unrelated link")
+	}
+	if details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != supportURL {
+		t.Error("the preview did not suppress the embedded subscription while keeping the unrelated link")
 	}
 	if summary.GlobalProxy ||
 		summary.Direct.Sites.Count != 3 || !slices.Equal(summary.Direct.Sites.Categories, []string{"ru@news"}) ||
@@ -91,7 +100,7 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{sourceURL, equivalentURL, aliasedHostURL, hwid, datURL, "synthetic", "literal-direct.example", "198.51.100.0/24", subscriptionFirst} {
+	for _, secret := range []string{sourceURL, equivalentURL, aliasedHostURL, embeddedURL, hwid, datURL, "synthetic", "literal-direct.example", "198.51.100.0/24", subscriptionFirst} {
 		if strings.Contains(string(projected), secret) {
 			t.Fatal("preview disclosed private provider data")
 		}

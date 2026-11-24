@@ -305,19 +305,23 @@ func TestFetchFiltersMetadataBySubscriptionHost(t *testing.T) {
 	}{
 		{name: "other host", link: distinctLink, keep: true},
 		{name: "same host account", link: "/account", keep: true},
+		{name: "off-host link with an embedded subscription in its raw query", link: "https://help.example/ticket?source={origin}/list?token=fixture%20value;view=account"},
+		{name: "same host path with an embedded subscription", link: "/account/{origin}/list%3Ftoken=fixture%20value"},
 		{name: "same host query", link: "/account?token=fixture%2Bvalue"},
 		{name: "same host fragment", link: "/account#fixture"},
 		{name: "empty query", link: "/account?"},
 		{name: "empty fragment", link: "/account#"},
 		{name: "subscription path", link: "/l%69st"},
+		{name: "nested escape in subscription path", link: "/l%2569st"},
 		{name: "redirect path", link: "/redirected"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			link := func(origin string) string {
-				if strings.HasPrefix(tc.link, "/") {
-					return origin + tc.link
+				value := strings.ReplaceAll(tc.link, "{origin}", origin)
+				if strings.HasPrefix(value, "/") {
+					return origin + value
 				}
-				return tc.link
+				return value
 			}
 			provider := tlsProvider(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/list" {
@@ -338,6 +342,37 @@ func TestFetchFiltersMetadataBySubscriptionHost(t *testing.T) {
 			}
 			if result.Metadata.ProfileURL != want {
 				t.Fatal("metadata URL did not follow the subscription host policy")
+			}
+		})
+	}
+}
+
+func TestFetchRedactsNormalizedSubscriptionHosts(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, echoedHost string
+	}{
+		{name: "IDNA", host: "xn--i-9bb.example", echoedHost: "%C4%B0.example:8443"},
+		{name: "IPv6", host: "[2001:db8::1]", echoedHost: "[2001:0db8:0:0::1]:8443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ticket := "https://help.example/ticket?source=https://" + tc.echoedHost + "/other"
+			transport := providerRoundTrip(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header: http.Header{
+						"Announce":             {"See " + ticket + " for details"},
+						"Profile-Web-Page-Url": {ticket},
+					},
+					Body: io.NopCloser(strings.NewReader(vless)),
+				}, nil
+			})
+			source := sourceFor("https://" + tc.host + "/list?token=fixture")
+			result := subscription.NewFetcher("", transport).Fetch(t.Context(), source)
+			if result.State != subscription.StateReady {
+				t.Fatalf("expected a ready subscription, got %s", result.State)
+			}
+			if result.Metadata.Announce != "See [redacted] for details" || result.Metadata.ProfileURL != "" {
+				t.Fatal("the normalized subscription host escaped display redaction")
 			}
 		})
 	}
@@ -469,6 +504,12 @@ func TestFetchWaitsForOneSlotAndRespectsCancellation(t *testing.T) {
 
 func sourceFor(endpoint string) subscription.Source {
 	return subscription.Source{ID: "provider", URL: endpoint}
+}
+
+type providerRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f providerRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func tlsProvider(t *testing.T, handler http.HandlerFunc) *httptest.Server {

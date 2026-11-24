@@ -230,19 +230,22 @@ func metadataURL(value string, sensitive displayRedactor) string {
 	return u.String()
 }
 
-// displayRedactor protects the hosts and paths reached by a subscription fetch
-// and the HWID sent with it. The private share links are kept separately.
+// displayRedactor protects the request URI, hosts reached by the fetch, and
+// HWID sent with it before provider data enters the display projection.
 type displayRedactor struct {
-	paths map[string][]string
-	hwid  string
+	paths      map[string][]string
+	requestURI string
+	hwid       string
 }
 
 const redactedDisplay = "[redacted]"
 
-var displayURLRun = regexp.MustCompile(`(?i)https?://[^[:space:]\p{Z}\x{85}<>"]+`)
+// Runs may contain a bare path or an encoded scheme.
+var displayRun = regexp.MustCompile(`[^[:space:]\p{Z}\x{85}<>"]+`)
+var displayPercentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
 
 func (r *displayRedactor) addURL(u *url.URL) {
-	host := normalizedHost(u.Hostname(), strings.HasPrefix(u.Host, "["))
+	host := displayHost(u.Hostname())
 	if r.paths == nil {
 		r.paths = make(map[string][]string)
 	}
@@ -253,13 +256,14 @@ func requestPath(u *url.URL) string {
 	if u.Path == "" {
 		return "/"
 	}
-	return u.Path
+	return decodeDisplayEscapes(u.EscapedPath())
 }
 
 func (r displayRedactor) replace(value string) string {
 	if len(r.paths) > 0 {
-		value = displayURLRun.ReplaceAllStringFunc(value, func(run string) string {
-			if _, protected := r.paths[displayURLHost(run)]; protected {
+		value = displayRun.ReplaceAllStringFunc(value, func(run string) string {
+			decoded := decodeDisplayEscapes(run)
+			if r.containsHost(decoded) || (r.requestURI != "" && strings.Contains(displayURLComparison(decoded), r.requestURI)) {
 				return redactedDisplay
 			}
 			return run
@@ -267,69 +271,76 @@ func (r displayRedactor) replace(value string) string {
 	}
 	if r.hwid != "" {
 		value = strings.ReplaceAll(value, r.hwid, redactedDisplay)
-		if strings.Contains(value, "%") && containsEscapedHWID(value, r.hwid) {
+		if strings.Contains(decodeDisplayEscapes(value), r.hwid) {
 			return redactedDisplay
 		}
 	}
 	return value
 }
 
-// displayURLHost reads only the authority, so an invalid path or query cannot
-// defeat redaction. Decode the host before IDNA lookup and disregard any port.
-func displayURLHost(run string) string {
-	_, authority, _ := strings.Cut(run, "://")
-	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
-		authority = authority[:end]
-	}
-	authority = authority[strings.LastIndexByte(authority, '@')+1:]
-	bracketed := strings.HasPrefix(authority, "[")
-	var host string
-	if bracketed {
-		var ok bool
-		host, _, ok = strings.Cut(authority[1:], "]")
-		if !ok {
-			return ""
-		}
-	} else {
-		host, _, _ = strings.Cut(authority, ":")
-	}
-	host, err := url.PathUnescape(host)
-	if err != nil {
-		return ""
-	}
-	return normalizedHost(host, bracketed)
+func displayHost(host string) string {
+	return strings.TrimSuffix(normalizedHost(host, strings.ContainsRune(host, ':')), ".")
 }
 
-// blocksLink allows a link on a protected host only at a different path
-// without a query or fragment. Check decoded components for embedded secrets.
-func (r displayRedactor) blocksLink(u *url.URL, raw string) bool {
-	host := normalizedHost(u.Hostname(), strings.HasPrefix(u.Host, "["))
-	if paths := r.paths[host]; len(paths) > 0 &&
-		(slices.Contains(paths, requestPath(u)) || u.ForceQuery || u.RawQuery != "" || strings.Contains(raw, "#")) {
-		return true
-	}
-	containsSecret := func(value string) bool { return r.replace(value) != value }
-	if (r.hwid != "" && strings.Contains(raw, r.hwid)) || containsSecret(u.Path) || containsSecret(u.Fragment) {
-		return true
-	}
-	for key, values := range u.Query() {
-		if containsSecret(key) || slices.ContainsFunc(values, containsSecret) {
-			return true
+// containsHost scans the whole decoded value, including embedded URLs.
+func (r displayRedactor) containsHost(value string) bool {
+	for token := range strings.FieldsFuncSeq(value, func(char rune) bool {
+		return !unicode.In(char, unicode.L, unicode.M, unicode.N) && !strings.ContainsRune("._-:\u3002\uff0e\uff61", char)
+	}) {
+		// Keep IPv6 addresses intact before treating colons as separators.
+		if host := displayHost(token); host != "" {
+			if _, protected := r.paths[host]; protected {
+				return true
+			}
+			continue
+		}
+		for part := range strings.SplitSeq(token, ":") {
+			if _, protected := r.paths[displayHost(part)]; protected {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-var hwidPercentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+// blocksLink allows a link on a protected host only at a different path
+// without a query or fragment. Scan the raw link so malformed form queries
+// cannot hide an embedded subscription URL.
+func (r displayRedactor) blocksLink(u *url.URL, raw string) bool {
+	decoded := decodeDisplayEscapes(raw)
+	if r.hwid != "" && strings.Contains(decoded, r.hwid) {
+		return true
+	}
+	if paths, protected := r.paths[displayHost(u.Hostname())]; protected {
+		path := requestPath(u)
+		if slices.Contains(paths, path) || u.ForceQuery || u.RawQuery != "" || strings.Contains(raw, "#") {
+			return true
+		}
+		// The account-page exception covers the link's host. Its path can
+		// still carry an embedded subscription URL.
+		decoded = path
+	}
+	return r.containsHost(decoded)
+}
 
-// A provider can percent-encode the device ID in prose containing other
-// percent signs. Decode valid escapes only for the HWID check.
-func containsEscapedHWID(value, hwid string) bool {
-	decoded := hwidPercentEscape.ReplaceAllStringFunc(value, func(escape string) string {
-		decoded, _ := url.PathUnescape(escape)
-		return decoded
-	})
-	return strings.Contains(decoded, hwid)
+func displayURLComparison(decoded string) string {
+	return strings.ToLower(strings.ReplaceAll(decoded, "+", " "))
+}
+
+// Decode valid escapes even when the same value includes stray percent signs.
+func decodeDisplayEscapes(value string) string {
+	const maxPasses = 4
+	for pass := 0; pass < maxPasses && strings.Contains(value, "%"); pass++ {
+		decoded := displayPercentEscape.ReplaceAllStringFunc(value, func(escape string) string {
+			unescaped, _ := url.PathUnescape(escape)
+			return unescaped
+		})
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	return value
 }
 
 func parseUsage(value string) *Usage {
