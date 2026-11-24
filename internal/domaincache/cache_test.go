@@ -89,6 +89,37 @@ func TestCNAMECycleIsNotAnAddress(t *testing.T) {
 	}
 }
 
+func TestInvalidSpareCNAMEKeepsLastValidAnswerUntilExpiry(t *testing.T) {
+	var chain []string
+	for i := range 16 {
+		chain = append(chain, fmt.Sprintf("hop%d.test. 60 IN CNAME hop%d.test.", i, i+1))
+	}
+	chain = append(chain, "hop16.test. 60 IN A 203.0.113.2")
+	for _, tc := range []struct {
+		name    string
+		invalid *dns.Msg
+	}{
+		{"cycle", answer("hop0.test. 60 IN CNAME hop1.test.", "hop1.test. 60 IN CNAME hop0.test.")},
+		{"too many hops", answer(chain...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(1000, 0)
+			c := New(func() time.Time { return now })
+			c.Observe("hop0.test", answer("hop0.test. 40 IN A 203.0.113.1"), "observed", true)
+			now = now.Add(10 * time.Second)
+			c.Observe("hop0.test", tc.invalid, "observed", true)
+			held, _ := c.Addresses()
+			if got := held["hop0.test"]; !slices.Equal(got, []string{"203.0.113.1"}) {
+				t.Errorf("invalid CNAME replaced the last valid address: %v", got)
+			}
+			now = now.Add(30 * time.Second)
+			if got := c.Snapshot(nil); len(got) != 0 {
+				t.Errorf("the spare record stayed past the original TTL: %+v", got)
+			}
+		})
+	}
+}
+
 func TestServiceRefreshDoesNotCountAsObservation(t *testing.T) {
 	now := time.Unix(1000, 0)
 	c := New(func() time.Time { return now })

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -165,6 +166,132 @@ func TestProviderNamesDoNotEvictOwnListRecords(t *testing.T) {
 	}
 	if !fileHolds(t, dnsSetFile(d, compile.DomainTag(d.cfg.Groups[0])), `"198.51.100.1/32"`) {
 		t.Fatal("the own list's set lost its address")
+	}
+}
+
+func TestApplyReclassifiesCachedProviderNames(t *testing.T) {
+	d, cfg, _ := newRulesTestDaemon(t)
+	now := time.Now()
+	d.domains = domaincache.New(func() time.Time { return now })
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	const promoted = "www.selected.direct.example."
+	d.observeDomain(promoted, answerA(promoted, 300, net.IPv4(203, 0, 113, 1)))
+	for i := range fullCache {
+		now = now.Add(time.Millisecond)
+		name := fmt.Sprintf("n%d.direct.example.", i)
+		d.observeDomain(name, answerA(name, 300, net.IPv4(10, 0, byte(i>>8), byte(i))))
+	}
+
+	next := cfg.Clone()
+	own := model.Group{Name: "Own", Target: model.TargetDirect, Entries: []string{"selected.direct.example"}}
+	next.Groups = append(next.Groups, own)
+	if err := d.Apply(t.Context(), next); err != nil {
+		t.Fatal(err)
+	}
+	path := dnsSetFile(d, compile.DomainTag(own))
+	if !fileHolds(t, path, `"203.0.113.1/32"`) {
+		t.Fatal("Apply did not use the previously observed address in the new list")
+	}
+
+	now = now.Add(time.Millisecond)
+	const newest = "new.direct.example."
+	d.observeDomain(newest, answerA(newest, 300, net.IPv4(203, 0, 113, 2)))
+	d.flushDomains()
+	if !fileHolds(t, path, `"203.0.113.1/32"`) {
+		t.Error("a new provider answer evicted the address in the new own list")
+	}
+	names := observedNames(d)
+	if !slices.Contains(names, domaincache.Normalize(newest)) || slices.Contains(names, "n0.direct.example") {
+		t.Error("the newest provider answer should replace the oldest remaining provider-only answer")
+	}
+}
+
+func TestProviderObservationRefreshesAfterJoiningOwnList(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ttl  uint32
+		race bool
+	}{
+		{name: "expired after Apply", ttl: 5},
+		{name: "answer used previous names", ttl: 36, race: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, cfg, _ := newRulesTestDaemon(t)
+			cfg.DNS.Upstreams = []string{dnsUpstream(t, "198.51.100.7")}
+			now := time.Now().Add(-31 * time.Second)
+			d.domains = domaincache.New(func() time.Time { return now })
+			if err := d.Apply(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			const name = "www.direct.example"
+			answer := answerA(dns.Fqdn(name), tc.ttl, net.IPv4(203, 0, 113, 7))
+			d.observeDomain(name, answer)
+
+			next := cfg.Clone()
+			next.Groups = append(next.Groups, model.Group{Name: "Own", Target: model.TargetDirect, Entries: []string{"direct.example"}})
+			if err := d.Apply(t.Context(), next); err != nil {
+				t.Fatal(err)
+			}
+			if tc.race {
+				// A DNS goroutine that read the previous names can store its answer after Apply.
+				d.domains.Observe(name, answer, "observed", true)
+			}
+			now = now.Add(32 * time.Second)
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				d.runDomains(ctx)
+			}()
+			defer func() {
+				cancel()
+				<-done
+			}()
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			refreshed := holdsAddress("198.51.100.7")
+			for !slices.ContainsFunc(d.domainRecords(), func(r domaincache.Record) bool {
+				return r.Name == name && refreshed(r)
+			}) {
+				select {
+				case <-tick.C:
+				case <-ctx.Done():
+					t.Fatal("the previously observed subdomain did not refresh on schedule")
+				}
+			}
+		})
+	}
+}
+
+func TestDNSFlushRetriesStaleFileRemoval(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file removal must respect directory permissions")
+	}
+	dir := t.TempDir()
+	d := New(Options{RuleSetDir: dir})
+	d.cfg = &model.Config{}
+	stale := dnsSetFile(d, "dns-obsolete")
+	if err := os.WriteFile(stale, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	d.flushDomains()
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("expected the first removal to fail: %v", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d.flushDomains()
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale file remained after the next flush: %v", err)
 	}
 }
 

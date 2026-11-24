@@ -62,6 +62,9 @@ func (d *Daemon) dnsNamesLocked() *compile.DNSNames {
 	}
 	names := compile.NewDNSNames(d.cfg, d.providerRulesLocked())
 	d.dnsNames.Store(&dnsNamesState{cfg: d.cfg, rules: rules, names: names})
+	// A DNS callback that already read the previous names can still store an
+	// old priority. A subsequent valid answer or republish corrects it.
+	d.domains.Reclassify(func(name string) bool { return !names.InGroups(name) })
 	return names
 }
 
@@ -246,11 +249,15 @@ func (d *Daemon) runDomains(ctx context.Context) {
 		go func() {
 			defer func() { <-busy }()
 			cfg := d.live.Load()
-			if cfg == nil {
+			state := d.dnsNames.Load()
+			if state == nil || state.cfg != cfg {
 				return
 			}
-			// Spare records belong to names nothing refreshes.
-			records := d.domains.Snapshot(func(r domaincache.Record) bool { return !r.Spare })
+			// Current own lists decide which names are eligible, even if an
+			// observation raced publication and used the previous priority.
+			records := d.domains.Snapshot(func(r domaincache.Record) bool {
+				return state.names.InGroups(r.Name)
+			})
 			now := time.Now()
 			names := refreshDomainNames(cfg, records, now)
 			existing := make(map[string]domaincache.Record, len(records))
@@ -400,22 +407,26 @@ func dnsRouteNote(cfg *model.Config, raw, ip string, holding func() []domaincach
 }
 
 // cleanDNSFilesLocked removes the dns-* files the last complete write did not
-// produce, once per change of the DNS names. It runs after Apply or rollback
-// is finished, never while the old engine still uses its files.
+// produce. It runs after Apply or rollback is finished and leaves cleanup
+// pending if removal fails, so a later flush can retry.
 func (d *Daemon) cleanDNSFilesLocked() {
 	entries, err := os.ReadDir(d.opt.RuleSetDir)
 	if err != nil {
 		return
 	}
+	var failed bool
 	for _, e := range entries {
 		name := e.Name()
 		if !e.IsDir() && strings.HasPrefix(name, "dns-") && strings.HasSuffix(name, ".json") {
 			if _, ok := d.dnsFiles.contents[name]; !ok {
 				if err := os.Remove(filepath.Join(d.opt.RuleSetDir, name)); err != nil && !os.IsNotExist(err) {
 					d.log.Warn("failed to remove stale DNS rule set", "err", err)
+					failed = true
 				}
 			}
 		}
 	}
-	d.dnsFiles.cleaned = d.dnsFiles.names
+	if !failed {
+		d.dnsFiles.cleaned = d.dnsFiles.names
+	}
 }

@@ -59,6 +59,19 @@ func Normalize(name string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 }
 
+// Reclassify updates eviction priority and expiry retention in one pass.
+// isSpare runs under the cache lock and must not use the cache.
+func (c *Cache) Reclassify(isSpare func(name string) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for name, r := range c.records {
+		if spare := isSpare(name); spare != r.Spare {
+			r.Spare = spare
+			c.records[name] = r
+		}
+	}
+}
+
 // put stores r; the caller holds mu. A new name at the limit first evicts
 // the least recently attempted spare record, or, for a record that is not
 // spare and without spare records, the least recently attempted record. A
@@ -144,14 +157,8 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
 		}
 		current = next
 	}
-	if !terminal && spare {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.removeLocked(name)
-		return
-	}
 	if !terminal {
-		c.SetError(name, "CNAME chain is cyclic or too long")
+		c.setError(name, "CNAME chain is cyclic or too long", spare)
 		return
 	}
 	unique := map[string]bool{}
@@ -189,10 +196,17 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
 
 // SetError records a failed attempt while retaining still-valid answers.
 func (c *Cache) SetError(name, message string) {
+	c.setError(Normalize(name), message, false)
+}
+
+// setError retains failure history for a spare name only if it already has a record.
+func (c *Cache) setError(name, message string, existingOnly bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	name = Normalize(name)
-	r := c.records[name]
+	r, exists := c.records[name]
+	if existingOnly && !exists {
+		return
+	}
 	r.Name = name
 	r.Error = message
 	r.AttemptedAt = c.now()
