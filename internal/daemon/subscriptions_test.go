@@ -352,6 +352,22 @@ func TestSubscriptionRemovalBlocksUntilReplacementResponds(t *testing.T) {
 	}
 	requireSubscriptionSelection(t, d, model.TargetBlock)
 
+	// Any later core reconciliation (an Apply, a refresh activation, a
+	// watchdog recompile) keeps the block: no unchecked node takes over.
+	d.mu.Lock()
+	out, err := d.compileLocked()
+	if err == nil {
+		_, err = d.applyCoreLocked(out)
+	}
+	d.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireSubscriptionSelection(t, d, model.TargetBlock)
+	if got := d.Subscriptions()[0]; got.ActiveNode != "" || !got.Unavailable || got.SwitchReason != "removed" {
+		t.Fatalf("a recompile replaced the block with an unchecked node: %+v", got)
+	}
+
 	now := time.Now()
 	d.mu.Lock()
 	d.health[second] = &health{}

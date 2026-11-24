@@ -46,7 +46,9 @@ func (d *Daemon) restoreSubscriptionSelectorsLocked(out compile.Output, restarte
 				target = selector.Fallback
 			} else if selection.Node != "" || reason == subscriptionSwitchRemoved || reason == subscriptionSwitchFallback {
 				// A persisted reserve whose source no longer names one is handled like a removed node.
-				wasReserve := selection.Node == ""
+				// A removed node without a replacement stays blocked: only a
+				// reserve that is gone may fall back to an unchecked node.
+				wasReserve := selection.Node == "" && reason == subscriptionSwitchFallback
 				target, reason = d.firstHealthySubscriptionNodeLocked(selector.Candidates, now), subscriptionSwitchRemoved
 				if target == model.TargetBlock && selector.Fallback != "" {
 					target, reason = selector.Fallback, subscriptionSwitchFallback
