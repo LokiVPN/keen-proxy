@@ -222,6 +222,48 @@ func TestOverviewUsesStaticLeavesOfRawGroups(t *testing.T) {
 	}
 }
 
+func TestOverviewBlockingPaths(t *testing.T) {
+	const sourceID = "sample"
+	auto := model.ManagedTarget(sourceID, "auto")
+	for _, tc := range []struct {
+		name, target, reserve, connectionFallback, detail string
+	}{
+		{"named block reserve", auto, "reject", "", "No subscription node is available."},
+		{"built-in block fallback", auto, model.TargetBlock, "", "No subscription node is available."},
+		{"block-only selector", "blocking-group", "", "", "The main connection is unavailable."},
+		{"blocked active primary with direct failover", "reject", "", model.TargetDirect, "The main connection is unavailable."},
+		{"blocked active reserve with direct failover", auto, "reject", model.TargetDirect, "No subscription node is available."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holdMemoryLimit(t)
+			cfg := quietConfig(t)
+			cfg.Networks = []model.Network{{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeFull, Target: tc.target}}
+			cfg.Connections = []model.Connection{
+				{ID: "reject", Type: model.ConnSingBox, Fallback: tc.connectionFallback, Outbound: map[string]any{"type": "block"}},
+				{ID: "blocking-group", Type: model.ConnSingBox, Outbound: map[string]any{
+					"type": "selector", "outbounds": []string{"reject"},
+				}},
+			}
+			if tc.target == auto {
+				cfg.Subscriptions = []subscription.Source{{ID: sourceID, URL: "https://provider.example/catalog", Fallback: tc.reserve}}
+			}
+			d := newMemoryDaemon(t, writeSavedConfig(t, cfg), &gateRunner{})
+			t.Cleanup(d.shutdown)
+			// A saved source can start with no catalog or probe results.
+			d.loadSubscriptionSnapshotsLocked(t.Context(), cfg)
+			if err := d.Apply(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			page := viewOverview(t, d)
+			_, banner, _ := strings.Cut(page, `<div class="overview-status">`)
+			banner, _, _ = strings.Cut(banner, `</div>`)
+			if !strings.Contains(banner, `class="chip warn">No connection</span>`) || !strings.Contains(banner, tc.detail+"</p>") {
+				t.Errorf("overview should show the outage before probing the blocking path, got %s", banner)
+			}
+		})
+	}
+}
+
 func newOverviewTestDaemon(t *testing.T, source subscription.Source) *Daemon {
 	t.Helper()
 	d := New(Options{RuleSetDir: filepath.Join(t.TempDir(), "rules")})
@@ -254,6 +296,12 @@ func (v overviewTestDeps) OverviewStatus() ui.OverviewStatus {
 	for id, probe := range routing.Health {
 		status.Connections[id] = ui.ConnectionStatus{Checked: !probe.Checked.IsZero(), Available: probe.OK, LatencyMS: probe.Latency}
 	}
+	for id, failover := range routing.Failover {
+		connection := status.Connections[id]
+		connection.Active = failover.Active
+		connection.ActiveClass = routing.ActiveTargetClasses[id]
+		status.Connections[id] = connection
+	}
 	for id, class := range routing.TargetClasses {
 		connection := status.Connections[id]
 		connection.Class = class
@@ -269,7 +317,13 @@ func (v overviewTestDeps) Subscriptions() []ui.AppliedSubscription {
 		return nil
 	}
 	status := statuses[0]
-	sub := ui.AppliedSubscription{ID: status.ID, State: status.State, Metadata: status.Metadata, LastSuccess: *status.LastSuccess}
+	sub := ui.AppliedSubscription{
+		ID: status.ID, State: status.State, Metadata: status.Metadata, Unavailable: status.Unavailable,
+		ActiveNode: status.ActiveNode, SwitchReason: status.SwitchReason,
+	}
+	if status.LastSuccess != nil {
+		sub.LastSuccess = *status.LastSuccess
+	}
 	for _, node := range status.Nodes {
 		sub.Nodes = append(sub.Nodes, ui.SubscriptionNode{ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS})
 	}

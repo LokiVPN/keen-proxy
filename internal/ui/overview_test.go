@@ -75,6 +75,7 @@ func TestOverviewStatusPrecedence(t *testing.T) {
 	}
 	direct := map[string]any{"type": "direct"}
 	mixed := map[string]any{"type": "selector", "default": "backup", "outbounds": []string{model.TargetDirect, "backup"}}
+	reject := model.Connection{ID: "reject", Type: model.ConnSingBox, Outbound: map[string]any{"type": "block"}}
 	for _, tc := range []struct {
 		name, chip, detail string
 		arrange            func(*overviewFixture)
@@ -128,8 +129,13 @@ func TestOverviewStatusPrecedence(t *testing.T) {
 			f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN, Active: "old", Checked: true}
 			f.status.Connections["old"] = ConnectionStatus{Class: stats.TargetVPN}
 		}},
-		{"empty catalog with blocking fallback", "No connection", "No subscription node is available.", func(f *overviewFixture) {
+		{"empty catalog with built-in blocking fallback", "No connection", "No subscription node is available.", func(f *overviewFixture) {
 			emptyCatalog(f, model.TargetBlock)
+		}},
+		{"empty catalog with named blocking reserve", "No connection", "No subscription node is available.", func(f *overviewFixture) {
+			emptyCatalog(f, reject.ID)
+			f.cfg.Connections = append(f.cfg.Connections, reject)
+			f.status.Connections[reject.ID] = ConnectionStatus{Class: stats.TargetBlock}
 		}},
 		{"empty catalog with blocked reserve chain", "No connection", "No subscription node is available.", func(f *overviewFixture) {
 			emptyCatalog(f, "backup")
@@ -139,6 +145,14 @@ func TestOverviewStatusPrecedence(t *testing.T) {
 		{"manual failover is blocked", "No connection", "The main connection is unavailable.", func(f *overviewFixture) {
 			f.cfg.Networks[0].Target = "backup"
 			f.status.Connections["backup"] = ConnectionStatus{Active: model.TargetBlock}
+		}},
+		{"selector with only a blocking leaf", "No connection", "The main connection is unavailable.", func(f *overviewFixture) {
+			f.cfg.Networks[0].Target = "old"
+			conn := &f.cfg.Connections[0]
+			conn.Type, conn.Link = model.ConnSingBox, ""
+			conn.Outbound = map[string]any{"type": "selector", "outbounds": []string{reject.ID}}
+			f.cfg.Connections = append(f.cfg.Connections, reject)
+			f.status.Connections[conn.ID] = ConnectionStatus{Class: stats.TargetBlock}
 		}},
 		{"direct classification", "Direct connection", "The main connection for the home network routes directly.", func(f *overviewFixture) {
 			rawTarget(f, direct, stats.TargetDirect, true)

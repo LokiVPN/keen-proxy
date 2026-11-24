@@ -164,6 +164,7 @@ func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscrip
 		sub := appliedSubscriptionFor(subs, id)
 		selection := selectedSubscription(cfg, sub, mode, health, text)
 		selection.Class = cmp.Or(health[target].Class, selection.Class)
+		selection.Blocked = selection.Blocked || selection.Class == stats.TargetBlock
 		return selection
 	}
 	return selectedManualConnection(cfg, target, health, text)
@@ -205,9 +206,10 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 }
 
 func selectedManualConnection(cfg *model.Config, target string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
-	active := cmp.Or(health[target].Active, target)
+	status := health[target]
+	active := cmp.Or(status.Active, target)
 	selection := connectionSelection{Class: connectionClass(target, health)}
-	if active == model.TargetBlock {
+	if selection.Class == stats.TargetBlock || status.ActiveClass == stats.TargetBlock || active == model.TargetBlock {
 		selection.Blocked = true
 		return selection
 	}
@@ -249,8 +251,8 @@ func (s *connectionSelection) useSubscriptionReserve(cfg *model.Config, id strin
 		// A configured reserve can itself use a failover chain. Read the
 		// probe of the selected member, as for an ordinary manual target.
 		reserve := selectedManualConnection(cfg, source.Fallback, health, text)
-		s.Class = reserve.Class
-		if reserve.Blocked {
+		s.Class, s.Blocked = reserve.Class, reserve.Blocked
+		if s.Blocked {
 			return
 		}
 		s.Health = reserve.Health
@@ -274,8 +276,12 @@ func connectionName(cfg *model.Config, target string) string {
 }
 
 func connectionClass(target string, health map[string]ConnectionStatus) stats.TargetClass {
-	if target == model.TargetDirect {
+	switch target {
+	case model.TargetDirect:
 		return stats.TargetDirect
+	case model.TargetBlock:
+		return stats.TargetBlock
+	default:
+		return health[target].Class
 	}
-	return health[target].Class
 }

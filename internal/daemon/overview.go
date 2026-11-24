@@ -15,6 +15,7 @@ type RoutingStatus struct {
 	Health                  map[string]ConnHealth
 	Failover                map[string]FailoverInfo
 	TargetClasses           map[string]stats.TargetClass
+	ActiveTargetClasses     map[string]stats.TargetClass // classes of selected failover outbounds
 }
 
 // RoutingStatus reads the daemon state without testing firewall rules or
@@ -47,8 +48,10 @@ func (d *Daemon) RoutingStatus() RoutingStatus {
 		status.TargetClasses[conn.ID] = d.eng.TargetClass(conn.ID)
 	}
 	// The compiler routes a connection with a reserve through its selector.
+	status.ActiveTargetClasses = make(map[string]stats.TargetClass, len(d.chains))
 	for _, chain := range d.chains {
 		status.TargetClasses[chain.ID] = d.eng.TargetClass(chain.Tag)
+		status.ActiveTargetClasses[chain.ID] = d.eng.TargetClass(status.Failover[chain.ID].Active)
 	}
 	for _, network := range d.cfg.Networks {
 		for _, target := range []string{network.Target, network.Default} {

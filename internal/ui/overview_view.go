@@ -95,7 +95,7 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 		if selection.Class == stats.TargetMixed && selection.Reserve == "" {
 			current = selection.Name
 		}
-		if status.Ready && !cfg.Paused && network.Mode != model.ModeOff && current != "" {
+		if status.Ready && !cfg.Paused && network.Mode != model.ModeOff && !selection.Blocked && current != "" {
 			page.Current = fmt.Sprintf(text["overview_current_connection"], current)
 		}
 	}
@@ -150,12 +150,12 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 			return outage, text["overview_subscription_down"]
 		}
 		return outage, text["overview_connection_down"]
-	case selection.SubscriptionUnavailable && selection.Reserve != "":
+	case selection.SubscriptionUnavailable && !selection.Blocked && selection.Reserve != "":
 		if selection.ReserveDirect {
 			return overviewChip{text["overview_direct"], ""}, text["overview_direct_reserve"]
 		}
 		return overviewChip{text["overview_reserve_connection"], ""}, fmt.Sprintf(text["overview_using_reserve"], selection.Reserve)
-	case selection.SubscriptionUnavailable:
+	case selection.SubscriptionUnavailable || (selection.Subscription && selection.Blocked):
 		return outage, text["overview_subscription_down"]
 	case selection.Blocked:
 		return outage, text["overview_connection_down"]

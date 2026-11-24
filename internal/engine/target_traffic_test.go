@@ -18,9 +18,11 @@ func TestTunnelChartUsesRoutedTargetLeaves(t *testing.T) {
 		"outbounds":[
 			{"type":"direct","tag":"local-egress"},
 			{"type":"socks","tag":"vpn","server":"127.0.0.1","server_port":1},
-			{"type":"selector","tag":"direct-group","outbounds":["local-egress"]},
+			{"type":"block","tag":"reject"},
+			{"type":"selector","tag":"direct-group","outbounds":["local-egress","reject"]},
 			{"type":"urltest","tag":"mixed-group","mode":"round_robin","outbounds":["local-egress","vpn"],"url":"http://127.0.0.1:1/generate_204"},
-			{"type":"selector","tag":"vpn-group","outbounds":["vpn"]}
+			{"type":"selector","tag":"vpn-group","outbounds":["vpn","reject"]},
+			{"type":"selector","tag":"block-group","outbounds":["reject"]}
 		]
 	}`)); err != nil {
 		t.Fatal(err)
@@ -34,6 +36,7 @@ func TestTunnelChartUsesRoutedTargetLeaves(t *testing.T) {
 		{"mixed-group", "", 200}, // The router leaves the balancing group to choose during the dial.
 		{"mixed-group", "local-egress", 400},
 		{"vpn-group", "vpn", 800},
+		{"block-group", "reject", 1600},
 	} {
 		outbound, ctx, ok := engine.Outbound(flow.target)
 		if !ok {

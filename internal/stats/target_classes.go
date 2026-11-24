@@ -9,7 +9,7 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
-// TargetClass describes the forwarding leaves reachable from a routing target.
+// TargetClass describes a target's forwarding leaves or a blocking-only path.
 type TargetClass uint8
 
 const (
@@ -17,6 +17,7 @@ const (
 	TargetDirect  TargetClass = 1
 	TargetVPN     TargetClass = 2
 	TargetMixed               = TargetDirect | TargetVPN
+	TargetBlock   TargetClass = 4
 )
 
 type targetClasses map[string]TargetClass
@@ -55,13 +56,13 @@ func targetMembers(out adapter.Outbound) ([]string, bool) {
 	return nil, false
 }
 
-// walkTargetLeaves visits each reachable tag once, including when a raw group
-// refers back to a group already on the walk. Only forwarding leaves count.
+// walkTargetLeaves visits each reachable tag once. Block leaves determine the
+// class only if the group has no direct or VPN leaves.
 func walkTargetLeaves(manager adapter.OutboundManager, root string) TargetClass {
 	pending := []string{root}
 	seen := make(map[string]bool)
 	class := TargetUnknown
-	for len(pending) > 0 && class != TargetMixed {
+	for len(pending) > 0 && class&TargetMixed != TargetMixed {
 		last := len(pending) - 1
 		tag := pending[last]
 		pending = pending[:last]
@@ -79,6 +80,9 @@ func walkTargetLeaves(manager adapter.OutboundManager, root string) TargetClass 
 			class |= leafTargetClass(out.Type())
 		}
 	}
+	if forwarding := class & TargetMixed; forwarding != TargetUnknown {
+		return forwarding
+	}
 	return class
 }
 
@@ -86,7 +90,9 @@ func leafTargetClass(kind string) TargetClass {
 	switch kind {
 	case C.TypeDirect:
 		return TargetDirect
-	case C.TypeBlock, C.TypeDNS:
+	case C.TypeBlock:
+		return TargetBlock
+	case C.TypeDNS:
 		return TargetUnknown
 	default:
 		return TargetVPN

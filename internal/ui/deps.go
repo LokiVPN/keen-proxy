@@ -45,11 +45,11 @@ type OverviewStatus struct {
 }
 
 // ConnectionStatus describes a routing target's static class, recent probe,
-// and any selected reserve.
+// and any selected failover member's ID and class.
 type ConnectionStatus struct {
 	Active             string
 	Checked, Available bool
-	Class              stats.TargetClass
+	Class, ActiveClass stats.TargetClass
 	LatencyMS          int64
 }
 

@@ -77,6 +77,7 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 	for id, failover := range routing.Failover {
 		connection := status.Connections[id]
 		connection.Active = failover.Active
+		connection.ActiveClass = routing.ActiveTargetClasses[id]
 		status.Connections[id] = connection
 	}
 	for id, class := range routing.TargetClasses {
