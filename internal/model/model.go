@@ -358,7 +358,7 @@ func (c *Config) RouteHomeThroughSubscription(id string, lan netip.Prefix) {
 		Name:    "Home",
 		CIDR:    lan.Masked().String(),
 		Mode:    ModeSplit,
-		Target:  "subscription:" + id + ":auto",
+		Target:  ManagedTarget(id, "auto"),
 		Default: DefaultProfile,
 	}}
 	c.ProviderRules = &ProviderRulesSettings{Source: id}
