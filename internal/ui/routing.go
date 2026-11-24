@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 )
 
 const (
@@ -29,12 +30,23 @@ type routingDraft struct {
 	Mode        string
 	VPN, Direct *routingList
 	Switches    map[string]bool
+	Overlap     bool
 }
 
 type routingList struct {
 	Value        string
 	Entries      []string
 	InvalidLines []int
+	ReadOnlyNote string
+}
+
+// routingState joins configured source and target choices with their latest
+// applied status for both rendering and save admission.
+type routingState struct {
+	source string
+	sub    AppliedSubscription
+	rules  RoutingRules
+	class  stats.TargetClass
 }
 
 func (p pages) routingGet(w http.ResponseWriter, r *http.Request) {
@@ -68,16 +80,17 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	}
 	form := r.PostForm
 	mode := form.Get("mode")
-	source := routingRulesSource(cfg, network)
+	state := p.routingState(cfg, network)
+	providerProblem := state.providerProblem()
 	switch {
 	case len(form["mode"]) != 1 || (mode != routingProvider && mode != routingAll && mode != routingOwn):
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, nil, "routing_invalid_mode")
 		return
-	case mode == routingProvider && source == "":
-		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, "routing_need_subscription")
+	case mode == routingProvider && providerProblem != "":
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, providerProblem)
 		return
-	case mode != routingOwn && !routingHasMain(network):
-		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, "routing_need_main")
+	case mode == routingAll && !state.canUseVPN():
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, state.mainProblem())
 		return
 	case len(form[ownVPNGroup]) > 1 || len(form[ownDirectGroup]) > 1:
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, nil, "routing_invalid_form")
@@ -85,26 +98,34 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	draft := routingDraft{Mode: mode}
-	// The selected mode controls which lists the form exposes.
-	if mode != routingAll && form.Has(ownVPNGroup) {
+	vpn, direct := routingOwnGroups(cfg, ownVPNGroup, network.Target), routingOwnGroups(cfg, ownDirectGroup, model.TargetDirect)
+	if (form.Has(ownVPNGroup) && (vpn.readOnly() || !state.canUseVPN())) || (form.Has(ownDirectGroup) && direct.readOnly()) {
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "routing_list_read_only")
+		return
+	}
+	if form.Has(ownVPNGroup) {
 		draft.VPN = parseRoutingList(form.Get(ownVPNGroup))
 	}
-	if mode != routingOwn && form.Has(ownDirectGroup) {
+	if form.Has(ownDirectGroup) {
 		draft.Direct = parseRoutingList(form.Get(ownDirectGroup))
 	}
-	if mode == routingProvider {
-		draft.Switches = p.routingRules(cfg).submittedSwitches(form)
+	var valid bool
+	draft.Switches, valid = submittedRuleSwitches(form)
+	if !valid || (len(draft.Switches) != 0 && cfg.ProviderRules == nil) {
+		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
+		return
 	}
 	if (draft.VPN != nil && len(draft.VPN.InvalidLines) != 0) ||
 		(draft.Direct != nil && len(draft.Direct.InvalidLines) != 0) {
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "")
 		return
 	}
-	if draft.VPN != nil && len(draft.VPN.Entries) != 0 && !routingHasMain(network) {
-		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "routing_need_main")
+	draft.Overlap = routingListsOverlap(vpn.effectiveEntries(draft.VPN), direct.effectiveEntries(draft.Direct))
+	if draft.Overlap {
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "")
 		return
 	}
-	draft.apply(cfg, network, source)
+	draft.apply(cfg, network, state.source)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
@@ -141,8 +162,39 @@ func routingRulesSource(cfg *model.Config, network *model.Network) string {
 	return ""
 }
 
-func routingHasMain(network *model.Network) bool {
-	return network.Target != "" && network.Target != model.TargetDirect && network.Target != model.TargetBlock
+func (p pages) routingState(cfg *model.Config, network *model.Network) routingState {
+	source := routingRulesSource(cfg, network)
+	return routingState{
+		source: source, sub: appliedSubscriptionFor(p.deps.Subscriptions(), source),
+		rules: p.routingRules(cfg), class: connectionClass(network.Target, p.deps.OverviewStatus().Connections),
+	}
+}
+
+func (s routingState) canUseVPN() bool {
+	return s.class == stats.TargetVPN || s.class == stats.TargetMixed
+}
+
+func (s routingState) mainProblem() string {
+	switch s.class {
+	case stats.TargetDirect:
+		return "overview_direct_hint"
+	case stats.TargetBlock:
+		return "routing_main_blocked"
+	default:
+		return "routing_need_main"
+	}
+}
+
+func (s routingState) providerProblem() string {
+	switch {
+	case s.sub.RulesWithheld || s.rules.State == "withheld":
+		return "setup_rules_withheld"
+	case s.source == "":
+		return "routing_need_subscription"
+	case !s.canUseVPN():
+		return s.mainProblem()
+	}
+	return ""
 }
 
 func (d routingDraft) apply(cfg *model.Config, network *model.Network, source string) {
@@ -151,16 +203,15 @@ func (d routingDraft) apply(cfg *model.Config, network *model.Network, source st
 		if cfg.ProviderRules == nil {
 			cfg.ProviderRules = &model.ProviderRulesSettings{Source: source}
 		}
-		cfg.ProviderRules.Off = false
-		d.saveSwitches(cfg.ProviderRules)
 	} else {
 		network.Default = model.TargetDirect
 		if d.Mode == routingAll {
 			network.Default = network.Target
 		}
-		if cfg.ProviderRules != nil {
-			cfg.ProviderRules.Off = true
-		}
+	}
+	if cfg.ProviderRules != nil {
+		cfg.ProviderRules.Off = d.Mode != routingProvider
+		d.saveSwitches(cfg.ProviderRules)
 	}
 	saveRoutingList(cfg, ownVPNGroup, network.Target, d.VPN)
 	saveRoutingList(cfg, ownDirectGroup, model.TargetDirect, d.Direct)
@@ -170,9 +221,12 @@ func (d routingDraft) saveSwitches(settings *model.ProviderRulesSettings) {
 	if len(d.Switches) == 0 {
 		return
 	}
-	settings.Disabled = slices.DeleteFunc(settings.Disabled, func(key string) bool { return d.Switches[key] })
+	settings.Disabled = slices.DeleteFunc(settings.Disabled, func(key string) bool {
+		return d.Switches[key] || d.Switches[model.RedactedProviderRuleKey(key)]
+	})
+	disabled := settings.DisabledRuleKeys()
 	for _, key := range slices.Sorted(maps.Keys(d.Switches)) {
-		if !d.Switches[key] && !slices.Contains(settings.Disabled, key) {
+		if !d.Switches[key] && !disabled[key] {
 			settings.Disabled = append(settings.Disabled, key)
 		}
 	}
@@ -197,6 +251,65 @@ func parseRoutingList(value string) *routingList {
 	return list
 }
 
+// ownRoutingGroups collects exact name matches. Several groups sharing a
+// reserved name or one with advanced settings cannot be edited as a list.
+type ownRoutingGroups struct {
+	groups []model.Group
+	target string
+}
+
+func routingOwnGroups(cfg *model.Config, name, target string) ownRoutingGroups {
+	result := ownRoutingGroups{target: target}
+	for _, group := range cfg.Groups {
+		if group.Name == name {
+			result.groups = append(result.groups, group)
+		}
+	}
+	return result
+}
+
+func (l ownRoutingGroups) readOnly() bool {
+	switch len(l.groups) {
+	case 0:
+		return false
+	case 1:
+		g := l.groups[0]
+		return g.Target != l.target || g.IsGeo() || g.Disabled || g.Except ||
+			len(g.DisabledEntries)+len(g.DisabledCategories)+len(g.DisabledCountries) != 0
+	default:
+		return true
+	}
+}
+
+func (l ownRoutingGroups) effectiveEntries(draft *routingList) []string {
+	if draft != nil {
+		return draft.Entries
+	}
+	if len(l.groups) == 1 {
+		return l.groups[0].Entries
+	}
+	var entries []string
+	for _, group := range l.groups {
+		entries = append(entries, group.Entries...)
+	}
+	return entries
+}
+
+func routingListsOverlap(vpn, direct []string) bool {
+	vpnEntries := make(map[model.Entry]bool, len(vpn))
+	for _, raw := range vpn {
+		if entry, err := model.ParseEntry(raw); err == nil {
+			vpnEntries[entry] = true
+		}
+	}
+	for _, raw := range direct {
+		if entry, err := model.ParseEntry(raw); err == nil && vpnEntries[entry] {
+			return true
+		}
+	}
+	return false
+}
+
 // saveRoutingList updates a reserved group in place so the order of the
 // surrounding groups keeps its meaning for overlapping entries.
 func saveRoutingList(cfg *model.Config, name, target string, list *routingList) {
@@ -207,9 +320,6 @@ func saveRoutingList(cfg *model.Config, name, target string, list *routingList) 
 		group := &cfg.Groups[i]
 		if group.Name == name {
 			group.Entries = list.Entries
-			if target != "" {
-				group.Target = target
-			}
 			return
 		}
 	}
@@ -218,27 +328,21 @@ func saveRoutingList(cfg *model.Config, name, target string, list *routingList) 
 	}
 }
 
-// submittedSwitches intersects the posted rows and the current available
-// rules. A concurrent subscription refresh can add, remove or invalidate
-// rows without changing the applied config revision.
-func (rules RoutingRules) submittedSwitches(form url.Values) map[string]bool {
-	if rules.State != "ready" && rules.State != "partial" {
-		return nil
-	}
+// submittedRuleSwitches accepts the rows from the rendered form. A refresh
+// may remove a rule before POST without changing the config revision.
+func submittedRuleSwitches(form url.Values) (map[string]bool, bool) {
 	submitted := make(map[string]bool, len(form["rule"]))
 	for _, key := range form["rule"] {
+		if len(key) == 0 || len(key) > model.MaxProviderRuleKey {
+			return nil, false
+		}
 		submitted[key] = false
 	}
 	for _, key := range form["enabled"] {
-		if _, ok := submitted[key]; ok {
-			submitted[key] = true
+		if _, ok := submitted[key]; !ok {
+			return nil, false
 		}
+		submitted[key] = true
 	}
-	changes := map[string]bool{}
-	for _, rule := range rules.Rules {
-		if on, ok := submitted[rule.Key]; ok && rule.switchable() {
-			changes[rule.Key] = on
-		}
-	}
-	return changes
+	return submitted, true
 }

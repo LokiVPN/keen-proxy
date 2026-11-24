@@ -248,6 +248,68 @@ func TestProviderRulesAppliedAndRestoredWithoutProvider(t *testing.T) {
 	}
 }
 
+func TestRestoreRedactsLegacyProviderKeysAndRetainsDisabledRules(t *testing.T) {
+	d, cfg, _ := newRulesTestDaemon(t)
+	const token = "legacy-catalog-fixture"
+	cfg.Subscriptions[0].URL += "?key=" + token
+	ref := "geosite:" + cfg.Subscriptions[0].URL
+	legacyKey := "proxy:" + ref
+	cfg.ProviderRules.Disabled = []string{legacyKey}
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	path := d.subscriptionSnapshotPath(cfg)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshots map[string]subscriptionSnapshot
+	if err := json.Unmarshal(raw, &snapshots); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := subscriptionFingerprint(cfg.Subscriptions[0])
+	snapshot := snapshots[fingerprint]
+	snapshot.Rules = &rulesSnapshot{
+		Profile: &subscription.RoutingProfile{ProxySites: []string{ref}},
+		Built: &compile.ProviderRules{RouteOrder: "block-direct-proxy", Rules: []compile.ProviderRule{
+			{Key: legacyKey, Action: "proxy", Kind: "site", Source: ref, Label: ref, Suffix: []string{"legacy-rule.example"}},
+		}},
+	}
+	snapshots[fingerprint] = snapshot
+	raw, err = json.Marshal(snapshots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.shutdown()
+	reopened := New(d.opt)
+	t.Cleanup(reopened.shutdown)
+	if _, err := reopened.startLocked(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	rules, _, state := reopened.ProviderRules()
+	if state != ProviderRulesReady || len(rules.Rules) != 1 {
+		t.Fatalf("legacy snapshot restored %d rules with state %s", len(rules.Rules), state)
+	}
+	rule := rules.Rules[0]
+	if rule.Reference() != ref || rule.Key != model.RedactedProviderRuleKey(legacyKey) ||
+		rule.Source != "geosite:[redacted]" || strings.Contains(rule.Label, token) {
+		t.Fatal("legacy rule lost its private lookup or failed display redaction")
+	}
+	if reopened.publishedDNSNames().Observed("legacy-rule.example") {
+		t.Error("legacy disabled key no longer disables its protected rule")
+	}
+	cfg.ProviderRules.Disabled = nil
+	if err := reopened.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.publishedDNSNames().Observed("legacy-rule.example") {
+		t.Error("re-enabled rule did not reach DNS fallback")
+	}
+}
+
 func TestProviderRulesPreviewDownloadsNothingAndRefreshReusesDatFiles(t *testing.T) {
 	d, cfg, p := newRulesTestDaemon(t)
 	if preview := d.PreviewSubscription(t.Context(), cfg.Subscriptions[0]); preview.State != subscription.StateReady {
@@ -644,6 +706,40 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 	}
 	awaitSubscriptionStatus(t, d, func(s SubscriptionStatus) bool { return s.RulesState == ProviderRulesReady })
 	requireAppliedProviderRules(t, d)
+}
+
+func TestProviderWithholdingSurvivesOffAndRestart(t *testing.T) {
+	d, cfg, provider := newRulesTestDaemon(t)
+	provider.update(func(p *rulesProvider) { p.enable = "0" })
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if status := d.Subscriptions()[0]; !status.RulesWithheld || status.RulesState != ProviderRulesWithheld {
+		t.Errorf("active subscription withheld=%v state=%q", status.RulesWithheld, status.RulesState)
+	}
+	off := cfg.Clone()
+	off.ProviderRules.Off = true
+	if err := d.Apply(t.Context(), off); err != nil {
+		t.Fatal(err)
+	}
+	d.shutdown()
+	reopened := New(d.opt)
+	reopened.subscriptions.fetcher = d.subscriptions.fetcher
+	t.Cleanup(reopened.shutdown)
+	if _, err := reopened.startLocked(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if status := reopened.Subscriptions()[0]; !status.RulesWithheld || status.RulesState != "" {
+		t.Errorf("reopened subscription withheld=%v state=%q", status.RulesWithheld, status.RulesState)
+	}
+	provider.update(func(p *rulesProvider) { p.enable = "1" })
+	runSubscriptionTestWorker(t, reopened)
+	if status := refreshProviderRules(t, reopened, func(s SubscriptionStatus) bool { return s.State == subscription.StateReady }); status.RulesWithheld {
+		t.Error("provider now supplies a profile but the last fetch still reports withheld")
+	}
+	if provider.count("/geosite.dat") != 0 || provider.count("/geoip.dat") != 0 {
+		t.Error("tracking availability evaluated geo data with rules off")
+	}
 }
 
 func TestProviderRulesApplyBoundsStalledGeoDownloads(t *testing.T) {

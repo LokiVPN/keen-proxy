@@ -17,21 +17,21 @@
               <input type="radio" name="mode" value="provider" id="routing-mode-provider" required{{if eq .Routing.Mode "provider"}} checked{{end}}{{if not .Routing.CanProvider}} disabled{{end}}>
               <span>
                 <span class="clip routing-radio-title" title="{{.Routing.ProviderMode}}">{{.Routing.ProviderMode}}</span>
-                <span class="muted small">{{if .Routing.CanProvider}}{{.Text.routing_provider_hint}}{{else if .Routing.CanAll}}{{.Text.routing_need_subscription}}{{else}}{{.Text.routing_need_main}}{{end}}</span>
+                <span class="muted small">{{.Routing.ProviderHint}}</span>
               </span>
             </label>
             <label class="routing-radio">
               <input type="radio" name="mode" value="all" id="routing-mode-all" required{{if eq .Routing.Mode "all"}} checked{{end}}{{if not .Routing.CanAll}} disabled{{end}}>
               <span>
-                <span class="routing-radio-title">{{.Text.overview_route_all}}</span>
-                <span class="muted small">{{if .Routing.CanAll}}{{.Text.routing_all_hint}}{{else}}{{.Text.routing_need_main}}{{end}}</span>
+                <span class="routing-radio-title">{{.Routing.AllMode}}</span>
+                <span class="muted small">{{.Routing.AllHint}}</span>
               </span>
             </label>
             <label class="routing-radio">
               <input type="radio" name="mode" value="own" id="routing-mode-own" required{{if eq .Routing.Mode "own"}} checked{{end}}>
               <span>
                 <span class="routing-radio-title">{{.Text.overview_route_own}}</span>
-                <span class="muted small">{{.Text.routing_own_hint}}</span>
+                <span class="muted small">{{.Routing.OwnHint}}</span>
               </span>
             </label>
           </fieldset>
@@ -69,7 +69,7 @@
               {{end}}
             </table>
             {{end}}
-            {{if .Routing.RuleGroups}}<p class="hint">{{.Text.routing_switch_hint}}</p>{{end}}
+            {{if .Routing.HasSwitches}}<p class="hint">{{.Text.routing_switch_hint}}</p>{{end}}
           </section>
 
           <section class="routing-section" aria-labelledby="routing-own-title">
@@ -78,19 +78,23 @@
             {{if .Routing.OtherGroups}}<p class="hint">{{.Text.routing_other_groups}}</p>{{end}}
             <div class="routing-lists">
               <div class="fld routing-vpn-list">
-                <label for="routing-own-vpn">{{.Text.routing_own_vpn}}</label>
-                <textarea id="routing-own-vpn" name="own-vpn" rows="4" spellcheck="false"{{if .Routing.VPN.InvalidLines}} aria-invalid="true" aria-describedby="routing-vpn-errors"{{end}}>
+                <label for="routing-own-vpn">{{.Routing.VPNTitle}}</label>
+                <textarea id="routing-own-vpn" name="own-vpn" rows="4" spellcheck="false"{{if .Routing.VPN.ReadOnlyNote}} disabled{{end}}{{if or .Routing.VPN.InvalidLines .Routing.Overlap}} aria-invalid="true" aria-describedby="routing-vpn-errors{{if .Routing.VPN.ReadOnlyNote}} routing-vpn-note{{end}}"{{else if .Routing.VPN.ReadOnlyNote}} aria-describedby="routing-vpn-note"{{end}}>
 {{.Routing.VPN.Value}}</textarea>
-                {{if .Routing.VPN.InvalidLines}}<ul id="routing-vpn-errors" class="routing-errors" role="alert">
+                {{if .Routing.VPN.ReadOnlyNote}}<p class="hint" id="routing-vpn-note">{{.Routing.VPN.ReadOnlyNote}}</p>{{end}}
+                {{if or .Routing.VPN.InvalidLines .Routing.Overlap}}<ul id="routing-vpn-errors" class="routing-errors" role="alert">
                   {{range .Routing.VPN.InvalidLines}}<li>{{printf $.Text.routing_invalid_entry .}}</li>{{end}}
+                  {{if .Routing.Overlap}}<li>{{.Text.routing_overlap}}</li>{{end}}
                 </ul>{{end}}
               </div>
               <div class="fld routing-direct-list">
                 <label for="routing-own-direct">{{.Text.routing_own_direct}}</label>
-                <textarea id="routing-own-direct" name="own-direct" rows="4" spellcheck="false"{{if .Routing.Direct.InvalidLines}} aria-invalid="true" aria-describedby="routing-direct-errors"{{end}}>
+                <textarea id="routing-own-direct" name="own-direct" rows="4" spellcheck="false"{{if .Routing.Direct.ReadOnlyNote}} disabled{{end}}{{if or .Routing.Direct.InvalidLines .Routing.Overlap}} aria-invalid="true" aria-describedby="routing-direct-errors{{if .Routing.Direct.ReadOnlyNote}} routing-direct-note{{end}}"{{else if .Routing.Direct.ReadOnlyNote}} aria-describedby="routing-direct-note"{{end}}>
 {{.Routing.Direct.Value}}</textarea>
-                {{if .Routing.Direct.InvalidLines}}<ul id="routing-direct-errors" class="routing-errors" role="alert">
+                {{if .Routing.Direct.ReadOnlyNote}}<p class="hint" id="routing-direct-note">{{.Routing.Direct.ReadOnlyNote}}</p>{{end}}
+                {{if or .Routing.Direct.InvalidLines .Routing.Overlap}}<ul id="routing-direct-errors" class="routing-errors" role="alert">
                   {{range .Routing.Direct.InvalidLines}}<li>{{printf $.Text.routing_invalid_entry .}}</li>{{end}}
+                  {{if .Routing.Overlap}}<li>{{.Text.routing_overlap}}</li>{{end}}
                 </ul>{{end}}
               </div>
             </div>

@@ -6,11 +6,11 @@ For diagrams of interception, DNS, and route selection, see [How traffic flows](
 
 Choose how the home split policy handles traffic and select **Save** to apply the changes.
 
-- **By subscription rules** uses the provider's rules and its default for unmatched traffic. The table groups rules by their action. Site and address lists each have one switch for their literal entries. Unavailable rules show a reason.
+- **By subscription rules** uses the provider's rules and its default for unmatched traffic. The option is unavailable when the provider withholds its rules. The table groups rules by their action. Site and address lists each have one switch for their literal entries. Unavailable rules show a reason.
 - **All traffic through VPN** uses the main connection for unmatched traffic. Add exceptions under **Always direct**.
 - **Only my sites** sends unmatched traffic directly. Enter sites for the main connection under **Always through VPN**.
 
-Enter one domain, IP address, or subnet per line. Domains include their subdomains. Your lists take priority over provider rules. A line error stops the save so you can fix the entry. Rules you switched off stay off when you return to the subscription mode. Additional configured groups keep their existing routes and ordering, and device policies continue to decide which devices use the routing settings.
+Both lists are visible in every mode. Enter one domain, IP address, or subnet per line. Domains include their subdomains. Each entry can belong to one list. Your lists take priority over provider rules. A line error or an entry in both lists stops the save. Rules you switched off stay off when you return to the subscription mode. A direct or blocking main connection makes the VPN option unavailable. Groups with advanced settings are read-only on this tab. Additional configured groups keep their existing routes and ordering, and device policies continue to decide which devices use the routing settings.
 
 ## Policy building blocks
 
@@ -101,13 +101,15 @@ provider_rules:
 
 Set `off: true` inside `provider_rules` to turn all provider rules off while keeping `source` and `disabled`. Remove the flag or set `off: false` to use the saved switches again. A `profile` default uses the policy's target while the rules are off.
 
+A category that contains private subscription data has an opaque switch key. Previously saved keys still control their corresponding rules.
+
 The provider sends the profile with each subscription fetch: in the `routing` response header, or, when the header is empty, as a body line `happ://routing/add/<base64 JSON>` or `happ://routing/onadd/<base64 JSON>`. A `routing-enable` header (or body comment) other than `true` or `1` withholds the rules, and `happ://routing/off` means the provider sends none. A profile that cannot be read is reported as a fixed error while the rules already in use stay. KeenProxy applies only the profile's own lists; it does not follow provider updates between subscription refreshes.
 
 Every split policy, for a network or a device, applies the rules after its own groups: first the provider's domain rules in the profile's `RouteOrder` (block, direct, proxy by default), then the DNS-observation fallback for provider domains (see below), then its address rules in the same order, then country groups and the default route. Proxy rules use the policy's own target (a split policy needs one, see [the default route](#default-route)), direct rules go direct, and block rules reject the connection. A domain in two lists follows the list that comes first in `RouteOrder`. Rules without provider data and entries that sing-box cannot use are skipped. Devices that are off and a paused router are not affected.
 
 Entries use Xray syntax. Domain lists accept `domain:` (suffix), `full:`, `keyword:`, `regexp:`, `geosite:<category>` (with an `@attribute` suffix, only the category's domains that carry that attribute) and plain text, which is a keyword. Address lists accept IP or CIDR literals and `geoip:<tag>`. `geoip:private` and `geosite:private` are skipped because private addresses always go direct. The rule status lists up to 50 skipped unsupported entries, including `ext:`, `ext-domain:`, `dotless:`, negated `!` categories, invalid regular expressions, unreadable addresses, and `geosite:` or `geoip:` entries longer than 249 bytes including the prefix. A category whose data file is missing or could not be loaded is shown as unavailable and does not route. The `GlobalProxy` field of the profile decides only the `profile` default route, not these rules.
 
-When the profile lists no usable rules, a policy behaves as without provider rules, and the `profile` default uses the network's target.
+An evaluated profile with no usable rules still supplies the `GlobalProxy` default. When no profile applies, `default: profile` uses the policy's target.
 
 Provider domain rules also apply to connections without a readable name. KeenProxy learns their addresses only from DNS answers that devices receive through it, and an address follows the rule until the answer's TTL ends: unlike names in your groups, provider names are never resolved in the background. Only domain entries take part in this (`domain:`, `full:` and the domains of geosite categories); keywords and regular expressions need a readable name. These addresses share a cache of 4,096 names with your groups, and provider names give way first when it is full.
 

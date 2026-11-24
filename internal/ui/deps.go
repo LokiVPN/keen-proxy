@@ -75,6 +75,7 @@ type AppliedSubscription struct {
 	Metadata                            subscription.Metadata
 	Nodes                               []SubscriptionNode
 	Unavailable                         bool
+	RulesWithheld                       bool
 	BalanceEligible                     *int
 	LastSuccess, NextRefresh            time.Time
 	Refreshing                          bool

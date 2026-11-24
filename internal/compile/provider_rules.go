@@ -20,17 +20,40 @@ import (
 // so the compiler can count rejected entries and geo file reuse can use
 // the same data again. Built rules are shared read-only values.
 type ProviderRule struct {
-	Key         string   `json:"key"`    // <action>:<entry>, or <action>:literals:<kind>
-	Action      string   `json:"action"` // proxy, direct or block
-	Kind        string   `json:"kind"`   // site (a Sites list) or ip (an Ip list)
-	Source      string   `json:"source"` // the entry as written, or "literals"
-	Label       string   `json:"label"`  // English display name
+	Key    string `json:"key"`    // <action>:<entry>, <action>:literals:<kind>, or a redacted key
+	Action string `json:"action"` // proxy, direct or block
+	Kind   string `json:"kind"`   // site (a Sites list) or ip (an Ip list)
+	Source string `json:"source"` // displayable category entry, or "literals"
+	Label  string `json:"label"`  // English display name
+	// CategoryRef is the private original entry when Source needed redaction.
+	CategoryRef string   `json:"category_ref,omitempty"`
 	Unavailable string   `json:"unavailable,omitempty"`
 	Suffix      []string `json:"suffix,omitempty"`
 	Full        []string `json:"full,omitempty"`
 	Keyword     []string `json:"keyword,omitempty"`
 	Regex       []string `json:"regex,omitempty"`
 	CIDR        []string `json:"cidr,omitempty"` // canonical masked prefixes
+}
+
+// Reference returns the original category entry for private geodata lookups.
+func (r ProviderRule) Reference() string {
+	if r.CategoryRef != "" {
+		return r.CategoryRef
+	}
+	return r.Source
+}
+
+// ProtectCategory keeps a sanitized label and key while retaining the
+// private reference for lookups. Repeated restoration keeps the same key.
+func (r *ProviderRule) ProtectCategory(display string) {
+	if display == "" || display == r.Source {
+		return
+	}
+	ref := r.Reference()
+	r.CategoryRef, r.Source = ref, display
+	r.Key = model.RedactedProviderRuleKey(r.Action + ":" + ref)
+	_, name, _ := strings.Cut(display, ":")
+	r.Label = providerLabel(name)
 }
 
 // ProviderRules is a provider's Happ routing profile interpreted for routing.
@@ -316,6 +339,7 @@ func (b *providerBuilder) add(action, kind, entry string) {
 
 func (b *providerBuilder) category(key, action, kind, entry, ref string) ProviderRule {
 	r := ProviderRule{Key: key, Action: action, Kind: kind, Source: entry, Label: providerLabel(ref)}
+	r.ProtectCategory(b.profile.CategoryDisplay[entry])
 	if kind == providerSite {
 		var data geodata.Sites
 		data, r.Unavailable = b.domains(ref)
@@ -442,10 +466,11 @@ func enabledProviderRules(c *model.Config, p *ProviderRules) []ProviderRule {
 		return nil
 	}
 	var out []ProviderRule
+	disabled := settings.DisabledRuleKeys()
 	for _, r := range p.Rules {
 		known := (r.Kind == providerSite || r.Kind == providerIP) &&
 			(r.Action == providerProxy || r.Action == providerDirect || r.Action == providerBlock)
-		if known && r.HasData() && !slices.Contains(settings.Disabled, r.Key) {
+		if known && r.HasData() && !disabled[r.Key] {
 			out = append(out, r)
 		}
 	}

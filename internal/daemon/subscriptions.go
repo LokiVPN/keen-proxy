@@ -64,6 +64,9 @@ type SubscriptionStatus struct {
 	// RulesState is the provider-rules state of the configured source, as
 	// ProviderRules reports it; empty for other sources.
 	RulesState ProviderRulesState `json:"rules_state,omitempty"`
+	// RulesWithheld records the last successful fetch's rule availability,
+	// including while rule evaluation is disabled.
+	RulesWithheld bool `json:"-"`
 }
 
 // SubscriptionPreviewDetails adds the parsed routing summary for setup. It
@@ -239,6 +242,7 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 			ID: source.ID, State: subscriptionPending, Metadata: statusMetadata(snapshot.Metadata, latest.result.Metadata),
 			Nodes: make([]SubscriptionNodeStatus, 0, len(snapshot.Nodes)), Skipped: snapshot.Skipped,
 			Unavailable: len(snapshot.Nodes) == 0, Fallback: source.Fallback,
+			RulesWithheld: snapshot.RulesWithheld,
 		}
 		if !latest.at.IsZero() {
 			status.State, status.Error, status.LastAttempt = latest.result.State, latest.result.Error, &latest.at
@@ -809,6 +813,7 @@ func (s *appliedSubscription) accept(attempt subscriptionAttempt) {
 	s.snapshot.Nodes = result.Nodes
 	s.snapshot.Metadata = result.Metadata
 	s.snapshot.LinksChecked = true
+	s.snapshot.RulesWithheld = result.Routing == nil && result.RoutingError == ""
 	s.snapshot.Skipped = result.Skipped
 	s.snapshot.LastSuccess = attempt.at
 	if attempt.rules != nil {

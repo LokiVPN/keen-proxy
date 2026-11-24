@@ -473,10 +473,7 @@
 .routing-rules .routing-rule-setting { text-align: right; }
 .routing-rules .tg { min-height: 22px; vertical-align: middle; }
 .routing-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
-.routing-form:has(#routing-mode-all:checked) .routing-vpn-list,
-.routing-form:has(#routing-mode-own:checked) .routing-direct-list,
 .routing-form:not(:has(#routing-mode-provider:checked)) .routing-provider { display: none; }
-.routing-form:has(#routing-mode-all:checked, #routing-mode-own:checked) .routing-lists { grid-template-columns: minmax(0, 1fr); max-width: 560px; }
 .routing-errors { margin: 4px 0 0; padding-left: 20px; color: var(--warn-t); }
 .fld textarea[aria-invalid="true"] { border-color: var(--warn-t); }
 

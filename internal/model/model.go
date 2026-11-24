@@ -3,6 +3,7 @@
 package model
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -83,6 +84,26 @@ func (c *Config) ActiveProviderRules() *ProviderRulesSettings {
 		return nil
 	}
 	return c.ProviderRules
+}
+
+// RedactedProviderRuleKey gives a protected category a stable switch key
+// outside the provider's action:entry key space.
+func RedactedProviderRuleKey(key string) string {
+	return fmt.Sprintf("redacted:%x", sha256.Sum256([]byte(key)))
+}
+
+// DisabledRuleKeys includes equivalents of keys saved before provider
+// categories were redacted. Old settings continue to disable the same rule.
+func (s *ProviderRulesSettings) DisabledRuleKeys() map[string]bool {
+	if s == nil || len(s.Disabled) == 0 {
+		return nil
+	}
+	keys := make(map[string]bool, 2*len(s.Disabled))
+	for _, key := range s.Disabled {
+		keys[key] = true
+		keys[RedactedProviderRuleKey(key)] = true
+	}
+	return keys
 }
 
 // Bounds for provider_rules.disabled. Compile keeps provider rule keys

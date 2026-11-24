@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
@@ -74,25 +75,44 @@ func TestRoutingOwnListsAndOtherGroups(t *testing.T) {
 	}
 }
 
-func TestRoutingModeEditsTheVisibleList(t *testing.T) {
-	f := newRoutingFixture()
-	f.cfg.Groups = []model.Group{
-		{Name: "own-vpn", Target: f.cfg.Networks[0].Target, Entries: []string{"old-vpn.example"}},
-		{Name: "own-direct", Target: model.TargetDirect, Entries: []string{"old-direct.example"}},
+func TestRoutingBothListsCanBeSavedInEachMode(t *testing.T) {
+	for _, mode := range []string{"all", "own", "provider"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newRoutingFixture()
+			h := New(f, setupTestOptions(RoleManage))
+			w := setupRequest(h, "/routing", url.Values{
+				"rev": {Revision(f.Config())}, "mode": {mode},
+				"own-vpn": {"new-vpn.example"}, "own-direct": {"new-direct.example"},
+			})
+			if w.Code != http.StatusSeeOther ||
+				!slices.Equal(f.cfg.Groups[0].Entries, []string{"new-vpn.example"}) ||
+				!slices.Equal(f.cfg.Groups[1].Entries, []string{"new-direct.example"}) {
+				t.Fatalf("save returned HTTP %d with groups %+v", w.Code, f.cfg.Groups)
+			}
+		})
 	}
-	h := New(f, setupTestOptions(RoleManage))
-	all := setupRequest(h, "/routing", url.Values{
-		"rev": {Revision(f.Config())}, "mode": {"all"}, "own-vpn": {"ignored"}, "own-direct": {"new-direct.example"},
-	})
-	own := setupRequest(h, "/routing", url.Values{
-		"rev": {Revision(f.Config())}, "mode": {"own"}, "own-vpn": {"new-vpn.example"}, "own-direct": {"ignored"},
-	})
-	if all.Code != http.StatusSeeOther || own.Code != http.StatusSeeOther {
-		t.Fatalf("mode saves returned HTTP %d and %d", all.Code, own.Code)
-	}
-	if !slices.Equal(f.cfg.Groups[0].Entries, []string{"new-vpn.example"}) ||
-		!slices.Equal(f.cfg.Groups[1].Entries, []string{"new-direct.example"}) {
-		t.Errorf("switching modes overwrote a hidden list: %+v", f.cfg.Groups)
+}
+
+func TestRoutingRejectsTheSameEntryInBothLists(t *testing.T) {
+	for _, tc := range []struct{ mode, field, value string }{
+		{"all", "own-direct", "EXAMPLE.com. # same suffix"},
+		{"own", "own-vpn", "198.51.100.44/24"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			f := newRoutingFixture()
+			f.cfg.Groups[0].Entries = []string{"*.example.com"}
+			f.cfg.Groups[1].Entries = []string{"198.51.100.0/24"}
+			before := f.Config()
+			h := New(f, setupTestOptions(RoleManage))
+			w := setupRequest(h, "/routing", url.Values{
+				"rev": {Revision(before)}, "mode": {tc.mode}, tc.field: {tc.value},
+			})
+			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(f.Config(), before) {
+				t.Fatalf("conflicting save returned HTTP %d with %d applies", w.Code, f.applies)
+			}
+			assertContains(t, w.Body.String(), `aria-describedby="routing-vpn-errors"`, `aria-describedby="routing-direct-errors"`,
+				"Remove entries that appear in both lists.", tc.value)
+		})
 	}
 }
 
@@ -228,19 +248,160 @@ func TestRoutingProviderTable(t *testing.T) {
 		"\u0414\u0440\u0443\u0433\u0438\u0435 \u0441\u0430\u0439\u0442\u044b \u0438\u0437 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0438 (3)")
 }
 
-func TestRoutingRuleEditsAreLimitedToAvailableSubmittedRows(t *testing.T) {
+func TestRoutingRuleSwitchSurvivesRefresh(t *testing.T) {
+	for _, state := range []string{"removed", "unavailable"} {
+		t.Run(state, func(t *testing.T) {
+			f := newRoutingFixture()
+			const youtube, returning, unchanged = "proxy:geosite:youtube", "proxy:geosite:returned", "direct:geosite:retired"
+			f.cfg.ProviderRules.Disabled = []string{returning, unchanged}
+			h := New(f, setupTestOptions(RoleManage))
+			before := setupRequest(h, "/routing", nil).Body.String()
+			assertContains(t, before, `name="rule" value="`+youtube+`"`, `name="rule" value="`+returning+`"`)
+			original := f.rules
+			f.rules.Rules = slices.Clone(original.Rules)
+			if state == "removed" {
+				f.rules.Rules = slices.DeleteFunc(f.rules.Rules, func(rule RoutingRule) bool { return rule.Key == youtube || rule.Key == returning })
+			} else {
+				for i := range f.rules.Rules {
+					f.rules.Rules[i].Unavailable = "provider data not loaded"
+				}
+				f.rules.State = "failed"
+			}
+
+			w := setupRequest(h, "/routing", url.Values{
+				"rev": {formField(t, before, "rev")}, "mode": {"provider"},
+				"rule": {youtube, returning}, "enabled": {returning},
+			})
+			if w.Code != http.StatusSeeOther || !slices.Equal(f.cfg.ProviderRules.Disabled, []string{unchanged, youtube}) {
+				t.Fatalf("rule save HTTP %d, disabled keys %v", w.Code, f.cfg.ProviderRules.Disabled)
+			}
+			f.rules = original
+			after := setupRequest(h, "/routing", nil).Body.String()
+			assertContains(t, after, `value="`+returning+`" checked`)
+			if strings.Contains(after, `value="`+youtube+`" checked`) {
+				t.Error("the returned rule came back enabled after being switched off")
+			}
+		})
+	}
+}
+
+func TestRoutingProtectedSwitchCanReenableALegacyDisabledKey(t *testing.T) {
 	f := newRoutingFixture()
-	f.cfg.ProviderRules.Disabled = []string{"proxy:geosite:youtube", "proxy:geosite:returned", "direct:geoip:missing", "direct:geosite:retired"}
+	legacy := "proxy:geosite:https://provider.example/private?key=synthetic"
+	key := model.RedactedProviderRuleKey(legacy)
+	f.cfg.ProviderRules.Disabled = []string{legacy}
+	f.rules.Rules = []RoutingRule{{Key: key, Action: "proxy", Kind: "site", Source: "geosite:[redacted]"}}
 	h := New(f, setupTestOptions(RoleManage))
-	youtube, literals := "proxy:geosite:youtube", "proxy:literals:site"
-	resp := setupRequest(h, "/routing", url.Values{
-		"rev": {Revision(f.Config())}, "mode": {"provider"},
-		"rule":    {youtube, literals, "direct:geoip:missing", "direct:geosite:retired", "direct:unrecognized"},
-		"enabled": {youtube, "direct:geoip:missing", "direct:geosite:retired", "proxy:geosite:returned"},
+	page := setupRequest(h, "/routing", nil).Body.String()
+	if !strings.Contains(page, `name="rule" value="`+key+`"`) || strings.Contains(page, `value="`+key+`" checked`) {
+		t.Fatal("the redacted rule did not retain the legacy disabled state")
+	}
+	w := setupRequest(h, "/routing", url.Values{
+		"rev": {formField(t, page, "rev")}, "mode": {"provider"}, "rule": {key}, "enabled": {key},
 	})
-	want := []string{"proxy:geosite:returned", "direct:geoip:missing", "direct:geosite:retired", literals}
-	if resp.Code != http.StatusSeeOther || !slices.Equal(f.cfg.ProviderRules.Disabled, want) {
-		t.Errorf("rule save HTTP %d, keys %v, want %v", resp.Code, f.cfg.ProviderRules.Disabled, want)
+	if w.Code != http.StatusSeeOther || len(f.cfg.ProviderRules.Disabled) != 0 {
+		t.Fatalf("re-enabling the redacted rule returned HTTP %d with %d disabled keys", w.Code, len(f.cfg.ProviderRules.Disabled))
+	}
+}
+
+func TestRoutingRefusesWithheldRules(t *testing.T) {
+	for _, off := range []bool{false, true} {
+		f := newRoutingFixture()
+		f.cfg.Networks[0].Default = model.TargetDirect
+		f.cfg.ProviderRules.Off = off
+		f.rules = RoutingRules{Source: "sample", State: "withheld"}
+		if off {
+			f.rules = RoutingRules{State: "off"}
+			f.subs[0].RulesWithheld = true
+		}
+		h := New(f, setupTestOptions(RoleManage))
+		page := setupRequest(h, "/routing", nil)
+		assertContains(t, page.Body.String(), `value="provider" id="routing-mode-provider" required disabled`,
+			"The provider does not supply routing rules.")
+		w := setupRequest(h, "/routing", url.Values{
+			"rev": {Revision(f.Config())}, "mode": {"provider"},
+		})
+		if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || f.cfg.Networks[0].Default != model.TargetDirect {
+			t.Fatalf("withheld mode with rules off=%v returned HTTP %d with %d applies", off, w.Code, f.applies)
+		}
+	}
+}
+
+func TestRoutingRejectsNonVPNMainTargets(t *testing.T) {
+	for _, tc := range []struct {
+		kind, explanation string
+		class             stats.TargetClass
+	}{
+		{"direct", "The main connection for the home network routes directly.", stats.TargetDirect},
+		{"block", "The main connection blocks traffic.", stats.TargetBlock},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			f := newRoutingFixture()
+			f.cfg.ProviderRules.Off = true
+			f.cfg.Connections[0] = model.Connection{ID: "old", Type: model.ConnSingBox, Outbound: map[string]any{"type": tc.kind}}
+			network := &f.cfg.Networks[0]
+			network.Target, network.Default = "old", "old"
+			f.cfg.Groups[0].Target = "old"
+			f.status.Connections["old"] = ConnectionStatus{Class: tc.class}
+			h := New(f, setupTestOptions(RoleManage))
+			page := setupRequest(h, "/routing", nil)
+			assertContains(t, page.Body.String(), `value="all" id="routing-mode-all" required disabled`, tc.explanation)
+			if strings.Contains(page.Body.String(), "All traffic through VPN") {
+				t.Errorf("named %s was labeled as a VPN", tc.kind)
+			}
+			w := setupRequest(h, "/routing", url.Values{"rev": {Revision(f.Config())}, "mode": {"all"}})
+			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 {
+				t.Fatalf("non-VPN mode returned HTTP %d with %d applies", w.Code, f.applies)
+			}
+		})
+	}
+}
+
+func TestRoutingOffersVPNModeForMixedTargetUsingDirectReserve(t *testing.T) {
+	f := newRoutingFixture()
+	target := f.cfg.Networks[0].Target
+	f.status.Connections[target] = ConnectionStatus{Class: stats.TargetMixed, ActiveClass: stats.TargetDirect}
+	h := New(f, setupTestOptions(RoleManage))
+	page := setupRequest(h, "/routing", nil)
+	assertContains(t, page.Body.String(), "All traffic through VPN", `value="all" id="routing-mode-all" required>`)
+	w := setupRequest(h, "/routing", url.Values{"rev": {Revision(f.Config())}, "mode": {"all"}})
+	if w.Code != http.StatusSeeOther || f.cfg.Networks[0].Default != target {
+		t.Fatalf("mixed target mode returned HTTP %d", w.Code)
+	}
+}
+
+func TestRoutingReservedGroupsWithAdvancedSettingsAreReadOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		group model.Group
+	}{
+		{"disabled", model.Group{Disabled: true, Entries: []string{"old.example"}}},
+		{"geo", model.Group{Countries: []string{"GB"}}},
+		{"wrong target", model.Group{Target: "old", Entries: []string{"old.example"}}},
+		{"entry overrides", model.Group{Entries: []string{"old.example"}, DisabledEntries: []string{"old.example"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRoutingFixture()
+			group := tc.group
+			group.Name = "own-vpn"
+			if group.Target == "" {
+				group.Target = f.cfg.Networks[0].Target
+			}
+			f.cfg.Groups[0] = group
+			before := f.Config()
+			h := New(f, setupTestOptions(RoleManage))
+			page := setupRequest(h, "/routing", nil)
+			assertContains(t, page.Body.String(), "This group uses advanced settings and is read-only here.")
+			if !regexp.MustCompile(`<textarea id="routing-own-vpn"[^>]* disabled`).MatchString(page.Body.String()) {
+				t.Error("advanced group has an enabled textarea")
+			}
+			w := setupRequest(h, "/routing", url.Values{
+				"rev": {Revision(before)}, "mode": {"provider"}, "own-vpn": {"new.example"},
+			})
+			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(f.Config(), before) {
+				t.Fatalf("advanced group edit returned HTTP %d with %d applies", w.Code, f.applies)
+			}
+		})
 	}
 }
 

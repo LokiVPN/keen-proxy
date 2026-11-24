@@ -1,12 +1,13 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 )
 
 type routingPage struct {
@@ -15,9 +16,12 @@ type routingPage struct {
 	CanProvider, CanAll, OtherGroups bool
 	VPN, Direct                      *routingList
 	ProviderMode, ProviderHeading    string
+	ProviderHint, AllMode, AllHint   string
+	OwnHint, VPNTitle                string
 	RuleState, SubscriptionUpdated   string
 	Unmatched                        string
 	RuleGroups                       []routingRuleGroup
+	HasSwitches, Overlap             bool
 }
 
 type routingRuleGroup struct {
@@ -47,7 +51,7 @@ func (p pages) renderRouting(w http.ResponseWriter, r *http.Request, status int,
 }
 
 func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[string]string) *routingPage {
-	page := routingPage{Revision: Revision(cfg), VPN: &routingList{}, Direct: &routingList{}}
+	page := routingPage{Revision: Revision(cfg)}
 	network := homeNetwork(cfg)
 	if network == nil {
 		page.Unavailable = text["overview_no_home"]
@@ -58,38 +62,36 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 		return &page
 	}
 	settings := cfg.ActiveProviderRules()
-	page.Mode = routingMode(network, settings)
+	state := p.routingState(cfg, network)
+	page.CanAll = state.canUseVPN()
+	page.Mode = routingMode(network, settings, page.CanAll)
 	if page.Mode == "" {
 		page.CustomMode = text["routing_custom_mode"]
 	}
-	source := routingRulesSource(cfg, network)
-	page.CanAll = routingHasMain(network)
-	page.CanProvider = page.CanAll && source != ""
+	providerProblem := state.providerProblem()
+	page.CanProvider = providerProblem == ""
+	page.ProviderHint = text[cmp.Or(providerProblem, "routing_provider_hint")]
 	page.ProviderMode, page.ProviderHeading = text["routing_mode_provider"], text["routing_provider_rules"]
-	if source != "" {
-		sub := appliedSubscriptionFor(p.deps.Subscriptions(), source)
-		if name := sub.Metadata.Title; name != "" {
-			page.ProviderMode = fmt.Sprintf(text["routing_mode_named_provider"], name)
-			page.ProviderHeading = fmt.Sprintf(text["routing_named_provider_rules"], name)
-		}
-		if !sub.LastSuccess.IsZero() {
-			page.SubscriptionUpdated = fmt.Sprintf(text["routing_subscription_updated"], overviewTimestamp(sub.LastSuccess, text))
-		}
+	if name := state.sub.Metadata.Title; name != "" {
+		page.ProviderMode = fmt.Sprintf(text["routing_mode_named_provider"], name)
+		page.ProviderHeading = fmt.Sprintf(text["routing_named_provider_rules"], name)
 	}
-	// The first reserved group of each name is the same group the form edits.
-	var hasVPN, hasDirect bool
-	for _, group := range cfg.Groups {
-		switch {
-		case group.Name == ownVPNGroup && !hasVPN:
-			page.VPN.Value, hasVPN = strings.Join(group.Entries, "\n"), true
-		case group.Name == ownDirectGroup && !hasDirect:
-			page.Direct.Value, hasDirect = strings.Join(group.Entries, "\n"), true
-		default:
-			page.OtherGroups = true
-		}
+	if !state.sub.LastSuccess.IsZero() {
+		page.SubscriptionUpdated = fmt.Sprintf(text["routing_subscription_updated"], overviewTimestamp(state.sub.LastSuccess, text))
+	}
+	page.AllMode, page.AllHint = text["overview_route_all"], text["routing_all_hint"]
+	page.OwnHint, page.VPNTitle = text["routing_own_hint"], text["routing_own_vpn"]
+	vpn, direct := routingOwnGroups(cfg, ownVPNGroup, network.Target), routingOwnGroups(cfg, ownDirectGroup, model.TargetDirect)
+	page.OtherGroups = len(cfg.Groups) > len(vpn.groups)+len(direct.groups)
+	page.VPN, page.Direct = vpn.field(text), direct.field(text)
+	if !page.CanAll {
+		page.AllMode, page.AllHint = text["routing_main_mode"], text[state.mainProblem()]
+		page.OwnHint, page.VPNTitle = text["routing_own_direct_hint"], text["routing_own_via_main"]
+		page.VPN.ReadOnlyNote = cmp.Or(page.VPN.ReadOnlyNote, page.AllHint)
 	}
 	if draft != nil {
 		page.Mode = draft.Mode
+		page.Overlap = draft.Overlap
 		if draft.VPN != nil {
 			page.VPN = draft.VPN
 		}
@@ -97,21 +99,29 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 			page.Direct = draft.Direct
 		}
 	}
-	page.setRules(p.routingRules(cfg), settings, draft, text)
+	page.setRules(state, settings, draft, text)
 	return &page
+}
+
+func (l ownRoutingGroups) field(text map[string]string) *routingList {
+	field := &routingList{Value: strings.Join(l.effectiveEntries(nil), "\n")}
+	if l.readOnly() {
+		field.ReadOnlyNote = text["routing_custom_group"]
+	}
+	return field
 }
 
 // routingMode recognizes the defaults written by this page. A custom
 // configuration is left unselected until an administrator chooses a mode.
-func routingMode(network *model.Network, settings *model.ProviderRulesSettings) string {
+func routingMode(network *model.Network, settings *model.ProviderRulesSettings, canUseVPN bool) string {
 	switch {
-	case settings != nil && network.Default == model.DefaultProfile && routingHasMain(network):
+	case settings != nil && network.Default == model.DefaultProfile && canUseVPN:
 		return routingProvider
 	case settings != nil:
 		return ""
 	case network.Default == "" || network.Default == model.TargetDirect:
 		return routingOwn
-	case network.Default == network.Target && routingHasMain(network):
+	case network.Default == network.Target && canUseVPN:
 		return routingAll
 	}
 	return ""
@@ -129,7 +139,8 @@ func (p pages) routingRules(cfg *model.Config) RoutingRules {
 	return rules
 }
 
-func (p *routingPage) setRules(rules RoutingRules, settings *model.ProviderRulesSettings, draft *routingDraft, text map[string]string) {
+func (p *routingPage) setRules(state routingState, settings *model.ProviderRulesSettings, draft *routingDraft, text map[string]string) {
+	rules := state.rules
 	switch rules.State {
 	case "off":
 		p.RuleState = text["routing_rules_on_save"]
@@ -144,20 +155,30 @@ func (p *routingPage) setRules(rules RoutingRules, settings *model.ProviderRules
 		p.Unmatched = text["routing_rest_direct"]
 		if rules.GlobalProxy {
 			p.Unmatched = text["routing_rest_vpn"]
+			switch state.class {
+			case stats.TargetDirect:
+				p.Unmatched = text["routing_rest_direct"]
+			case stats.TargetBlock:
+				p.Unmatched = text["routing_rest_blocked"]
+			case stats.TargetUnknown:
+				p.Unmatched = text["routing_rest_main"]
+			}
 		}
 	}
-	var disabled []string
-	if settings != nil {
-		disabled = settings.Disabled
-	}
+	disabled := settings.DisabledRuleKeys()
 	for _, action := range []string{"proxy", "direct", "block"} {
 		group := routingRuleGroup{Label: text["routing_action_"+action]}
+		if action == "proxy" && !state.canUseVPN() {
+			group.Label = text["routing_main_mode"]
+		}
 		for _, rule := range rules.Rules {
 			if rule.Action != action || rule.private() {
 				continue
 			}
-			row := routingRuleRow{Key: rule.Key, Label: rule.label(text), Checked: !slices.Contains(disabled, rule.Key)}
-			if rule.Unavailable != "" {
+			row := routingRuleRow{Key: rule.Key, Label: rule.label(text), Checked: !disabled[rule.Key]}
+			if rule.switchable() {
+				p.HasSwitches = true
+			} else {
 				row.Reason = rule.reason(text)
 			}
 			if draft != nil {
@@ -174,7 +195,7 @@ func (p *routingPage) setRules(rules RoutingRules, settings *model.ProviderRules
 }
 
 func (r RoutingRule) switchable() bool {
-	return r.Key != "" && r.Unavailable == "" && !r.private() && (r.Action == "proxy" || r.Action == "direct" || r.Action == "block")
+	return r.Key != "" && r.Unavailable == ""
 }
 
 func (r RoutingRule) private() bool {

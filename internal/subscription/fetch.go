@@ -58,11 +58,12 @@ func (f *Fetcher) Transport() http.RoundTripper { return f.transport }
 // SanitizeSnapshotDisplay reapplies display bounds and source redaction to
 // restored metadata and names. Legacy links cannot use the same-origin
 // account exception because their original redirect paths are unavailable.
+// It returns the same display protection for legacy routing categories.
 // Restoring a snapshot never creates an installation identity.
-func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nodes []Node, linksChecked bool) {
+func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nodes []Node, linksChecked bool) func(string) string {
 	u, origin, err := parseSource(source)
 	if err != nil {
-		return // Snapshots are loaded only for validated sources.
+		return func(entry string) string { return entry } // Snapshots require a validated source.
 	}
 	sensitive := sourceDisplayRedactor(u)
 	sensitive.blockSameHostLinks = !linksChecked
@@ -78,6 +79,7 @@ func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nod
 	for i := range nodes {
 		nodes[i].Name = displayText(nodes[i].Name, nodeNameLimit, sensitive)
 	}
+	return func(entry string) string { return displayRoutingCategory(entry, sensitive) }
 }
 
 func sameOriginRedirect(request *http.Request, previous []*http.Request) error {

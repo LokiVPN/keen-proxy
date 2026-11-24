@@ -89,10 +89,7 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 	status.RulesState = string(state)
 	if settings != nil && (state == daemon.ProviderRulesReady || state == daemon.ProviderRulesPartial) {
 		status.RulesTotal = len(rules.Rules)
-		disabled := make(map[string]bool, len(settings.Disabled))
-		for _, key := range settings.Disabled {
-			disabled[key] = true
-		}
+		disabled := settings.DisabledRuleKeys()
 		for _, rule := range rules.Rules {
 			if rule.Unavailable == "" && !disabled[rule.Key] {
 				status.RulesActive++
@@ -129,6 +126,7 @@ func (d uiDeps) Subscriptions() []ui.AppliedSubscription {
 		view := ui.AppliedSubscription{
 			ID: status.ID, State: status.State, Metadata: status.Metadata, ActiveNode: status.ActiveNode,
 			Unavailable: status.Unavailable, SwitchReason: status.SwitchReason,
+			RulesWithheld:   status.RulesWithheld,
 			BalanceEligible: status.BalanceEligible, Refreshing: status.Refreshing,
 			Nodes: make([]ui.SubscriptionNode, 0, len(status.Nodes)),
 		}

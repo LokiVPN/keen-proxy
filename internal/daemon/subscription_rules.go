@@ -151,7 +151,7 @@ func (s *rulesSnapshot) holds(file geoFileRecord, url, prefix string, refs map[s
 	}
 	held := map[string]bool{}
 	for _, rule := range s.Built.Rules {
-		if ref, ok := strings.CutPrefix(rule.Source, prefix); ok {
+		if ref, ok := strings.CutPrefix(rule.Reference(), prefix); ok {
 			held[ref] = true
 		}
 	}
@@ -364,7 +364,7 @@ func (g geoFile[T]) load(ctx context.Context, d *Daemon, previous *rulesSnapshot
 	case previous.holds(held, g.url, prefix, g.refs, now):
 		data := make(map[string]T, len(g.refs))
 		for _, rule := range previous.Built.Rules {
-			if ref, ok := strings.CutPrefix(rule.Source, prefix); ok && rule.HasData() {
+			if ref, ok := strings.CutPrefix(rule.Reference(), prefix); ok && rule.HasData() {
 				data[ref] = g.reuse(rule)
 			}
 		}

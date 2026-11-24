@@ -37,6 +37,9 @@ type RoutingProfile struct {
 	DirectSites, DirectIP []string
 	ProxySites, ProxyIP   []string
 	BlockSites, BlockIP   []string
+	// CategoryDisplay stores redacted spellings for categories whose raw
+	// references are still needed to extract or reuse provider data.
+	CategoryDisplay map[string]string `json:"category_display,omitempty"`
 }
 
 // rawRoutingProfile mirrors the Happ JSON. encoding/json matches field names
@@ -90,7 +93,7 @@ func parseRoutingLink(value string, sensitive displayRedactor) (*RoutingProfile,
 	if err := json.Unmarshal([]byte(decoded), &raw); err != nil {
 		return nil, errRoutingLink
 	}
-	return &RoutingProfile{
+	profile := &RoutingProfile{
 		Name:           providerText(raw.Name, maxRoutingName, sensitive),
 		GlobalProxy:    routingGlobalProxy(raw.GlobalProxy),
 		RouteOrder:     routingOrder(raw.RouteOrder),
@@ -103,7 +106,50 @@ func parseRoutingLink(value string, sensitive displayRedactor) (*RoutingProfile,
 		ProxyIP:        routingEntries(raw.ProxyIp),
 		BlockSites:     routingEntries(raw.BlockSites),
 		BlockIP:        routingEntries(raw.BlockIp),
-	}, nil
+	}
+	for _, list := range [][]string{profile.DirectSites, profile.DirectIP, profile.ProxySites, profile.ProxyIP, profile.BlockSites, profile.BlockIP} {
+		for _, entry := range list {
+			profile.rememberCategoryDisplay(entry, displayRoutingCategory(entry, sensitive))
+		}
+	}
+	return profile, nil
+}
+
+// RestoreCategoryDisplay keeps the fetch-time redaction and adds protection
+// for raw category references in snapshots created before it was recorded.
+func (p *RoutingProfile) RestoreCategoryDisplay(entry, display string) string {
+	if p == nil {
+		return display
+	}
+	if saved := p.CategoryDisplay[entry]; saved != "" {
+		return saved
+	}
+	p.rememberCategoryDisplay(entry, display)
+	return display
+}
+
+func (p *RoutingProfile) rememberCategoryDisplay(entry, display string) {
+	if display != entry {
+		if p.CategoryDisplay == nil {
+			p.CategoryDisplay = make(map[string]string)
+		}
+		p.CategoryDisplay[entry] = display
+	}
+}
+
+func displayRoutingCategory(entry string, sensitive displayRedactor) string {
+	prefix, category, _ := strings.Cut(entry, ":")
+	if prefix != "geosite" && prefix != "geoip" {
+		return entry
+	}
+	// Form control values must not contain line breaks. Keep the prefix for
+	// localized category labels and for geosite/geoip availability reasons.
+	category = strings.ReplaceAll(strings.ReplaceAll(category, "\n", " "), "\t", " ")
+	display := displayText(category, 256, sensitive)
+	if display == "" && category != "" {
+		display = redactedDisplay
+	}
+	return prefix + ":" + display
 }
 
 // routingGlobalProxy accepts a JSON boolean or the strings "true" and "false";

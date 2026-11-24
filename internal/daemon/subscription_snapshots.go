@@ -27,6 +27,8 @@ type subscriptionSnapshot struct {
 	Selection   subscriptionSelection `json:"selection"`
 	// LinksChecked records a fetch that filtered metadata links against its redirect paths.
 	LinksChecked bool `json:"links_checked,omitempty"`
+	// RulesWithheld is observed during refresh independently of rule evaluation.
+	RulesWithheld bool `json:"rules_withheld,omitempty"`
 	// Rules exists only for the source named by provider_rules.
 	Rules *rulesSnapshot `json:"rules,omitempty"`
 }
@@ -91,10 +93,20 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 		default:
 			nodes, skipped := supportedSubscriptionNodes(ctx, snapshot.Nodes)
 			if len(nodes) > 0 {
-				d.subscriptions.fetcher.SanitizeSnapshotDisplay(source, &snapshot.Metadata, nodes, snapshot.LinksChecked)
+				displayCategory := d.subscriptions.fetcher.SanitizeSnapshotDisplay(source, &snapshot.Metadata, nodes, snapshot.LinksChecked)
 				snapshot.Nodes, snapshot.Skipped = nodes, snapshot.Skipped+skipped
+				// Older snapshots only recorded withholding on the evaluated source.
+				if snapshot.Rules.state() == ProviderRulesWithheld {
+					snapshot.RulesWithheld = true
+				}
 				if snapshot.Rules != nil && snapshot.Rules.Built != nil {
-					snapshot.Rules.Built.MarkUnusableRules()
+					rules := snapshot.Rules
+					for i := range rules.Built.Rules {
+						rule := &rules.Built.Rules[i]
+						ref := rule.Reference()
+						rule.ProtectCategory(rules.Profile.RestoreCategoryDisplay(ref, displayCategory(ref)))
+					}
+					rules.Built.MarkUnusableRules()
 				}
 				state.snapshot = snapshot
 				state.recordAttempt(subscriptionAttempt{at: snapshot.LastSuccess, result: subscription.Result{
