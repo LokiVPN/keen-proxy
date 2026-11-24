@@ -1,7 +1,7 @@
 # User guide
 
 !!! note "Server-rendered interface preview"
-    The panel at `/` shows a placeholder with the new navigation. A browser in the LAN can sign in through KeeneticOS and open KeenProxy under **Management → Applications**, where the card is installed, or return to the direct address shown on the sign-in screen. The sections below describe the previous panel. Configure KeenProxy through the [YAML file](getting-started.md#first-configuration) or the loopback [control API](development.md#control-api).
+    The panel opens [first-run setup](#first-run) until you configure a subscription. With a subscription in place, `/` shows the new navigation and a placeholder for the overview. Later sections describe the previous panel. Use the [YAML file](getting-started.md#first-configuration) or the loopback [control API](development.md#control-api) for the remaining settings.
 
 The screenshots below are synthetic.
 
@@ -21,6 +21,14 @@ With [KeeneticOS sign-in enabled](development.md#keenetic-auth), sign in to the
 router with a management account and select **Open panel** on the KeenProxy
 card in **Applications**. Use the router's local IP address. When your session
 ends, the panel returns to a sign-in screen with a link to KeeneticOS.
+
+## First run { #first-run }
+
+Open KeenProxy with a router management account. Paste the HTTPS subscription link from your LokiVPN account, then choose **Check**. KeenProxy sends its stable device ID to the provider. This can use a slot on your subscription. The check shows the supported servers, provider message, and any usage, expiry, or routing information the provider supplies.
+
+Choose **Enable** to save the subscription and set split routing for the home network detected on the configured LAN interface. The network follows the provider profile. If the provider supplies no routing profile, unmatched traffic goes through the subscription. The first setup needs a private IPv4 address on that interface.
+
+Open `/setup` again and choose **Replace link** after a successful check to update the saved subscription link. The subscription keeps its ID and reserve, and your existing routing, devices, and paused state stay in place. View-only accounts can open the setup page with its controls disabled.
 
 ## 1. Read the overview
 

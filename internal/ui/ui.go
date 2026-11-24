@@ -32,15 +32,19 @@ type Options struct {
 }
 
 type pages struct {
-	deps Deps
-	opts Options
+	deps        Deps
+	opts        Options
+	setupDrafts *setupDrafts
 }
 
 // New builds the page handler for the central HTTP server to authorize.
 func New(deps Deps, opts Options) http.Handler {
-	p := pages{deps: deps, opts: opts}
+	p := pages{deps: deps, opts: opts, setupDrafts: &setupDrafts{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.home)
+	mux.HandleFunc("GET /setup", p.setupGet)
+	mux.HandleFunc("POST /setup/check", p.setupCheck)
+	mux.HandleFunc("POST /setup/enable", p.setupEnable)
 	mux.HandleFunc("GET /static/", serveAsset)
 	mux.HandleFunc("GET /", p.notFound)
 
@@ -52,6 +56,12 @@ func New(deps Deps, opts Options) http.Handler {
 }
 
 func (p pages) home(w http.ResponseWriter, r *http.Request) {
+	if role := p.role(r); role == RoleView || role == RoleManage {
+		if cfg := p.deps.Config(); cfg != nil && len(cfg.Subscriptions) == 0 {
+			http.Redirect(w, r, "/setup", http.StatusSeeOther)
+			return
+		}
+	}
 	p.renderPage(w, r, http.StatusOK, "KeenProxy", "home_pending")
 }
 
@@ -60,10 +70,7 @@ func (p pages) notFound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p pages) renderPage(w http.ResponseWriter, r *http.Request, status int, title, messageKey string) {
-	role := RoleDeny
-	if p.opts.Role != nil {
-		role = p.opts.Role(r)
-	}
+	role := p.role(r)
 	if role != RoleView && role != RoleManage {
 		p.opts.AccessError(w, r, http.StatusForbidden)
 		return
@@ -75,6 +82,13 @@ func (p pages) renderPage(w http.ResponseWriter, r *http.Request, status int, ti
 	data.ViewOnly = role == RoleView
 	data.Flash = takeFlash(w, r, data.Text)
 	render(w, r, status, "page", data)
+}
+
+func (p pages) role(r *http.Request) Role {
+	if p.opts.Role == nil {
+		return RoleDeny
+	}
+	return p.opts.Role(r)
 }
 
 //go:embed static/style.css static/app.js static/fonts/*.woff2

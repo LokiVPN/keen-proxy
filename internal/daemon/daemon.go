@@ -296,6 +296,20 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 // startup commits only after saving; an already-active daemon can report an
 // applied-but-unsaved change.
 func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
+	return d.apply(ctx, cfg, "")
+}
+
+// ApplyIfCurrent applies a page draft only while the configuration used to
+// build it is current. The revision is checked under the commit lock even
+// when fetching provider data required dropping that lock.
+func (d *Daemon) ApplyIfCurrent(ctx context.Context, cfg *model.Config, revision string) error {
+	if revision == "" {
+		return model.ErrConfigChanged
+	}
+	return d.apply(ctx, cfg, revision)
+}
+
+func (d *Daemon) apply(ctx context.Context, cfg *model.Config, revision string) error {
 	by, from := applyActor(ctx)
 	cfg.Defaults()
 	if err := cfg.Validate(); err != nil {
@@ -309,7 +323,7 @@ func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
 	}
-	return d.applyWithSubscriptions(ctx, cfg)
+	return d.applyWithSubscriptions(ctx, cfg, revision)
 }
 
 func applyActor(ctx context.Context) (by, from string) {

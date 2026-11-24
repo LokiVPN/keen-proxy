@@ -79,6 +79,8 @@ type Result struct {
 	// holds a fixed message without provider text.
 	Routing      *RoutingProfile `json:"-"`
 	RoutingError string          `json:"-"`
+	// RoutingSummary carries only redacted display strings and list counts.
+	RoutingSummary *RoutingSummary `json:"-"`
 	// Transient tells the refresh scheduler to retry with bounded backoff.
 	Transient bool `json:"-"`
 }

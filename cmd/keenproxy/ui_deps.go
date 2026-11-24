@@ -1,20 +1,53 @@
 package main
 
 import (
+	"context"
 	"net/http"
+	"net/netip"
 
 	"github.com/ordo-systems/keen-proxy/internal/api"
+	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 	"github.com/ordo-systems/keen-proxy/internal/ui"
 )
 
-// uiDeps adapts the daemon's applied snapshot to the page layer.
+type managementDaemon interface {
+	api.Daemon
+	PreviewSubscriptionDetails(context.Context, subscription.Source) daemon.SubscriptionPreviewDetails
+	ApplyIfCurrent(context.Context, *model.Config, string) error
+}
+
+// uiDeps gives the pages display-only previews and revision-checked Apply.
 type uiDeps struct {
-	daemon interface{ Config() *model.Config }
+	daemon managementDaemon
 }
 
 func (d uiDeps) Config() *model.Config {
 	return d.daemon.Config()
+}
+
+func (d uiDeps) PreviewSubscription(ctx context.Context, source subscription.Source) ui.SetupPreview {
+	details := d.daemon.PreviewSubscriptionDetails(ctx, source)
+	status := details.Status
+	result := ui.SetupPreview{
+		State: status.State, Metadata: status.Metadata, NodeCount: len(status.Nodes),
+		Routing: details.Routing, RoutingMalformed: details.RoutingMalformed,
+	}
+	const maxNames = 6
+	for _, node := range status.Nodes[:min(len(status.Nodes), maxNames)] {
+		result.NodeNames = append(result.NodeNames, node.Name)
+	}
+	return result
+}
+
+func (uiDeps) LANPrefix(iface string) (netip.Prefix, error) {
+	return lanPrefix(iface, lanPrefixes)
+}
+
+func (d uiDeps) Apply(ctx context.Context, cfg *model.Config, revision string) error {
+	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
+	return d.daemon.ApplyIfCurrent(ctx, cfg, revision)
 }
 
 func pageRole(r *http.Request) ui.Role {

@@ -1,0 +1,79 @@
+{{define "setup"}}{{template "page-start" .}}
+      <div class="title-row">
+        <h1>{{.Title}}</h1>
+        <a class="help" href="https://github.com/LokiVPN/keen-proxy/blob/master/docs/{{.Lang}}/user-guide.md#first-run" aria-label="{{.Text.setup_help}}">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .4c0 1.7-2.5 2-2.5 3.6M12 16h.01"/></svg>
+        </a>
+      </div>
+      <p class="lead">{{if .Setup.Replacing}}{{.Text.setup_replace_intro}}{{else}}{{.Text.setup_intro}}{{end}}</p>
+      {{$checked := or .Setup.Result .Setup.Input}}
+      {{$disabled := or .ViewOnly (not .Setup.Rev)}}
+      <form method="post" action="/setup/check" class="setup-check{{if $checked}} setup-recheck{{end}}" novalidate>
+        <input type="hidden" name="rev" value="{{.Setup.Rev}}">
+        <div class="fld">
+          <label for="setup-url">{{.Text.setup_url}}</label>
+          <input id="setup-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+            placeholder="{{if and .Setup.Result .Setup.Result.Active}}••••••••{{else}}https://{{end}}"{{if and .Setup.Input (not .ViewOnly)}} value="{{.Setup.Input}}"{{end}}
+            {{if .Setup.Error}}aria-describedby="setup-error" {{end}}required{{if $disabled}} disabled{{end}}>
+        </div>
+        {{if not $checked}}<p class="hint">{{.Text.setup_link_hint}}</p>{{end}}
+        <button class="btn{{if $checked}} soft{{end}} setup-submit" type="submit"{{if $disabled}} disabled{{end}}>{{.Text.setup_check}}</button>
+      </form>
+      {{if .Setup.Error}}<p id="setup-error" class="setup-error" role="alert">{{.Setup.Error}}</p>{{end}}
+      {{if not $checked}}<p class="hint setup-hwid">{{.Text.setup_hwid_hint}}</p>{{end}}
+      {{with .Setup.Result}}
+      <section class="setup-result" aria-labelledby="setup-provider">
+        <div class="prov">
+          <h2 id="setup-provider" class="clip">{{.Title}}</h2>
+          <span class="chip {{if .Active}}ok{{else}}warn{{end}}">{{.Chip}}</span>
+        </div>
+        {{if .Active}}
+        <dl class="facts">
+          {{if .Expiry}}<dt>{{$.Text.setup_expiry}}</dt><dd>{{.Expiry}}</dd>{{end}}
+          {{if .Traffic}}<dt>{{$.Text.setup_traffic}}</dt><dd>{{.Traffic}}</dd>{{end}}
+          <dt>{{$.Text.setup_servers}}</dt><dd class="clip">{{.Servers}}</dd>
+          <dt>{{$.Text.setup_routing}}</dt>
+          <dd>
+            {{if .RouteName}}<strong class="clip">{{.RouteName}}</strong>{{end}}
+            <p>{{.RouteHint}}{{if and (not .HasRouting) (not $.Setup.Replacing)}} {{$.Text.setup_profile_vpn}}{{end}}</p>
+            {{if .Actions}}
+            <ul class="setup-rules">
+              {{range .Actions}}
+              <li>
+                <strong>{{.Name}}</strong>
+                <span class="clip">{{.Sites}}</span>
+                <span class="clip">{{.IP}}</span>
+              </li>
+              {{end}}
+            </ul>
+            {{end}}
+          </dd>
+          <dt>{{$.Text.setup_devices}}</dt>
+          <dd>{{if $.Setup.Replacing}}{{$.Text.setup_devices_kept}}{{else}}{{$.Text.setup_home_devices}}{{end}}</dd>
+        </dl>
+        {{if .Announce}}
+        <div class="note setup-announce">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5m0-8h.01"/></svg>
+          <div><strong>{{printf $.Text.setup_announce .Title}}</strong><p>{{.Announce}}</p></div>
+        </div>
+        {{end}}
+        <form method="post" action="/setup/enable" class="actions">
+          <input type="hidden" name="rev" value="{{$.Setup.Rev}}">
+          <input type="hidden" name="preview" value="{{.Token}}">
+          <button class="btn" type="submit"{{if $disabled}} disabled{{end}}>{{if $.Setup.Replacing}}{{$.Text.setup_replace}}{{else}}{{$.Text.setup_enable}}{{end}}</button>
+          <a class="btn soft" href="{{if $.Setup.Replacing}}/{{else}}/setup{{end}}">{{$.Text.setup_cancel}}</a>
+        </form>
+        {{else}}
+        <p class="lead setup-result-message">{{.Message}}</p>
+        {{if .AccountURL}}
+        <div class="actions">
+          <a class="btn out" href="{{.AccountURL}}" rel="noreferrer">
+            {{$.Text.setup_account}}
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5m0-5l-8 8M11 6H6v12h12v-5"/></svg>
+          </a>
+        </div>
+        {{end}}
+        {{end}}
+      </section>
+      {{end}}
+{{template "page-end" .}}{{end}}

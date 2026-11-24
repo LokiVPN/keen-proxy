@@ -201,7 +201,7 @@ func writeStartupState(path, mode string) error {
 
 // serveAPI serves management requests until cancellation, using startup bind
 // settings; it does not apply routing changes itself.
-func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, operatorOrigin, unavailable bool, onListening func(context.Context)) error {
+func serveAPI(ctx context.Context, cfg *model.Config, d managementDaemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, operatorOrigin, unavailable bool, onListening func(context.Context)) error {
 	keenetic, err := api.NewKeeneticAuth(keeneticOrigin, cfg.API.Listen)
 	if err != nil {
 		// An origin that cannot work (for example api.listen is loopback-only)

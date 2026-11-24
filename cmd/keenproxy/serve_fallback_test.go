@@ -19,9 +19,11 @@ import (
 )
 
 type statusDaemon struct {
-	api.Daemon
+	managementDaemon
 	onStatus func()
 }
+
+func (statusDaemon) Config() *model.Config { return &model.Config{} }
 
 func (d statusDaemon) Status(context.Context) daemon.Status {
 	if d.onStatus != nil {

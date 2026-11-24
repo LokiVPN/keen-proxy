@@ -272,6 +272,34 @@
 .fld :disabled { background: var(--disabled-bg); color: var(--disabled-text); cursor: not-allowed; }
 .kp .hint { max-width: 66ch; margin-top: 6px; color: var(--gray); font-size: 13px; line-height: 20px; }
 
+.title-row, .prov { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.help { display: inline-grid; place-items: center; width: 28px; height: 28px; }
+.kp .help { color: var(--gray); }
+.kp .help:hover { color: var(--primary); }
+.clip { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.facts { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px 24px; margin: 20px 0 0; }
+.facts dt { color: var(--gray); }
+.facts dd { min-width: 0; margin: 0; }
+
+.setup-check { margin-top: 32px; }
+.setup-check .fld { margin-top: 0; }
+.setup-submit { margin-top: 24px; }
+.setup-recheck { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+.setup-recheck .fld { flex: 1 1 320px; min-width: 0; }
+.setup-recheck .setup-submit { margin-top: 0; }
+.kp .setup-hwid { margin-top: 12px; }
+.kp .setup-error { margin-top: 12px; color: var(--warn-t); }
+.setup-result { margin-top: 40px; }
+.setup-result .prov h2 { max-width: 100%; }
+.kp .setup-result-message { margin-top: 12px; }
+.setup-rules { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.setup-rules li { min-width: 0; }
+.setup-rules strong { font-weight: 500; }
+.kp .setup-announce > div { min-width: 0; }
+.note.setup-announce > .icon { color: #ffbb57; }
+.setup-announce strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup-announce p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+
 .tg { position: relative; display: inline-flex; align-items: center; gap: 14px; cursor: pointer; }
 .tg input { position: absolute; left: -3px; width: 40px; height: 20px; margin: 0; opacity: 0; cursor: inherit; }
 .tg-track { position: relative; flex: none; width: 34px; height: 14px; border-radius: 7px; background: var(--tg-off-bg); }
@@ -384,6 +412,8 @@
   .kp h1 { font-size: 24px; line-height: 32px; }
   .center { margin-top: 24px; }
   .tabs { gap: 24px; }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .facts dd { margin-bottom: 12px; }
   .tbl th, .tbl td { padding: 10px 8px; }
   .tbl .grp th { padding-left: 8px; }
   .tbl .c-ip, .tbl .c-res { display: none; }

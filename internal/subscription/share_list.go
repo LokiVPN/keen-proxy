@@ -78,6 +78,9 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 	}
 	result.Metadata = parseMetadata(headers, comments, sensitive)
 	result.Routing, result.RoutingError = resolveRouting(headers, comments, routingLine, sensitive)
+	if result.State == StateReady && result.Routing != nil {
+		result.RoutingSummary = summarizeRouting(result.Routing, sensitive)
+	}
 	return result
 }
 

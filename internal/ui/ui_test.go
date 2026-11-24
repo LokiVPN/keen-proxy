@@ -7,9 +7,13 @@ import (
 	"testing"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
-type fakeDeps struct{ config *model.Config }
+type fakeDeps struct {
+	Deps
+	config *model.Config
+}
 
 func (d fakeDeps) Config() *model.Config { return d.config }
 
@@ -20,7 +24,8 @@ func TestLayoutLocales(t *testing.T) {
 		KeeneticOrigin: "http://192.0.2.1",
 		DirectURL:      "http://192.0.2.1:8086",
 	}
-	h := New(fakeDeps{}, opts)
+	cfg := &model.Config{Subscriptions: []subscription.Source{{ID: "sample", URL: "https://provider.example/list"}}}
+	h := New(fakeDeps{config: cfg}, opts)
 	for _, tc := range []struct {
 		acceptLanguage, lang string
 		tabs                 []string

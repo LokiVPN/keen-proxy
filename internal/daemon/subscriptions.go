@@ -63,6 +63,14 @@ type SubscriptionStatus struct {
 	RulesState ProviderRulesState `json:"rules_state,omitempty"`
 }
 
+// SubscriptionPreviewDetails adds the parsed routing summary for setup. It
+// describes what the provider sent before geodata or rules are evaluated.
+type SubscriptionPreviewDetails struct {
+	Status           SubscriptionStatus
+	Routing          *subscription.RoutingSummary
+	RoutingMalformed bool
+}
+
 // subscriptionRuntime separates downloads from the state committed under d.mu.
 type subscriptionRuntime struct {
 	directory          string
@@ -139,6 +147,21 @@ func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
 // PreviewSubscription validates provider data against the running build and
 // caches usable previews for Apply. It never modifies applied sources.
 func (d *Daemon) PreviewSubscription(ctx context.Context, source subscription.Source) SubscriptionStatus {
+	return d.previewSubscription(ctx, source).previewStatus(source.ID)
+}
+
+// PreviewSubscriptionDetails uses the existing preview path and cache, with
+// display-only routing information for the server-rendered setup page.
+func (d *Daemon) PreviewSubscriptionDetails(ctx context.Context, source subscription.Source) SubscriptionPreviewDetails {
+	attempt := d.previewSubscription(ctx, source)
+	return SubscriptionPreviewDetails{
+		Status:           attempt.previewStatus(source.ID),
+		Routing:          attempt.result.RoutingSummary,
+		RoutingMalformed: attempt.result.RoutingError != "",
+	}
+}
+
+func (d *Daemon) previewSubscription(ctx context.Context, source subscription.Source) subscriptionAttempt {
 	attempt := d.fetchSubscription(ctx, source)
 	if attempt.result.State == subscription.StateReady {
 		d.mu.Lock()
@@ -153,11 +176,17 @@ func (d *Daemon) PreviewSubscription(ctx context.Context, source subscription.So
 		if _, exists := d.subscriptions.previews[subscriptionIdentity(source)]; !exists && len(d.subscriptions.previews) >= subscriptionPreviewLimit {
 			delete(d.subscriptions.previews, oldest)
 		}
-		d.subscriptions.previews[subscriptionIdentity(source)] = attempt
+		cached := attempt
+		cached.result.RoutingSummary = nil
+		d.subscriptions.previews[subscriptionIdentity(source)] = cached
 		d.mu.Unlock()
 	}
+	return attempt
+}
+
+func (attempt subscriptionAttempt) previewStatus(id string) SubscriptionStatus {
 	status := SubscriptionStatus{
-		ID: source.ID, State: attempt.result.State, Metadata: subscriptionMetadata(attempt.result.Metadata),
+		ID: id, State: attempt.result.State, Metadata: subscriptionMetadata(attempt.result.Metadata),
 		Nodes: make([]SubscriptionNodeStatus, 0, len(attempt.result.Nodes)), Error: attempt.result.Error,
 		Skipped: attempt.result.Skipped, LastAttempt: &attempt.at,
 	}
@@ -291,13 +320,18 @@ func (d *Daemon) expireSubscriptionPreviewsLocked(now time.Time) {
 // applyWithSubscriptions obtains missing candidates, and the provider rules of
 // a new candidate for the configured source, outside the Apply lock and
 // rechecks them against the configuration that is active when Apply acquires it.
-func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config) error {
+func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, revision string) error {
 	candidates := make(map[subscription.Source]subscriptionAttempt)
 	for {
 		d.mu.Lock()
 		if err := d.applyAdmissionLocked(ctx); err != nil {
 			d.mu.Unlock()
 			return err
+		}
+		// Hash the same configuration representation returned by Config.
+		if revision != "" && (d.cfg == nil || model.ConfigRevision(d.cfg.Clone()) != revision) {
+			d.mu.Unlock()
+			return model.ErrConfigChanged
 		}
 		d.expireSubscriptionPreviewsLocked(time.Now())
 		source, missing := d.missingSubscriptionLocked(cfg, candidates)

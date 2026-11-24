@@ -32,6 +32,7 @@ type pageData struct {
 	Tabs                    []pageTab
 	SignedIn, ViewOnly      bool
 	Status                  int
+	Setup                   *setupPage
 }
 
 func (opts Options) pageData(r *http.Request) pageData {

@@ -148,7 +148,7 @@ If the service starts in `management-only` mode, for example because TPROXY is u
 
 ## First configuration
 
-Follow the [user guide](user-guide.md): inspect a connection, add a domain group, choose a network/client policy, Apply, then verify using **Diagnostics** and **Logs**. Start with a small set of domains and one test device.
+To set up a LokiVPN subscription, open the panel and follow [First run](user-guide.md#first-run). For a manual setup, use the [routing guide](routing.md) and start with a small set of domains and one test device.
 
 ## Updates and recovery
 

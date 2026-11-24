@@ -1,9 +1,6 @@
 package ui
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"net/http"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -12,15 +9,7 @@ import (
 // Revision identifies the complete applied configuration by the SHA-256 of
 // its compact, deterministic JSON. An unavailable revision is empty.
 func Revision(cfg *model.Config) string {
-	if cfg == nil {
-		return ""
-	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return model.ConfigRevision(cfg)
 }
 
 // checkRevision returns the applied snapshot to edit once the submitted
