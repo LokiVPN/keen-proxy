@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -20,8 +21,8 @@ import (
 )
 
 func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
-	const sourceURL = "https://PROVIDER.example:443/list?token=synthetic%2fpreview%7esecret"
-	const equivalentURL = "https://provider.example/list?token=synthetic%2Fpreview~secret"
+	const sourceURL = "https://PROVIDER.example:443/l%69st?token=synthetic%20preview%2b%7esecret&tag=one&tag=two&blank"
+	const equivalentURL = "https://provider.example/list?blank=&tag=one&tag=two&token=synthetic+preview%2B~secret"
 	const datURL = "https://provider.example/data/geosite.dat"
 	var calls int
 	var hwid string
@@ -47,7 +48,7 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		}
 		headers := make(http.Header)
 		headers.Set("routing", "happ://routing/add/"+base64.StdEncoding.EncodeToString(raw))
-		headers.Set("profile-title", "Provider "+equivalentURL)
+		headers.Set("profile-title", "Provider ("+equivalentURL+").")
 		headers.Set("announce", "100% ready "+equivalentURL+" "+hwid)
 		headers.Set("profile-web-page-url", equivalentURL)
 		headers.Set("support-url", "https://provider.example/help?subscription="+url.QueryEscape(equivalentURL))
@@ -72,16 +73,16 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	if calls != 1 || len(d.Subscriptions()) != 0 || model.ConfigRevision(d.Config()) != rev {
 		t.Fatal("preview fetched geodata or changed the applied catalog")
 	}
-	if summary.GlobalProxy || summary.Name != "[redacted]" ||
+	if summary.Name != "[redacted]" || details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != "" ||
+		details.Status.Metadata.Title != "[redacted]" || details.Status.Nodes[0].Name != "[redacted]" {
+		t.Error("a query-equivalent source echo escaped display redaction")
+	}
+	if summary.GlobalProxy ||
 		summary.Direct.Sites.Count != 3 || !slices.Equal(summary.Direct.Sites.Categories, []string{"ru@news"}) ||
 		summary.Direct.IP.Count != 1 || !slices.Equal(summary.Direct.IP.Categories, []string{"ru"}) ||
 		summary.Proxy.Sites.Count != 3 || !slices.Equal(summary.Proxy.Sites.Categories, []string{"<rule>", "[redacted]", strings.Repeat("x", 64)}) ||
 		summary.Block.IP.Count != 10 || len(summary.Block.IP.Categories) != 8 || !summary.Block.IP.More {
 		t.Fatal("unexpected routing summary, category bounds or counts")
-	}
-	if details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != "" ||
-		details.Status.Metadata.Title != "[redacted]" || details.Status.Nodes[0].Name != "[redacted]" {
-		t.Fatal("a normalized source echo escaped display redaction")
 	}
 	projected, err := json.Marshal(details)
 	if err != nil {
@@ -161,6 +162,93 @@ func TestApplySubscriptionPreviewRechecksAfterGeodata(t *testing.T) {
 	assertSavedBytes(t, d.opt.ConfigPath, original)
 	if model.ConfigRevision(d.Config()) != rev || provider.count("/sub") != 2 {
 		t.Fatal("superseded Apply changed the config or refetched the link")
+	}
+}
+
+func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
+	d, cfg, provider := newRulesTestDaemon(t)
+	const heldPath = "/geoip.dat"
+	provider.update(func(p *rulesProvider) { delete(p.files, heldPath) })
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, state := d.ProviderRules(); state != ProviderRulesPartial {
+		t.Fatalf("starting rules state is %s, want partial", state)
+	}
+	draft := d.Config()
+	source := draft.Subscriptions[0]
+	rev := model.ConfigRevision(draft)
+	preview := d.PreviewSubscriptionDetails(t.Context(), source)
+	if preview.PreviewID == 0 {
+		t.Fatal("same-link preview did not produce a confirmation")
+	}
+	lookupCount := provider.count(heldPath)
+	release := make(chan struct{})
+	provider.update(func(p *rulesProvider) { p.held[heldPath] = release })
+	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- d.ApplySubscriptionPreview(ctx, draft, rev, subscription.PreviewRef{Source: source, ID: preview.PreviewID})
+	}()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for provider.count(heldPath) == lookupCount {
+		select {
+		case err := <-done:
+			t.Fatalf("confirmation returned before its geodata request: %v", err)
+		case <-ctx.Done():
+			t.Fatal("confirmation did not request geodata")
+		case <-ticker.C:
+		}
+	}
+
+	// The first request is already waiting on release. Serve valid geodata
+	// to the worker's retry while keeping the confirmation lookup held.
+	provider.update(func(p *rulesProvider) {
+		delete(p.held, heldPath)
+		p.files[heldPath] = testGeoipData
+	})
+	retry := claimSubscriptionRequest(d, rulesRetryFirst+time.Second)
+	if retry == nil || !retry.rulesOnly {
+		t.Fatal("background worker did not claim a geodata retry")
+	}
+	d.runSubscriptionRequest(ctx, retry)
+	complete := requireAppliedProviderRules(t, d)
+	if model.ConfigRevision(d.Config()) != rev {
+		t.Fatal("background retry changed the checked configuration revision")
+	}
+
+	// The held lookup now fails. Its confirmation still uses the same
+	// source, checked attempt, and config revision.
+	provider.update(func(p *rulesProvider) { delete(p.files, heldPath) })
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("confirmation did not apply: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("confirmation did not return")
+	}
+	got, _, state := d.ProviderRules()
+	if state != ProviderRulesReady || !reflect.DeepEqual(got, complete) || d.Subscriptions()[0].RulesError != "" {
+		t.Errorf("confirmation replaced completed live rules with %s rules", state)
+	}
+	raw, err := os.ReadFile(d.subscriptionSnapshotPath(d.Config()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]subscriptionSnapshot
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := saved[subscriptionFingerprint(source)]
+	if !snapshot.Rules.complete() || !reflect.DeepEqual(snapshot.Rules.Built, &complete) {
+		t.Error("confirmation did not persist the complete rules")
+	}
+	if provider.count("/sub") != 2 || provider.count(heldPath) != lookupCount+2 {
+		t.Error("confirmation did not reuse the checked subscription or added a geodata request")
 	}
 }
 

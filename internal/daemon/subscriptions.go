@@ -120,6 +120,8 @@ type subscriptionAttempt struct {
 	// rules is the provider-rules state built from result for the configured
 	// source; nil when this attempt did not evaluate rules.
 	rules *rulesSnapshot
+	// rulesBase is the snapshot an Apply used while evaluating this attempt.
+	rulesBase *rulesSnapshot
 }
 
 // subscriptionRefresh identifies one in-flight download even if an Apply
@@ -402,6 +404,7 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, 
 			geoCtx, cancel := applyGeoContext(ctx)
 			candidate.rules = d.evaluateProviderRules(geoCtx, candidate.result, previous)
 			cancel()
+			candidate.rulesBase = previous
 			candidates[identity] = candidate
 			continue
 		}
@@ -469,6 +472,13 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 		}
 		state.source = source
 		if candidate, ok := candidates[identity]; ok && (replaced || identity == checked) {
+			// A retry can complete the rules while confirmation evaluates
+			// an older snapshot. Keep that success if the lookup failed.
+			current := state.snapshot.Rules
+			if !replaced && candidate.rules != nil && candidate.rules.Error != "" &&
+				current != candidate.rulesBase && current.complete() {
+				candidate.rules = current
+			}
 			previousEpoch := state.probeEpoch
 			state.request = nil
 			state.recordAttempt(candidate)
@@ -731,7 +741,7 @@ func equalSubscriptionNodes(a, b []subscription.Node) bool {
 }
 
 func (s *appliedSubscription) recordAttempt(attempt subscriptionAttempt) {
-	attempt.result.Nodes, attempt.rules = nil, nil
+	attempt.result.Nodes, attempt.rules, attempt.rulesBase = nil, nil, nil
 	s.attempt = attempt
 	interval := subscriptionRefreshInterval(attempt.result.Metadata)
 	if attempt.result.Metadata.UpdateIntervalHours == 0 {

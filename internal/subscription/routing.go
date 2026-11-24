@@ -63,7 +63,7 @@ var errRoutingLink = errors.New(routingMalformed)
 // provider sends no rules and returns (nil, nil). Errors are fixed messages
 // that never include provider text.
 func ParseRoutingLink(value string) (*RoutingProfile, error) {
-	return parseRoutingLink(value, nil)
+	return parseRoutingLink(value, displayRedactor{})
 }
 
 func parseRoutingLink(value string, sensitive displayRedactor) (*RoutingProfile, error) {

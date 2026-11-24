@@ -94,6 +94,9 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 	sensitive.addURL(source.URL)
 	canonicalHost := strings.TrimPrefix(origin, "https://")
 	recordURL := func(u *url.URL) {
+		if identity, ok := parsedDisplayURL(u); ok {
+			sensitive.urls = append(sensitive.urls, identity)
+		}
 		sensitive.addURL(u.String())
 		// Fragments from a Location header are absent from the wire request.
 		normalized := *u
@@ -133,7 +136,7 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 	}
 	defer resp.Body.Close()
 	// An initial URL may be a prefix of a followed redirect URL.
-	slices.SortFunc(sensitive, func(a, b string) int { return len(b) - len(a) })
+	slices.SortFunc(sensitive.literals, func(a, b string) int { return len(b) - len(a) })
 	return readResponse(ctx, resp, sensitive)
 }
 

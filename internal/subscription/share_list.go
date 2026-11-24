@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -236,7 +237,39 @@ func metadataURL(value string, sensitive displayRedactor) string {
 
 // displayRedactor recognizes the request values a provider could echo in panel
 // text without altering its private share links.
-type displayRedactor []string
+type displayRedactor struct {
+	literals []string
+	urls     []displayURL
+}
+
+// displayURL describes the HTTPS request identity. Fragments stay outside
+// the request, query key order is immaterial, and repeated values keep order.
+type displayURL struct {
+	origin string
+	path   string
+	query  url.Values
+}
+
+func parsedDisplayURL(u *url.URL) (displayURL, bool) {
+	origin := httpsOrigin(u)
+	if origin == "" {
+		return displayURL{}, false
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return displayURL{}, false
+	}
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
+	return displayURL{origin: origin, path: path, query: query}, true
+}
+
+func (u displayURL) equal(other displayURL) bool {
+	return u.origin == other.origin && u.path == other.path &&
+		maps.EqualFunc(u.query, other.query, slices.Equal[[]string])
+}
 
 const redactedDisplay = "[redacted]"
 
@@ -248,18 +281,24 @@ func (r *displayRedactor) addURL(value string) {
 }
 
 func (r *displayRedactor) add(value string) {
-	if value != "" && !slices.Contains(*r, value) {
-		*r = append(*r, value)
+	if value != "" && !slices.Contains(r.literals, value) {
+		r.literals = append(r.literals, value)
 	}
 }
 
 func (r displayRedactor) replace(value string) string {
-	if len(r) == 0 {
+	if len(r.literals) == 0 {
 		return value
+	}
+	if r.containsURLAlias(value, true) {
+		return redactedDisplay
 	}
 	raw := r.replaceExact(value)
 	decoded := unescapeDisplay(value)
 	if decoded != value {
+		if r.containsURLAlias(decoded, false) {
+			return redactedDisplay
+		}
 		if safe := r.replaceExact(decoded); safe != decoded && safe != unescapeDisplay(raw) {
 			// A different spelling matched. Hide that field without
 			// decoding or partially exposing its original text.
@@ -270,7 +309,7 @@ func (r displayRedactor) replace(value string) string {
 }
 
 func (r displayRedactor) replaceExact(value string) string {
-	for _, secret := range r {
+	for _, secret := range r.literals {
 		value = strings.ReplaceAll(value, secret, redactedDisplay)
 	}
 	return value
@@ -278,6 +317,57 @@ func (r displayRedactor) replaceExact(value string) string {
 
 func (r displayRedactor) contains(value string) bool {
 	return r.replace(value) != value
+}
+
+var displayHTTPSURL = regexp.MustCompile(`(?i)https://[^\s\p{Z}<>"']+`)
+
+// containsURLAlias finds equivalent request URLs in prose as well as in a
+// metadata link. Exact spellings use the literal replacement above.
+func (r displayRedactor) containsURLAlias(text string, includeQuery bool) bool {
+	if len(r.urls) == 0 {
+		return false
+	}
+	for {
+		match := displayHTTPSURL.FindStringIndex(text)
+		if match == nil {
+			return false
+		}
+		value := text[match[0]:match[1]]
+		text = text[match[1]:]
+		// A sentence can end or close a parenthesis immediately after a URL.
+		bare := strings.TrimRight(value, ".,;:!?)]}")
+		if slices.Contains(r.literals, value) || slices.Contains(r.literals, bare) {
+			continue
+		}
+		if r.urlAlias(value, includeQuery) || (bare != value && r.urlAlias(bare, includeQuery)) {
+			return true
+		}
+	}
+}
+
+func (r displayRedactor) urlAlias(value string, includeQuery bool) bool {
+	u, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	identity, ok := parsedDisplayURL(u)
+	if !ok {
+		return false
+	}
+	if slices.ContainsFunc(r.urls, identity.equal) {
+		return true
+	}
+	if includeQuery {
+		// A metadata link can carry the request URL as a form value.
+		for _, values := range identity.query {
+			for _, param := range values {
+				if r.replaceExact(param) != param || r.containsURLAlias(param, false) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 var percentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
