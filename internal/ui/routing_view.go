@@ -141,15 +141,9 @@ func (p pages) routingRules(cfg *model.Config) RoutingRules {
 
 func (p *routingPage) setRules(state routingState, settings *model.ProviderRulesSettings, draft *routingDraft, text map[string]string) {
 	rules := state.rules
-	switch rules.State {
-	case "off":
+	p.RuleState = providerRulesNotice(rules.State, text)
+	if rules.State == "off" {
 		p.RuleState = text["routing_rules_on_save"]
-	case "pending":
-		p.RuleState = text["setup_rules_pending"]
-	case "withheld":
-		p.RuleState = text["setup_rules_withheld"]
-	case "failed":
-		p.RuleState = text["overview_rules_failed"]
 	}
 	if rules.HasProfile {
 		p.Unmatched = text["routing_rest_direct"]
@@ -191,6 +185,22 @@ func (p *routingPage) setRules(state routingState, settings *model.ProviderRules
 		if len(group.Rules) != 0 {
 			p.RuleGroups = append(p.RuleGroups, group)
 		}
+	}
+}
+
+// providerRulesNotice is shared by the routing and subscription catalog views.
+func providerRulesNotice(state string, text map[string]string) string {
+	switch state {
+	case "pending":
+		return text["setup_rules_pending"]
+	case "withheld":
+		return text["setup_rules_withheld"]
+	case "failed":
+		return text["overview_rules_failed"]
+	case "partial":
+		return text["routing_rules_partial"]
+	default:
+		return ""
 	}
 }
 

@@ -3,7 +3,6 @@ package ui
 import (
 	"cmp"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -27,6 +26,7 @@ type connectionSubscriptionView struct {
 
 type subscriptionNodesView struct {
 	ID, Title, Summary    string
+	RulesNotice           string
 	Status                overviewChip
 	ViewOnly, CheckingAll bool
 	Rows                  []connectionNodeView
@@ -35,24 +35,27 @@ type subscriptionNodesView struct {
 
 type connectionNodeView struct {
 	ID, Name, Probe string
-	Status          overviewChip
 	Checking        bool
+	Current         bool
+	Unavailable     bool
 }
 
 type manualConnectionView struct {
-	ID, Name, URL, Type, Reserve string
-	Probe                        string
-	Failed, Disabled, Enabled    bool
+	SwitchField, Name, URL, Type, Reserve string
+	Probe                                 string
+	Failed, Disabled, Enabled             bool
 }
 
 func connectionsView(cfg, draft *model.Config, subs []AppliedSubscription, health map[string]ConnectionStatus, viewOnly bool, text map[string]string) *connectionsPage {
 	settings := cmp.Or(draft, cfg)
-	view := &connectionsPage{Revision: Revision(cfg), Draft: draft != nil}
+	view := &connectionsPage{Revision: Revision(cfg)}
 	now := time.Now()
 	for i, source := range cfg.Subscriptions {
 		nodes := connectionNodes(appliedSubscriptionFor(subs, source.ID), viewOnly, now, text)
+		fallback := settings.Subscriptions[i].Fallback
+		view.Draft = view.Draft || fallback != source.Fallback
 		view.Subscriptions = append(view.Subscriptions, connectionSubscriptionView{
-			Fallback: settings.Subscriptions[i].Fallback, AllowUnset: source.Fallback == "", Nodes: nodes,
+			Fallback: connectionIDSegment(fallback), AllowUnset: source.Fallback == "", Nodes: nodes,
 		})
 	}
 	if len(settings.Subscriptions) > 0 {
@@ -60,8 +63,9 @@ func connectionsView(cfg, draft *model.Config, subs []AppliedSubscription, healt
 	}
 	for i, conn := range cfg.Connections {
 		probe := health[conn.ID]
+		view.Draft = view.Draft || settings.Connections[i].Disabled != conn.Disabled
 		row := manualConnectionView{
-			ID: conn.ID, Name: cmp.Or(conn.Name, conn.ID), URL: "/connections/" + url.PathEscape(conn.ID),
+			SwitchField: connectionEnabledField(conn.ID), Name: cmp.Or(conn.Name, conn.ID), URL: connectionDetailPath(conn.ID),
 			Type: connectionProtocol(conn), Reserve: connectionReserveChain(cfg, conn.ID, text),
 			Probe: connectionProbe(probe, text), Failed: probe.Checked && !probe.Available,
 			Disabled: conn.Disabled, Enabled: !settings.Connections[i].Disabled,
@@ -91,7 +95,7 @@ func connectionReserveOptions(cfg *model.Config, text map[string]string) []conne
 	targets := cfg.SubscriptionFallbackTargets()
 	options := make([]connectionOption, 0, len(targets))
 	for _, target := range targets {
-		options = append(options, connectionOption{Target: target, Label: labels[target]})
+		options = append(options, connectionOption{Target: connectionIDSegment(target), Label: labels[target]})
 	}
 	return options
 }
@@ -111,7 +115,8 @@ func connectionReserveChain(cfg *model.Config, id string, text map[string]string
 func connectionNodes(sub AppliedSubscription, viewOnly bool, now time.Time, text map[string]string) subscriptionNodesView {
 	view := subscriptionNodesView{
 		ID: sub.ID, Title: fmt.Sprintf(text["connections_subscription"], sub.title(text)),
-		Status: connectionSubscriptionStatus(sub, now, text), CheckingAll: sub.CheckingAll,
+		RulesNotice: providerRulesNotice(sub.RulesState, text),
+		Status:      connectionSubscriptionStatus(sub, now, text), CheckingAll: sub.CheckingAll,
 		ViewOnly: viewOnly, Text: text,
 	}
 	var summary []string
@@ -145,11 +150,14 @@ func connectionSubscriptionStatus(sub AppliedSubscription, now time.Time, text m
 }
 
 func connectionNode(node SubscriptionNode, active string, text map[string]string) connectionNodeView {
-	row := connectionNodeView{ID: node.ID, Name: cmp.Or(node.Name, node.ID), Checking: node.Checking}
+	row := connectionNodeView{
+		ID: node.ID, Name: cmp.Or(node.Name, node.ID), Checking: node.Checking,
+		Current: active != "" && node.ID == active, Unavailable: node.Health == connectionUnavailable,
+	}
 	switch {
 	case node.Checking:
 		row.Probe = text["connections_checking"]
-	case node.Health == connectionUnavailable:
+	case row.Unavailable:
 		row.Probe = text["overview_no_response"]
 	case node.LatencyMS != nil:
 		row.Probe = fmt.Sprintf(text["overview_latency"], *node.LatencyMS)
@@ -157,11 +165,6 @@ func connectionNode(node SubscriptionNode, active string, text map[string]string
 		row.Probe = text["overview_available"]
 	default:
 		row.Probe = text["overview_not_checked"]
-	}
-	if node.Health == connectionUnavailable {
-		row.Status = overviewChip{text["connections_node_unavailable"], "warn"}
-	} else if node.ID == active {
-		row.Status = overviewChip{text["connections_active_node"], "ok"}
 	}
 	return row
 }

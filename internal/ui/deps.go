@@ -80,6 +80,7 @@ type ConnectionStatus struct {
 // the saved link, raw profiles, or fetch errors.
 type AppliedSubscription struct {
 	ID, State, ActiveNode, SwitchReason string
+	RulesState                          string
 	Metadata                            subscription.Metadata
 	Nodes                               []SubscriptionNode
 	Unavailable                         bool

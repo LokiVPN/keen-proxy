@@ -136,7 +136,7 @@ func (d uiDeps) Subscriptions() []ui.AppliedSubscription {
 		view := ui.AppliedSubscription{
 			ID: status.ID, State: status.State, Metadata: status.Metadata, ActiveNode: status.ActiveNode,
 			Unavailable: status.Unavailable, SwitchReason: status.SwitchReason,
-			RulesWithheld:   status.RulesWithheld,
+			RulesState: string(status.RulesState), RulesWithheld: status.RulesWithheld,
 			BalanceEligible: status.BalanceEligible, Refreshing: status.Refreshing,
 			Skipped: status.Skipped, CheckingAll: status.CheckProgress != nil,
 			Nodes: make([]ui.SubscriptionNode, 0, len(status.Nodes)),

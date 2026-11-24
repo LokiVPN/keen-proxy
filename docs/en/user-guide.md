@@ -58,14 +58,14 @@ Raw sing-box profiles keep their `detour` and selector references to the configu
 
 Set up or replace a subscription as described in [First run](#first-run). KeenProxy accepts HTTPS Xray share lists in plain text or Base64, up to 2 MiB and 256 distinct nodes. For a provider that requires a specific client, use its Xray share-list URL or enable KeenProxy in the provider settings.
 
-The subscription's section on **Connections** shows the catalog status and the latest HTTPS result for each node. Choose **Check** for one node or **Check all nodes** for the catalog. KeenProxy queues the checks and updates the results as they arrive. The successful duration includes connection setup. The probe uses the configured HTTPS check URL or its default endpoint and verifies the server certificate.
+The subscription's section on **Connections** shows the catalog status, the latest HTTPS result for each node, and any notice about the selected provider's routing rules. Choose **Check** for one node or **Check all nodes** for the catalog. KeenProxy queues the checks and updates the results as they arrive. Your staged reserve and switch edits stay on the form until you choose **Save** or **Cancel**. The successful duration includes connection setup. The probe uses the configured HTTPS check URL or its default endpoint and verifies the server certificate.
 
 Under **Reserve if none of the nodes respond**, choose a manual connection, **Direct — without VPN**, or **None — block VPN traffic**, then choose **Save**. A manual reserve follows its configured chain if its own tunnel is disabled. **No reserve configured** preserves an existing unset reserve.
 
 Choose a subscription target under **Main connection** on **Overview**.
 
 - A specific node stays fixed. The route blocks if the node disappears from the subscription, unless the subscription has a [reserve](routing.md#subscription-reserve), which then takes the traffic.
-- **Auto — switch nodes on failure** starts in provider order and switches after sustained failure of the active node. By default, checks run every 15 seconds and the failure window is 60 seconds. A working replacement stays selected when a preferred node recovers. **Connections** marks the active node.
+- **Auto — switch nodes on failure** starts in provider order and switches after sustained failure of the active node. By default, checks run every 15 seconds and the failure window is 60 seconds. A working replacement stays selected when a preferred node recovers. **Current** identifies the selected node while **Unavailable** reports a failed check. A row can show both.
 - **Balancing by rotation** cycles through eligible nodes for successive new connections.
 - **Balancing by site** assigns each site to the same eligible node across devices. It uses the registrable domain when available and the destination IP otherwise.
 - **Balancing by session** keeps the same eligible node for each device IP and site pair, up to 1,024 pairs per subscription. The assignment expires after 30 minutes of inactivity or when that node stops being eligible.

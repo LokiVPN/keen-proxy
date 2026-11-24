@@ -487,7 +487,7 @@
 .kp .devices-validation { margin-top: 6px; white-space: pre-line; overflow-wrap: anywhere; }
 
 .connections-section { margin-top: 40px; }
-.tabs + .connections-section { margin-top: 32px; }
+.tabs + #connections-settings > .connections-section:first-of-type { margin-top: 32px; }
 .connections-head { align-items: center; }
 .connections-head h2 { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
 .connections-head .clip { flex: 1 1 150px; }

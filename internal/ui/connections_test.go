@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"slices"
@@ -16,10 +17,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
-const (
-	subscriptionCheckPath = "/connections/subscriptions/sample/check"
-	subscriptionNodesPath = "/fragments/connections/sample"
-)
+const subscriptionNodesPath = "/fragments/connections/sample"
 
 func TestConnectionsDisplaysAppliedState(t *testing.T) {
 	f := newConnectionsFixture(t)
@@ -33,8 +31,8 @@ func TestConnectionsDisplaysAppliedState(t *testing.T) {
 	assertPageHeaders(t, w.Result(), "en")
 	body := w.Body.String()
 	assertContains(t, body, `href="/connections" aria-current="page"`, `data-fragment="`+subscriptionNodesPath+`"`,
-		"Example &lt;script&gt;", "North &#34;&lt;/button&gt;&lt;script&gt;&#34;", "Ready", "Active", "42 ms", "Last updated",
-		`href="/connections/new"`, `href="/connections/old"`, "VLESS", "No response", "Cabin → Direct", "35 ms", "Office SOCKS", "Disabled")
+		"Example &lt;script&gt;", "North &#34;&lt;/button&gt;&lt;script&gt;&#34;", "Ready", "Current", "42 ms", "Last updated",
+		`href="/connections/new"`, `href="/connections/id/old"`, "VLESS", "No response", "Cabin → Direct", "35 ms", "Office SOCKS", "Disabled")
 	if strings.Contains(body, "<script>") || strings.Contains(body, "synthetic-token") || strings.Contains(body, "style=") {
 		t.Fatal("the page exposed a secret, raw provider markup, or an inline style")
 	}
@@ -142,13 +140,14 @@ func TestConnectionsChecksNodesAndRefreshesStatusFragment(t *testing.T) {
 	f := newConnectionsFixture(t)
 	h := New(f, setupTestOptions(RoleManage))
 	page := setupRequest(h, "/connections", nil).Body.String()
-	assertContains(t, page, `action="`+subscriptionCheckPath+`"`, "Check all nodes")
-	rev := formField(t, page, "rev")
+	assertContains(t, page, `action="/connections"`, "Check all nodes")
+	form := connectionsSaveForm(t, page)
 	before := f.Config()
 	for _, node := range []string{overviewNodeID, ""} {
-		w := setupRequest(h, subscriptionCheckPath, url.Values{"rev": {rev}, "node": {node}})
-		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/connections" || len(w.Result().Cookies()) == 0 {
-			t.Fatalf("probe %q = HTTP %d, location %q", node, w.Code, w.Header().Get("Location"))
+		form.Set("check", "sample:"+node)
+		w := setupRequest(h, "/connections", form)
+		if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, "Check requested") || strings.Contains(body, "data-dirty") {
+			t.Fatalf("probe %q = HTTP %d or marked untouched controls as edited", node, w.Code)
 		}
 	}
 	if !slices.Equal(f.nodeChecks, [][2]string{{"sample", overviewNodeID}, {"sample", ""}}) || f.applies != 0 || !reflect.DeepEqual(f.Config(), before) {
@@ -167,16 +166,97 @@ func TestConnectionsChecksNodesAndRefreshesStatusFragment(t *testing.T) {
 	if strings.Contains(updated, "<!doctype") || strings.Contains(updated, "fallback.sample") {
 		t.Fatal("the live fragment included page layout or editable reserve fields")
 	}
-	w := setupRequest(h, subscriptionCheckPath, url.Values{"rev": {rev}})
-	if w.Code != http.StatusBadRequest || len(f.nodeChecks) != 2 {
-		t.Fatalf("an omitted node control must not queue an all-node check: HTTP %d", w.Code)
+	for _, invalid := range [][]string{{"sample"}, {"sample:", "sample:" + overviewNodeID}} {
+		form["check"] = invalid
+		w := setupRequest(h, "/connections", form)
+		if w.Code != http.StatusBadRequest || len(f.nodeChecks) != 2 || f.applies != 0 {
+			t.Fatalf("malformed check %v returned HTTP %d or queued a check", invalid, w.Code)
+		}
 	}
 	f.cfg.Subscriptions[0].URL = "https://provider.example/replaced"
-	w = setupRequest(h, subscriptionCheckPath, url.Values{"rev": {rev}, "node": {""}})
+	form.Set("check", "sample:")
+	w := setupRequest(h, "/connections", form)
 	if w.Code != http.StatusConflict || len(f.nodeChecks) != 2 {
 		t.Fatalf("stale probe = HTTP %d, calls %v", w.Code, f.nodeChecks)
 	}
 	assertContains(t, w.Body.String(), "Settings changed in another window")
+}
+
+func TestConnectionsMarksCurrentNodeAfterAProbeFailure(t *testing.T) {
+	f := newConnectionsFixture(t)
+	node := &f.subs[0].Nodes[0]
+	node.Health, node.LatencyMS = "unavailable", nil
+	h := New(f, setupTestOptions(RoleManage))
+	for _, path := range []string{"/connections", subscriptionNodesPath} {
+		w := setupRequest(h, path, nil)
+		_, rows, _ := strings.Cut(w.Body.String(), `<table class="tbl connections-nodes">`)
+		_, first, _ := strings.Cut(rows, "<tbody>")
+		row, _, _ := strings.Cut(first, "</tr>")
+		if w.Code != http.StatusOK || !strings.Contains(row, ">Current</span>") ||
+			!strings.Contains(row, ">Unavailable</span>") || !strings.Contains(row, "No response") {
+			t.Errorf("%s did not mark the same row as current and unavailable: %q", path, row)
+		}
+	}
+}
+
+func TestConnectionsCheckPreservesDraft(t *testing.T) {
+	f := newConnectionsFixture(t)
+	h := New(f, setupTestOptions(RoleManage))
+	form := connectionsSaveForm(t, setupRequest(h, "/connections", nil).Body.String())
+	form.Set("fallback.sample", model.TargetDirect)
+	form.Set("enabled.old", "0")
+	before := f.Config()
+	for _, node := range []string{overviewNodeID, ""} {
+		form.Set("check", "sample:"+node)
+		w := setupRequest(h, "/connections", form)
+		if w.Code != http.StatusOK {
+			t.Errorf("check %q = HTTP %d, want an in-place draft response", node, w.Code)
+			continue
+		}
+		body := w.Body.String()
+		assertContains(t, body, `role="status">Check requested`, `value="direct" selected`, `data-dirty`)
+		if _, enabled := connectionControl(t, body, "input", "enabled.old", "1")["checked"]; enabled {
+			t.Error("check discarded the staged disabled switch")
+		}
+	}
+	if f.applies != 0 || !reflect.DeepEqual(f.Config(), before) || !slices.Equal(f.nodeChecks, [][2]string{{"sample", overviewNodeID}, {"sample", ""}}) {
+		t.Fatalf("check actions changed applied settings or lost a probe: %v", f.nodeChecks)
+	}
+}
+
+func TestConnectionsDetailLinksKeepLegacyIDsUnambiguous(t *testing.T) {
+	f := newConnectionsFixture(t)
+	links := map[string]string{
+		"new": "/connections/id/new", ".": "/connections/id/~.", "..": "/connections/id/~..",
+		"~.": "/connections/id/~~.", "%2E": "/connections/id/%252E", "route/a": "/connections/id/route%2Fa",
+	}
+	for id := range links {
+		f.cfg.Connections = append(f.cfg.Connections, model.Connection{ID: id, Name: "Legacy " + id, Type: model.ConnLink, Link: "socks5://example.test:1080"})
+	}
+	if err := f.cfg.Validate(); err != nil {
+		t.Fatalf("legacy IDs are part of a valid config: %v", err)
+	}
+	w := setupRequest(New(f, setupTestOptions(RoleManage)), "/connections", nil)
+	if w.Code != http.StatusOK || strings.Count(w.Body.String(), `href="/connections/new"`) != 1 {
+		t.Errorf("the Add link must be the wizard's only entry, page HTTP %d", w.Code)
+	}
+	for id, path := range links {
+		if want := `href="` + path + `" title="Legacy ` + id + `"`; !strings.Contains(w.Body.String(), want) {
+			t.Errorf("missing the unique path %s for ID %q", path, id)
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /connections/id/{id}/replace", func(w http.ResponseWriter, r *http.Request) {
+			if got := connectionIDFromSegment(r.PathValue("id")); got != id {
+				t.Errorf("replace for path %s looked up ID %q, want %q", path, got, id)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		replace := httptest.NewRecorder()
+		mux.ServeHTTP(replace, httptest.NewRequest(http.MethodGet, path+"/replace", nil))
+		if replace.Code != http.StatusNoContent {
+			t.Errorf("replace for path %s matched HTTP %d", path, replace.Code)
+		}
+	}
 }
 
 func TestConnectionsViewRoleCannotSaveOrCheck(t *testing.T) {
@@ -187,9 +267,9 @@ func TestConnectionsViewRoleCannotSaveOrCheck(t *testing.T) {
 		t.Fatalf("view-only page returned HTTP %d", page.Code)
 	}
 	body := page.Body.String()
-	assertContains(t, body, "View only", `href="/connections/backup"`)
+	assertContains(t, body, "View only", `href="/connections/id/backup"`)
 	for _, control := range []struct{ tag, name, value string }{
-		{"select", "fallback.sample", ""}, {"input", "enabled.old", "1"}, {"button", "node", overviewNodeID}, {"button", "node", ""},
+		{"select", "fallback.sample", ""}, {"input", "enabled.old", "1"}, {"button", "check", "sample:" + overviewNodeID}, {"button", "check", "sample:"},
 	} {
 		attrs := connectionControl(t, body, control.tag, control.name, control.value)
 		if _, disabled := attrs["disabled"]; !disabled {
@@ -200,14 +280,17 @@ func TestConnectionsViewRoleCannotSaveOrCheck(t *testing.T) {
 		t.Error("the view role received an active add connection link")
 	}
 	form := connectionsSaveForm(t, body)
-	for _, path := range []string{"/connections", subscriptionCheckPath} {
-		w := setupRequest(h, path, form)
+	for _, check := range []string{"", "sample:" + overviewNodeID, "sample:"} {
+		if check != "" {
+			form.Set("check", check)
+		}
+		w := setupRequest(h, "/connections", form)
 		if w.Code != http.StatusForbidden || f.applies != 0 || len(f.nodeChecks) != 0 {
-			t.Fatalf("forged POST %s = HTTP %d, Apply calls %d, checks %v", path, w.Code, f.applies, f.nodeChecks)
+			t.Fatalf("forged POST (%q) = HTTP %d, Apply calls %d, checks %v", check, w.Code, f.applies, f.nodeChecks)
 		}
 	}
 	viewerFragment := setupRequest(h, subscriptionNodesPath, nil)
-	button := connectionControl(t, viewerFragment.Body.String(), "button", "node", overviewNodeID)
+	button := connectionControl(t, viewerFragment.Body.String(), "button", "check", "sample:"+overviewNodeID)
 	if _, disabled := button["disabled"]; !disabled {
 		t.Fatal("view role's fragment re-enabled the check button")
 	}

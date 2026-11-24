@@ -57,7 +57,6 @@ func New(deps Deps, opts Options) http.Handler {
 	mux.HandleFunc("POST /devices", p.devicesPost)
 	mux.HandleFunc("GET /connections", p.connectionsGet)
 	mux.HandleFunc("POST /connections", p.connectionsPost)
-	mux.HandleFunc("POST /connections/subscriptions/{source}/check", p.connectionsCheck)
 	mux.HandleFunc("GET /fragments/connections/{source}", p.connectionsFragment)
 	mux.HandleFunc("GET /static/", serveAsset)
 	mux.HandleFunc("GET /", p.notFound)

@@ -52,15 +52,16 @@ func (deviceSnapshotDaemon) Devices() []daemon.Device {
 }
 
 func TestConnectionsAdapterUsesDaemonCatalogAndChecks(t *testing.T) {
-	const source, node, revision = "sample", "aabbccddeeff00112233445566778899", "displayed-revision"
+	const source, node = "sample", "aabbccddeeff00112233445566778899"
 	d := &connectionCheckDaemon{}
 	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
-	form := url.Values{"rev": {revision}, "node": {node}}
-	r := httptest.NewRequest(http.MethodPost, "/connections/subscriptions/"+source+"/check", strings.NewReader(form.Encode()))
+	revision := ui.Revision(d.Config())
+	form := url.Values{"rev": {revision}, "check": {source + ":" + node}, "fallback.sample": {""}, "fallback.other": {""}}
+	r := httptest.NewRequest(http.MethodPost, "/connections", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
-	if w.Code != http.StatusSeeOther || d.check != [3]string{source, node, revision} {
+	if w.Code != http.StatusOK || d.check != [3]string{source, node, revision} {
 		t.Fatalf("check = HTTP %d, daemon arguments %v", w.Code, d.check)
 	}
 	w = httptest.NewRecorder()
@@ -72,9 +73,51 @@ func TestConnectionsAdapterUsesDaemonCatalogAndChecks(t *testing.T) {
 	}
 }
 
+func TestConnectionsShowsSelectedSubscriptionRuleState(t *testing.T) {
+	for _, tc := range []struct {
+		state daemon.ProviderRulesState
+		copy  string
+	}{
+		{daemon.ProviderRulesPending, "Provider rules are pending evaluation."},
+		{daemon.ProviderRulesWithheld, "The provider does not supply routing rules."},
+		{daemon.ProviderRulesFailed, "Provider routing rules could not be loaded."},
+		{daemon.ProviderRulesPartial, "Some provider routing rules are unavailable."},
+	} {
+		t.Run(string(tc.state), func(t *testing.T) {
+			h := ui.New(uiDeps{daemon: &connectionCheckDaemon{rulesState: tc.state}}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleView }})
+			for _, path := range []string{"/connections", "/fragments/connections/sample"} {
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+				if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, "Ready") || !strings.Contains(body, tc.copy) {
+					t.Errorf("%s = HTTP %d, expected a ready catalog and %q", path, w.Code, tc.copy)
+				}
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fragments/connections/other", nil))
+			if w.Code != http.StatusOK || strings.Contains(w.Body.String(), tc.copy) {
+				t.Errorf("unselected subscription got HTTP %d or inherited the selected source's notice", w.Code)
+			}
+		})
+	}
+}
+
 type connectionCheckDaemon struct {
 	managementDaemon
-	check [3]string
+	check      [3]string
+	rulesState daemon.ProviderRulesState
+}
+
+func (*connectionCheckDaemon) Config() *model.Config {
+	return &model.Config{
+		Subscriptions: []subscription.Source{{ID: "sample", URL: "https://provider.example/catalog"}, {ID: "other", URL: "https://secondary.example/catalog"}},
+		ProviderRules: &model.ProviderRulesSettings{Source: "sample"},
+	}
+}
+
+func (*connectionCheckDaemon) RoutingStatus() daemon.RoutingStatus { return daemon.RoutingStatus{} }
+
+func (*connectionCheckDaemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, daemon.ProviderRulesState) {
+	return compile.ProviderRules{}, nil, daemon.ProviderRulesOff
 }
 
 func (d *connectionCheckDaemon) CheckSubscriptionIfCurrent(source, node, revision string) error {
@@ -84,9 +127,9 @@ func (d *connectionCheckDaemon) CheckSubscriptionIfCurrent(source, node, revisio
 
 func (d *connectionCheckDaemon) Subscriptions() []daemon.SubscriptionStatus {
 	return []daemon.SubscriptionStatus{{
-		ID: d.check[0], State: subscription.StateReady, Skipped: 1,
+		ID: "sample", State: subscription.StateReady, Skipped: 1, RulesState: d.rulesState,
 		Nodes: []daemon.SubscriptionNodeStatus{{ID: d.check[1], Name: "North", Checking: true, CheckError: "private-probe-detail"}},
-	}}
+	}, {ID: "other", State: subscription.StateReady}}
 }
 
 func TestRoutingRulesProjection(t *testing.T) {

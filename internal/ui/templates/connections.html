@@ -4,36 +4,33 @@
       {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
       {{if .Message}}<p class="note" role="alert">{{.Message}}</p>{{end}}
       {{if .Connections}}
-        {{range .Connections.Subscriptions}}
-        {{$id := .Nodes.ID}}
-        <section class="connections-section" aria-labelledby="subscription-title-{{$id}}">
-          <form id="subscription-check-{{$id}}" method="post" action="/connections/subscriptions/{{$id}}/check">
-            <input type="hidden" name="rev" value="{{$.Connections.Revision}}">
-          </form>
-          <div data-fragment="/fragments/connections/{{$id}}">
-            {{template "connections-nodes" .Nodes}}
-          </div>
-          <div class="fld connections-select">
-            <label for="subscription-fallback-{{$id}}">{{$.Text.connections_reserve_label}}</label>
-            <select id="subscription-fallback-{{$id}}" name="fallback.{{$id}}" form="connections-settings"{{if $.ViewOnly}} disabled{{end}}>
-              {{$current := .Fallback}}
-              {{if .AllowUnset}}<option value=""{{if not .Fallback}} selected{{end}}>{{$.Text.connections_reserve_unset}}</option>{{end}}
-              {{range $.Connections.Reserve}}<option value="{{.Target}}"{{if eq .Target $current}} selected{{end}}>{{.Label}}</option>{{end}}
-            </select>
-          </div>
-        </section>
-        {{else}}
-        <section class="connections-section" aria-labelledby="subscription-empty">
-          <div class="connections-head">
-            <h2 id="subscription-empty">{{.Text.overview_subscription}}</h2>
-            {{if not .ViewOnly}}<a href="/setup">{{.Text.overview_add_subscription}}</a>{{end}}
-          </div>
-          <p class="muted">{{.Text.overview_no_subscription}}</p>
-        </section>
-        {{end}}
-
         <form id="connections-settings" method="post" action="/connections" data-guard{{if .Connections.Draft}} data-dirty{{end}}>
           <input type="hidden" name="rev" value="{{.Connections.Revision}}">
+          {{range .Connections.Subscriptions}}
+          {{$id := .Nodes.ID}}
+          <section class="connections-section" aria-labelledby="subscription-title-{{$id}}">
+            <div data-fragment="/fragments/connections/{{$id}}">
+              {{template "connections-nodes" .Nodes}}
+            </div>
+            <div class="fld connections-select">
+              <label for="subscription-fallback-{{$id}}">{{$.Text.connections_reserve_label}}</label>
+              <select id="subscription-fallback-{{$id}}" name="fallback.{{$id}}"{{if $.ViewOnly}} disabled{{end}}>
+                {{$current := .Fallback}}
+                {{if .AllowUnset}}<option value=""{{if not .Fallback}} selected{{end}}>{{$.Text.connections_reserve_unset}}</option>{{end}}
+                {{range $.Connections.Reserve}}<option value="{{.Target}}"{{if eq .Target $current}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+            </div>
+          </section>
+          {{else}}
+          <section class="connections-section" aria-labelledby="subscription-empty">
+            <div class="connections-head">
+              <h2 id="subscription-empty">{{.Text.overview_subscription}}</h2>
+              {{if not .ViewOnly}}<a href="/setup">{{.Text.overview_add_subscription}}</a>{{end}}
+            </div>
+            <p class="muted">{{.Text.overview_no_subscription}}</p>
+          </section>
+          {{end}}
+
           <section class="connections-section" aria-labelledby="manual-connections-heading">
             <div class="connections-head">
               <h2 id="manual-connections-heading">{{.Text.connections_manual}}</h2>
@@ -67,10 +64,11 @@
 {{define "connections-nodes"}}
   <div class="connections-head">
     <h2 class="clip" id="subscription-title-{{.ID}}" title="{{.Title}}">{{.Title}}</h2>
-    <button class="linkbtn connections-check" type="submit" name="node" value="" form="subscription-check-{{.ID}}"{{if or .ViewOnly .CheckingAll (not .Rows)}} disabled{{end}}>{{.Text.connections_check_all}}</button>
+    <button class="linkbtn connections-check" type="submit" name="check" value="{{.ID}}:"{{if or .ViewOnly .CheckingAll (not .Rows)}} disabled{{end}}>{{.Text.connections_check_all}}</button>
   </div>
   <div class="prov">
     <span class="chip {{.Status.Class}}">{{.Status.Label}}</span>
+    {{if .RulesNotice}}<span class="muted">{{.RulesNotice}}</span>{{end}}
     <span class="muted">{{.Summary}}</span>
   </div>
   {{if .Rows}}
@@ -82,11 +80,12 @@
         <td>
           <div class="connections-node">
             <span class="clip" title="{{.Name}}">{{.Name}}</span>
-            {{if .Status.Label}}<span class="chip {{.Status.Class}}">{{.Status.Label}}</span>{{end}}
+            {{if .Current}}<span class="chip ok">{{$.Text.connections_current_node}}</span>{{end}}
+            {{if .Unavailable}}<span class="chip warn">{{$.Text.connections_node_unavailable}}</span>{{end}}
           </div>
         </td>
         <td class="connections-probe">{{.Probe}}</td>
-        <td class="c-tg"><button class="linkbtn connections-check" type="submit" name="node" value="{{.ID}}" form="subscription-check-{{$.ID}}" aria-label="{{printf $.Text.connections_check_node .Name}}"{{if or $.ViewOnly .Checking}} disabled{{end}}>{{$.Text.setup_check}}</button></td>
+        <td class="c-tg"><button class="linkbtn connections-check" type="submit" name="check" value="{{$.ID}}:{{.ID}}" aria-label="{{printf $.Text.connections_check_node .Name}}"{{if or $.ViewOnly .Checking}} disabled{{end}}>{{$.Text.setup_check}}</button></td>
       </tr>
       {{end}}
     </tbody>
@@ -117,9 +116,9 @@
         </td>
         <td class="c-res muted">{{if .Reserve}}<span class="clip" title="{{.Reserve}}">{{.Reserve}}</span>{{else}}—{{end}}</td>
         <td class="c-tg">
-          <input type="hidden" name="enabled.{{.ID}}" value="0"{{if $.ViewOnly}} disabled{{end}}>
+          <input type="hidden" name="{{.SwitchField}}" value="0"{{if $.ViewOnly}} disabled{{end}}>
           <label class="tg">
-            <input type="checkbox" role="switch" name="enabled.{{.ID}}" value="1" aria-label="{{.Name}}"{{if .Enabled}} checked{{end}}{{if $.ViewOnly}} disabled{{end}}>
+            <input type="checkbox" role="switch" name="{{.SwitchField}}" value="1" aria-label="{{.Name}}"{{if .Enabled}} checked{{end}}{{if $.ViewOnly}} disabled{{end}}>
             <span class="tg-track" aria-hidden="true"></span>
           </label>
         </td>

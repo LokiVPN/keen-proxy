@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -37,14 +38,20 @@ func (p pages) connectionsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	checks := r.PostForm["check"]
+	r.PostForm.Del("check")
 	draft := cfg.Clone()
 	if problem := updateConnections(draft, r.PostForm); problem != "" {
 		p.renderConnections(w, r, http.StatusUnprocessableEntity, cfg, nil, problem)
 		return
 	}
+	revision := r.PostForm.Get("rev")
+	if len(checks) != 0 {
+		p.connectionsCheck(w, r, cfg, draft, checks, revision)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
-	revision := r.PostForm.Get("rev")
 	err := p.deps.Apply(ctx, draft, revision)
 	if err == nil {
 		redirectWithFlash(w, r, "/connections", "flash_saved")
@@ -81,15 +88,17 @@ func updateConnections(draft *model.Config, form url.Values) string {
 			if values[0] == "" && source.Fallback == "" {
 				continue
 			}
-			if !slices.Contains(targets, values[0]) {
+			segment, err := url.PathUnescape(values[0])
+			target := connectionIDFromSegment(segment)
+			if err != nil || !slices.Contains(targets, target) {
 				return "connections_invalid_reserve"
 			}
-			source.Fallback = values[0]
+			source.Fallback = target
 		}
 	}
 	for i := range draft.Connections {
 		conn := &draft.Connections[i]
-		switch values := form["enabled."+conn.ID]; {
+		switch values := form[connectionEnabledField(conn.ID)]; {
 		case slices.Equal(values, []string{"0"}):
 			conn.Disabled = true
 		case slices.Equal(values, []string{"0", "1"}):
@@ -101,35 +110,27 @@ func updateConnections(draft *model.Config, form url.Values) string {
 	return ""
 }
 
-// connectionsCheck queues an existing daemon check without applying settings.
-func (p pages) connectionsCheck(w http.ResponseWriter, r *http.Request) {
-	if p.role(r) != RoleManage {
-		p.opts.AccessError(w, r, http.StatusForbidden)
+// connectionsCheck queues the saved node check and renders the submitted
+// settings as a draft. Only Save applies the form's reserve and switch edits.
+func (p pages) connectionsCheck(w http.ResponseWriter, r *http.Request, cfg, draft *model.Config, checks []string, revision string) {
+	source, node, found := strings.Cut(checks[0], ":")
+	if len(checks) != 1 || !found || source == "" {
+		p.renderConnections(w, r, http.StatusBadRequest, cfg, draft, "connections_invalid_form")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, overviewFormSize)
-	if err := r.ParseForm(); err != nil || len(r.PostForm["node"]) != 1 {
-		p.renderConnections(w, r, http.StatusBadRequest, p.deps.Config(), nil, "connections_invalid_form")
-		return
-	}
-	revs := r.PostForm["rev"]
-	if len(revs) != 1 || revs[0] == "" {
-		p.renderConnections(w, r, http.StatusConflict, p.deps.Config(), nil, "revision_changed")
-		return
-	}
-	err := p.deps.CheckSubscription(r.PathValue("source"), r.PostForm.Get("node"), revs[0])
+	err := p.deps.CheckSubscription(source, node, revision)
 	switch {
 	case errors.Is(err, model.ErrConfigChanged):
 		p.renderConnections(w, r, http.StatusConflict, p.deps.Config(), nil, "revision_changed")
 	case err != nil:
-		p.renderConnections(w, r, http.StatusUnprocessableEntity, p.deps.Config(), nil, "connections_check_error")
+		p.renderConnections(w, r, http.StatusUnprocessableEntity, cfg, draft, "connections_check_error")
 	default:
-		redirectWithFlash(w, r, "/connections", "flash_connections_check")
+		p.renderConnections(w, r, http.StatusOK, cfg, draft, "flash_connections_check")
 	}
 }
 
 // connectionsFragment refreshes observations without touching any form values
-// or doing network work. The check form outside the fragment keeps its revision.
+// or doing network work. The settings and revision live outside the fragment.
 func (p pages) connectionsFragment(w http.ResponseWriter, r *http.Request) {
 	role := p.role(r)
 	if role != RoleManage && role != RoleView {
@@ -154,8 +155,12 @@ func (p pages) renderConnections(w http.ResponseWriter, r *http.Request, status 
 	data.ViewOnly = p.role(r) == RoleView
 	data.Title = data.Text["nav_connections"]
 	data.ActiveTab = "/connections"
-	data.Message = data.Text[message]
-	data.Flash = takeFlash(w, r, data.Text)
+	if r.Method == http.MethodPost && status == http.StatusOK {
+		data.Flash = data.Text[message]
+	} else {
+		data.Message = data.Text[message]
+		data.Flash = takeFlash(w, r, data.Text)
+	}
 	if cfg != nil {
 		data.Connections = connectionsView(cfg, draft, p.deps.Subscriptions(), p.deps.OverviewStatus().Connections, data.ViewOnly, data.Text)
 	}
