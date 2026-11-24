@@ -353,26 +353,34 @@ func TestFetchRedactsNormalizedSubscriptionHosts(t *testing.T) {
 	}{
 		{name: "IDNA", host: "xn--i-9bb.example", echoedHost: "%C4%B0.example:8443"},
 		{name: "IPv6", host: "[2001:db8::1]", echoedHost: "[2001:0db8:0:0::1]:8443"},
+		{name: "soft hyphen", host: "provider.example", echoedHost: "pro\u00advider.example"},
+		{name: "default ignorables", host: "provider.example", echoedHost: "pro\u034f\u2060\ufe0f\U0001bca0\U000e0001vider.example"},
+		{name: "compatibility hyphen", host: "provider-cdn.example", echoedHost: "provider\uff0dcdn.example"},
+		{name: "IDNA sharp s", host: "xn--strae-oqa.example", echoedHost: "stra\u00dfe.example"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ticket := "https://help.example/ticket?source=https://" + tc.echoedHost + "/other"
+			echo := "https://" + tc.echoedHost + "/list?tag=one&token=fixture"
+			ticket := "https://help.example/ticket?source=" + url.QueryEscape(echo)
 			transport := providerRoundTrip(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Header: http.Header{
-						"Announce":             {"See " + ticket + " for details"},
+						"Announce":             {"See " + echo + " or " + ticket + " for details"},
 						"Profile-Web-Page-Url": {ticket},
 					},
 					Body: io.NopCloser(strings.NewReader(vless)),
 				}, nil
 			})
-			source := sourceFor("https://" + tc.host + "/list?token=fixture")
+			source := sourceFor("https://" + tc.host + "/list?token=fixture&tag=one")
 			result := subscription.NewFetcher("", transport).Fetch(t.Context(), source)
 			if result.State != subscription.StateReady {
 				t.Fatalf("expected a ready subscription, got %s", result.State)
 			}
-			if result.Metadata.Announce != "See [redacted] for details" || result.Metadata.ProfileURL != "" {
-				t.Fatal("the normalized subscription host escaped display redaction")
+			if result.Metadata.Announce != "See [redacted] or [redacted] for details" {
+				t.Error("the announcement exposed a subscription host alias")
+			}
+			if result.Metadata.ProfileURL != "" {
+				t.Error("the account link retained an embedded subscription host alias")
 			}
 		})
 	}

@@ -16,6 +16,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/net/idna"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/ordo-systems/keen-proxy/internal/links"
 )
 
@@ -233,6 +237,7 @@ func metadataURL(value string, sensitive displayRedactor) string {
 // displayRedactor protects the request URI, hosts reached by the fetch, and
 // HWID sent with it before provider data enters the display projection.
 type displayRedactor struct {
+	hosts      map[string]struct{}
 	paths      map[string][]string
 	requestURI string
 	hwid       string
@@ -247,8 +252,10 @@ var displayPercentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
 func (r *displayRedactor) addURL(u *url.URL) {
 	host := displayHost(u.Hostname())
 	if r.paths == nil {
+		r.hosts = make(map[string]struct{})
 		r.paths = make(map[string][]string)
 	}
+	r.hosts[displayHostKey(host)] = struct{}{}
 	r.paths[host] = append(r.paths[host], requestPath(u))
 }
 
@@ -260,10 +267,10 @@ func requestPath(u *url.URL) string {
 }
 
 func (r displayRedactor) replace(value string) string {
-	if len(r.paths) > 0 {
+	if len(r.hosts) > 0 {
 		value = displayRun.ReplaceAllStringFunc(value, func(run string) string {
-			decoded := decodeDisplayEscapes(run)
-			if r.containsHost(decoded) || (r.requestURI != "" && strings.Contains(displayURLComparison(decoded), r.requestURI)) {
+			comparison := displayURLComparison(decodeDisplayEscapes(run))
+			if r.containsHost(comparison) || (r.requestURI != "" && strings.Contains(comparison, r.requestURI)) {
 				return redactedDisplay
 			}
 			return run
@@ -282,20 +289,31 @@ func displayHost(host string) string {
 	return strings.TrimSuffix(normalizedHost(host, strings.ContainsRune(host, ':')), ".")
 }
 
-// containsHost scans the whole decoded value, including embedded URLs.
-func (r displayRedactor) containsHost(value string) bool {
-	for token := range strings.FieldsFuncSeq(value, func(char rune) bool {
+// Fold the Unicode form of IDNs for matching. The account-link exception
+// still uses the canonical IDNA host and its fetched paths.
+func displayHostKey(canonical string) string {
+	if strings.Contains(canonical, "xn--") {
+		if host, err := idna.Lookup.ToUnicode(canonical); err == nil {
+			return foldDisplayComparison(host)
+		}
+	}
+	return canonical
+}
+
+// containsHost scans the whole comparison string, including embedded URLs.
+func (r displayRedactor) containsHost(comparison string) bool {
+	for token := range strings.FieldsFuncSeq(comparison, func(char rune) bool {
 		return !unicode.In(char, unicode.L, unicode.M, unicode.N) && !strings.ContainsRune("._-:\u3002\uff0e\uff61", char)
 	}) {
 		// Keep IPv6 addresses intact before treating colons as separators.
 		if host := displayHost(token); host != "" {
-			if _, protected := r.paths[host]; protected {
+			if _, protected := r.hosts[displayHostKey(host)]; protected {
 				return true
 			}
 			continue
 		}
 		for part := range strings.SplitSeq(token, ":") {
-			if _, protected := r.paths[displayHost(part)]; protected {
+			if _, protected := r.hosts[displayHostKey(displayHost(part))]; protected {
 				return true
 			}
 		}
@@ -320,11 +338,48 @@ func (r displayRedactor) blocksLink(u *url.URL, raw string) bool {
 		// still carry an embedded subscription URL.
 		decoded = path
 	}
-	return r.containsHost(decoded)
+	return r.containsHost(displayURLComparison(decoded))
 }
 
 func displayURLComparison(decoded string) string {
-	return strings.ToLower(strings.ReplaceAll(decoded, "+", " "))
+	return strings.ReplaceAll(foldDisplayComparison(decoded), "+", " ")
+}
+
+var displayCaseFold = cases.Fold()
+
+// Default_Ignorable_Code_Point from Unicode 17 DerivedCoreProperties.
+var displayIgnorables = &unicode.RangeTable{
+	R16: []unicode.Range16{
+		{Lo: 0x00ad, Hi: 0x00ad, Stride: 1},
+		{Lo: 0x034f, Hi: 0x034f, Stride: 1},
+		{Lo: 0x061c, Hi: 0x061c, Stride: 1},
+		{Lo: 0x115f, Hi: 0x1160, Stride: 1},
+		{Lo: 0x17b4, Hi: 0x17b5, Stride: 1},
+		{Lo: 0x180b, Hi: 0x180f, Stride: 1},
+		{Lo: 0x200b, Hi: 0x200f, Stride: 1},
+		{Lo: 0x202a, Hi: 0x202e, Stride: 1},
+		{Lo: 0x2060, Hi: 0x206f, Stride: 1},
+		{Lo: 0x3164, Hi: 0x3164, Stride: 1},
+		{Lo: 0xfe00, Hi: 0xfe0f, Stride: 1},
+		{Lo: 0xfeff, Hi: 0xfeff, Stride: 1},
+		{Lo: 0xffa0, Hi: 0xffa0, Stride: 1},
+		{Lo: 0xfff0, Hi: 0xfff8, Stride: 1},
+	},
+	R32: []unicode.Range32{
+		{Lo: 0x1bca0, Hi: 0x1bca3, Stride: 1},
+		{Lo: 0x1d173, Hi: 0x1d17a, Stride: 1},
+		{Lo: 0xe0000, Hi: 0xe0fff, Stride: 1},
+	},
+}
+
+func foldDisplayComparison(value string) string {
+	value = strings.Map(func(char rune) rune {
+		if unicode.Is(displayIgnorables, char) {
+			return -1
+		}
+		return char
+	}, value)
+	return norm.NFKC.String(displayCaseFold.String(norm.NFKC.String(value)))
 }
 
 // Decode valid escapes even when the same value includes stray percent signs.

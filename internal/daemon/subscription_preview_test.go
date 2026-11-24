@@ -23,11 +23,13 @@ import (
 func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	const sourceURL = "https://PROVIDER.example:443/l%69st?token=synthetic%20key%27tail&tag=one&tag=two&blank"
 	const equivalentURL = "https://provider.example/list?blank=&tag=one&tag=two&token=synthetic+key'tail"
+	const ignoredHostURL = "https://pro\u00advider.example/list?blank=&tag=one&tag=two&token=synthetic+key'tail"
 	const aliasedHostURL = "http://%70ROVIDER.example:8443/other?token=synthetic%20key%27tail"
 	const embeddedURL = "https://help.example/ticket?source=https://provider.example/list?token=fixture"
 	const encodedURL = "https://help.example/ticket?source=http%253A%252F%252F%2570ROVIDER%252Eexample%253A8443%252Fother&progress=100%"
 	const requestURI = "/l%2569st?token=synthetic+key'tail&tag=one&tag=two&blank"
-	const supportURL = "https://help.example/ticket?source=provider.example-help&view=account%2Bdetails"
+	const supportURL = "https://help.example/ticket?source=provider.example-help&view=account%2Bdetails%C2%AD%EF%BC%A1"
+	const notice = "100% ready \uff06 re\u00adcheck"
 	const datURL = "https://provider.example/data/geosite.dat"
 	var calls int
 	var hwid string
@@ -54,7 +56,7 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		headers := make(http.Header)
 		headers.Set("routing", "happ://routing/add/"+base64.StdEncoding.EncodeToString(raw))
 		headers.Set("profile-title", "Provider "+equivalentURL+" for review")
-		headers.Set("announce", strings.Join([]string{"100% ready", equivalentURL, aliasedHostURL, embeddedURL, encodedURL, requestURI, hwid, supportURL}, " "))
+		headers.Set("announce", strings.Join([]string{notice, equivalentURL, ignoredHostURL, aliasedHostURL, embeddedURL, encodedURL, requestURI, hwid, supportURL}, " "))
 		headers.Set("profile-web-page-url", embeddedURL+";view=account")
 		headers.Set("support-url", supportURL)
 		node, _, _ := strings.Cut(subscriptionFirst, "#")
@@ -83,7 +85,7 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		details.Status.Nodes[0].Name != "Provider [redacted]" {
 		t.Error("a provider-host URL escaped redaction or surrounding text was lost")
 	}
-	if details.Status.Metadata.Announce != "100% ready [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] "+supportURL {
+	if details.Status.Metadata.Announce != notice+" [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] "+supportURL {
 		t.Error("the announcement leaked an embedded or schemeless URL or lost an unrelated link")
 	}
 	if details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != supportURL {
