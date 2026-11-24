@@ -79,9 +79,9 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 		connection.Active = failover.Active
 		status.Connections[id] = connection
 	}
-	for id := range routing.DirectTargets {
+	for id, class := range routing.TargetClasses {
 		connection := status.Connections[id]
-		connection.Direct = true
+		connection.Class = class
 		status.Connections[id] = connection
 	}
 	rules, settings, state := d.daemon.ProviderRules()

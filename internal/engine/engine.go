@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
@@ -56,6 +57,7 @@ func (e *Engine) Apply(config []byte) (bool, error) {
 		return false, fmt.Errorf("create sing-box: %w", err)
 	}
 	tracker := e.Tracker
+	stats.RegisterTargetClasses(ctx, instance.Outbound())
 	for _, outbound := range instance.Outbound().Outbounds() {
 		if _, ok := outbound.(*subscriptionBalance); ok {
 			tracker = subscriptionBalanceTracker{next: tracker}
@@ -118,6 +120,15 @@ func (e *Engine) Outbound(tag string) (adapter.Outbound, context.Context, bool) 
 	}
 	o, ok := e.box.Outbound().Outbound(tag)
 	return o, e.ctx, ok
+}
+
+// TargetClass reports the class of a compiled target in the running core.
+func (e *Engine) TargetClass(tag string) stats.TargetClass {
+	out, ctx, ok := e.Outbound(tag)
+	if !ok {
+		return stats.TargetUnknown
+	}
+	return stats.TargetClassOf(ctx, out)
 }
 
 // Select switches group to outbound tag. Existing selector connections close

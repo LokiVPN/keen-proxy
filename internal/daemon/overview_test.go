@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -136,7 +137,7 @@ func TestRoutingStatusChecksTheRunningEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.neighbors = map[string]netip.Addr{"02:00:00:00:00:01": netip.MustParseAddr("192.0.2.2")}
-	if status := d.RoutingStatus(); !status.Ready || status.Devices != 1 || status.ManagedDevices != 1 || !status.DirectTargets["local-egress"] {
+	if status := d.RoutingStatus(); !status.Ready || status.Devices != 1 || status.ManagedDevices != 1 || status.TargetClasses["local-egress"] != stats.TargetDirect {
 		t.Fatal("the running core and covered device should be visible with the custom direct target")
 	}
 	if err := d.eng.Close(); err != nil {
@@ -144,6 +145,63 @@ func TestRoutingStatusChecksTheRunningEngine(t *testing.T) {
 	}
 	if status := d.RoutingStatus(); !d.planOn || d.planPending || status.Ready || status.ManagedDevices != 0 {
 		t.Fatal("the installed plan reported readiness with no running engine")
+	}
+}
+
+func TestOverviewUsesStaticLeavesOfRawGroups(t *testing.T) {
+	const target = "test-route"
+	for _, tc := range []struct {
+		name, banner, detail, summary string
+		direct, mixed                 bool
+	}{
+		{"five selectors ending in direct", "Direct connection", "routes directly", "Direct connection", true, false},
+		{"mixed round robin", "Connection routing", "Traffic follows connection Test route", "Traffic follows connection Test route", false, true},
+		{"pure tunnel selector", "Working", "Test route", "All traffic through VPN", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holdMemoryLimit(t)
+			cfg := quietConfig(t)
+			cfg.Networks = []model.Network{{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeFull, Target: target}}
+			if tc.direct {
+				id := target
+				for i := 1; i <= 5; i++ {
+					next := fmt.Sprintf("selector-%d", i)
+					if i == 5 {
+						next = model.TargetDirect
+					}
+					cfg.Connections = append(cfg.Connections, model.Connection{ID: id, Name: "Test route", Type: model.ConnSingBox,
+						Outbound: map[string]any{"type": "selector", "outbounds": []string{next}}})
+					id = next
+				}
+			} else {
+				group := map[string]any{"type": "selector", "outbounds": []string{"vpn"}}
+				if tc.mixed {
+					group = map[string]any{"type": "urltest", "mode": "round_robin", "outbounds": []string{"direct", "vpn"},
+						"url": "http://127.0.0.1:1/generate_204"}
+				}
+				cfg.Connections = []model.Connection{
+					{ID: "vpn", Type: model.ConnLink, Link: subscriptionFirst},
+					{ID: target, Name: "Test route", Type: model.ConnSingBox, Outbound: group},
+				}
+			}
+			d := newMemoryDaemon(t, writeSavedConfig(t, cfg), &gateRunner{})
+			t.Cleanup(d.shutdown)
+			if err := d.Apply(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			d.neighbors = map[string]netip.Addr{"02:00:00:00:00:01": netip.MustParseAddr("192.0.2.2")}
+			d.health[target] = &health{known: true, ok: true, checked: time.Now(), latency: 35 * time.Millisecond}
+			page := viewOverview(t, d)
+			banner, _, _ := strings.Cut(page, `aria-label="KeenProxy sections"`)
+			if !strings.Contains(banner, ">"+tc.banner+"</span>") || !strings.Contains(banner, tc.detail) ||
+				!strings.Contains(page, `<p class="clip">`+tc.summary) || !strings.Contains(page, "KeenProxy handles 1 of 1 devices") {
+				t.Errorf("overview did not show %q with summary %q for the configured leaves", tc.banner, tc.summary)
+			}
+			if tc.mixed && (strings.Contains(page, "All traffic through VPN") || strings.Contains(page, "Direct connection") ||
+				strings.Contains(page, "New devices connect directly by default")) {
+				t.Error("mixed target was presented as one type of route")
+			}
+		})
 	}
 }
 
@@ -173,12 +231,27 @@ type overviewTestDeps struct {
 
 func (v overviewTestDeps) Config() *model.Config { return v.d.Config() }
 func (v overviewTestDeps) OverviewStatus() ui.OverviewStatus {
-	return ui.OverviewStatus{Ready: v.d.RoutingStatus().Ready}
+	routing := v.d.RoutingStatus()
+	status := ui.OverviewStatus{Ready: routing.Ready, Devices: routing.Devices, ManagedDevices: routing.ManagedDevices,
+		Connections: make(map[string]ui.ConnectionStatus)}
+	for id, probe := range routing.Health {
+		status.Connections[id] = ui.ConnectionStatus{Checked: !probe.Checked.IsZero(), Available: probe.OK, LatencyMS: probe.Latency}
+	}
+	for id, class := range routing.TargetClasses {
+		connection := status.Connections[id]
+		connection.Class = class
+		status.Connections[id] = connection
+	}
+	return status
 }
 func (v overviewTestDeps) TrafficSeries() []stats.Point { return nil }
 
 func (v overviewTestDeps) Subscriptions() []ui.AppliedSubscription {
-	status := v.d.Subscriptions()[0]
+	statuses := v.d.Subscriptions()
+	if len(statuses) == 0 {
+		return nil
+	}
+	status := statuses[0]
 	sub := ui.AppliedSubscription{ID: status.ID, State: status.State, Metadata: status.Metadata, LastSuccess: *status.LastSuccess}
 	for _, node := range status.Nodes {
 		sub.Nodes = append(sub.Nodes, ui.SubscriptionNode{ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS})

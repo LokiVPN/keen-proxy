@@ -88,10 +88,14 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 	selection := selectedConnection(cfg, page.Main, subs, status.Connections, text)
 	if network != nil {
 		page.NewDevices = text["overview_new_devices_policy"]
-		if network.Mode == model.ModeOff || (network.Mode == model.ModeFull && selection.Direct) {
+		if network.Mode == model.ModeOff || (network.Mode == model.ModeFull && selection.Class == stats.TargetDirect) {
 			page.NewDevices = text["overview_new_devices_direct"]
 		}
-		if current := cmp.Or(selection.Reserve, selection.Detail); status.Ready && !cfg.Paused && network.Mode != model.ModeOff && current != "" {
+		current := cmp.Or(selection.Reserve, selection.Detail)
+		if selection.Class == stats.TargetMixed {
+			current = selection.Name
+		}
+		if status.Ready && !cfg.Paused && network.Mode != model.ModeOff && current != "" {
 			page.Current = fmt.Sprintf(text["overview_current_connection"], current)
 		}
 	}
@@ -128,13 +132,13 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 		return overviewChip{text["overview_home_off"], ""}, text["overview_home_off_hint"]
 	case network.Target == "":
 		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_choose_connection"]
-	case selection.Direct:
+	case selection.Class == stats.TargetDirect:
 		detail := text["overview_direct_hint"]
 		if selection.Reserve != "" {
 			detail = text["overview_direct_reserve"]
 		}
 		return overviewChip{text["overview_direct"], ""}, detail
-	case selection.Health == connectionUnavailable:
+	case selection.Health == connectionUnavailable && selection.Class != stats.TargetMixed:
 		message := text["overview_connection_down"]
 		if selection.Subscription {
 			message = text["overview_subscription_down"]
@@ -145,6 +149,9 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 		return overviewChip{text["overview_no_connection"], "warn"}, message
 	}
 	detail := selection.Detail
+	if selection.Class == stats.TargetMixed {
+		detail = fmt.Sprintf(text["overview_follow_connection"], selection.Name)
+	}
 	if status.Devices > 0 {
 		detail = fmt.Sprintf(text["overview_device_count"], status.ManagedDevices, status.Devices) + " · " + detail
 	}
@@ -153,7 +160,9 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 		return overviewChip{text["overview_subscription_expired"], "warn"}, detail
 	case expiring(selection.Expiry, now):
 		return overviewChip{text["overview_subscription_expiring"], "caut"}, detail
-	case selection.Health == connectionAvailable:
+	case selection.Class == stats.TargetMixed:
+		return overviewChip{text["overview_connection_routing"], ""}, detail
+	case selection.Class == stats.TargetVPN && selection.Health == connectionAvailable:
 		return overviewChip{text["overview_working"], "ok"}, detail
 	default:
 		return overviewChip{text["overview_checking"], ""}, detail
@@ -227,25 +236,27 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	switch {
 	case network.Mode == model.ModeOff:
 		mode = text["overview_home_off"]
-	case network.Mode == model.ModeFull && main.Direct:
-		mode = text["overview_direct"]
-	case network.Mode == model.ModeFull:
-		mode = text["overview_route_all"]
+	case network.Mode == model.ModeFull || (network.Default != "" && network.Default != model.TargetDirect && network.Default != model.DefaultProfile):
+		selection := main
+		if network.Mode != model.ModeFull && network.Default != network.Target {
+			selection = selectedConnection(cfg, network.Default, subs, status.Connections, text)
+		}
+		mode = text["overview_route_custom"]
+		switch selection.Class {
+		case stats.TargetMixed:
+			mode = fmt.Sprintf(text["overview_follow_connection"], selection.Name)
+		case stats.TargetVPN:
+			mode = text["overview_route_all"]
+		case stats.TargetDirect:
+			if network.Mode == model.ModeFull {
+				mode = text["overview_direct"]
+			}
+		}
 	case network.Default == model.DefaultProfile:
 		mode = text["overview_route_profile"]
 		if cfg.ProviderRules != nil {
 			sub := appliedSubscriptionFor(subs, cfg.ProviderRules.Source)
 			mode = fmt.Sprintf(text["overview_route_provider"], sub.title(text))
-		}
-	case network.Default != "" && network.Default != model.TargetDirect:
-		defaultConnection := main
-		if network.Default != network.Target {
-			defaultConnection = selectedConnection(cfg, network.Default, subs, status.Connections, text)
-		}
-		if defaultConnection.Direct {
-			mode = text["overview_route_custom"]
-		} else {
-			mode = text["overview_route_all"]
 		}
 	case cfg.ProviderRules != nil:
 		mode = text["overview_route_custom"]

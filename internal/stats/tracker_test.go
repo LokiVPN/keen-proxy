@@ -31,18 +31,6 @@ func (f fakeOut) Type() string {
 	return "vless"
 }
 
-type transportSelector struct {
-	adapter.OutboundGroup
-	tcp, udp adapter.Outbound
-}
-
-func (g transportSelector) Selected(network string) adapter.Outbound {
-	if network == "udp" {
-		return g.udp
-	}
-	return g.tcp
-}
-
 func TestTrackerCountsAndSamples(t *testing.T) {
 	tr := NewTracker()
 	client, inbound := net.Pipe()
@@ -95,7 +83,7 @@ func TestTunnelSeriesUsesOnlyVPNAndKeepsRetiredSamples(t *testing.T) {
 	tr := NewTracker()
 	tr.RetainSubscriptionNodes([]string{node})
 	for i, tag := range []string{"manual", node, "direct", "block"} {
-		flow := tr.open(adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
+		flow := tr.open(t.Context(), adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
 		read, write := flow.counters()
 		for _, count := range read {
 			count(int64(100 * (i + 1)))
@@ -127,21 +115,17 @@ func TestTunnelSeriesUsesOnlyVPNAndKeepsRetiredSamples(t *testing.T) {
 	}
 }
 
-func TestTunnelSeriesExcludesCustomDirectAndUsesTheFlowTransport(t *testing.T) {
+func TestTunnelSeriesExcludesCustomDirect(t *testing.T) {
 	tr := NewTracker()
 	proxy := fakeOut{tag: "vpn", kind: "vless"}
 	direct := fakeOut{tag: "local-egress", kind: "direct"}
-	group := transportSelector{tcp: proxy, udp: direct}
 	for _, flow := range []struct {
-		out     adapter.Outbound
-		network string
-		upload  int64
-		chain   []adapter.Outbound
+		out    adapter.Outbound
+		upload int64
 	}{
-		{proxy, "tcp", 100, nil}, {direct, "tcp", 200, nil}, {group, "udp", 300, nil},
-		{group, "tcp", 400, []adapter.Outbound{group, direct}},
+		{proxy, 100}, {direct, 200},
 	} {
-		tracked := tr.open(adapter.InboundContext{Domain: "example.test", Network: flow.network, OutboundChain: flow.chain}, flow.out)
+		tracked := tr.open(t.Context(), adapter.InboundContext{Domain: "example.test"}, flow.out)
 		read, _ := tracked.counters()
 		for _, count := range read {
 			count(flow.upload)
@@ -158,7 +142,7 @@ func TestTunnelSeriesKeepsUnsampledTrafficWhenCatalogRetires(t *testing.T) {
 	const tag = "subscription:sample:123456789abcdef0123456789abcdef0"
 	tr := NewTracker()
 	tr.RetainSubscriptionNodes([]string{tag})
-	tracked := tr.open(adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
+	tracked := tr.open(t.Context(), adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
 	read, write := tracked.counters()
 	for _, count := range read {
 		count(100)
@@ -287,7 +271,7 @@ func TestHostsTotalCountsFilteredMatchesBeforeLimit(t *testing.T) {
 		if i >= 12 {
 			name = "mail" + strconv.Itoa(i) + ".example"
 		}
-		tr.open(adapter.InboundContext{Domain: name}, fakeOut{tag: "fi"}).host.down.Store(int64(i))
+		tr.open(t.Context(), adapter.InboundContext{Domain: name}, fakeOut{tag: "fi"}).host.down.Store(int64(i))
 	}
 	list, total := tr.Hosts("fi", "VIDEO", 10)
 	if total != 12 || len(list) != 10 || list[0].Host != "video11.example" || list[9].Host != "video2.example" {

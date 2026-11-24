@@ -3,9 +3,8 @@ package daemon
 import (
 	"slices"
 
+	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
-	C "github.com/sagernet/sing-box/constant"
-	N "github.com/sagernet/sing/common/network"
 )
 
 // RoutingStatus describes the active routing plan and the LAN devices it
@@ -15,7 +14,7 @@ type RoutingStatus struct {
 	Devices, ManagedDevices int
 	Health                  map[string]ConnHealth
 	Failover                map[string]FailoverInfo
-	DirectTargets           map[string]bool
+	TargetClasses           map[string]stats.TargetClass
 }
 
 // RoutingStatus reads the daemon state without testing firewall rules or
@@ -43,13 +42,18 @@ func (d *Daemon) RoutingStatus() RoutingStatus {
 			}
 		}
 	}
-	status.DirectTargets = make(map[string]bool)
+	status.TargetClasses = make(map[string]stats.TargetClass, len(d.cfg.Connections))
 	for _, conn := range d.cfg.Connections {
-		if out, _, ok := d.eng.Outbound(conn.ID); ok {
-			tcp := stats.ResolveForNetwork(out, N.NetworkTCP)
-			udp := stats.ResolveForNetwork(out, N.NetworkUDP)
-			if tcp != nil && udp != nil && tcp.Type() == C.TypeDirect && udp.Type() == C.TypeDirect {
-				status.DirectTargets[conn.ID] = true
+		status.TargetClasses[conn.ID] = d.eng.TargetClass(conn.ID)
+	}
+	// The compiler routes a connection with a reserve through its selector.
+	for _, chain := range d.chains {
+		status.TargetClasses[chain.ID] = d.eng.TargetClass(chain.Tag)
+	}
+	for _, network := range d.cfg.Networks {
+		for _, target := range []string{network.Target, network.Default} {
+			if _, _, managed := model.ParseManagedTarget(target); managed {
+				status.TargetClasses[target] = d.eng.TargetClass(target)
 			}
 		}
 	}

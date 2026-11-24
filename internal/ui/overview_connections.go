@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 )
 
 const (
@@ -150,23 +151,27 @@ func connectionProtocol(conn model.Connection) string {
 }
 
 type connectionSelection struct {
-	Detail, Health, Reserve string
-	Expiry                  time.Time
-	Subscription, Direct    bool
+	Name, Detail, Health, Reserve string
+	Expiry                        time.Time
+	Class                         stats.TargetClass
+	Subscription                  bool
 }
 
 func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscription, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	if id, mode, managed := model.ParseManagedTarget(target); managed {
 		sub := appliedSubscriptionFor(subs, id)
-		return selectedSubscription(cfg, sub, mode, health, text)
+		selection := selectedSubscription(cfg, sub, mode, health, text)
+		selection.Class = cmp.Or(health[target].Class, selection.Class)
+		return selection
 	}
 	return selectedManualConnection(cfg, target, health, text)
 }
 
 func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	selection := connectionSelection{
-		Detail: sub.title(text), Expiry: setupExpiry(sub.Metadata.Usage), Subscription: true,
+		Name: sub.title(text), Expiry: setupExpiry(sub.Metadata.Usage), Subscription: true,
 	}
+	selection.Detail = selection.Name
 	if model.IsSubscriptionBalance(mode) {
 		if sub.BalanceEligible != nil {
 			if *sub.BalanceEligible > 0 {
@@ -174,7 +179,7 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 				selection.Detail += " · " + fmt.Sprintf(text["overview_balancing_nodes"], *sub.BalanceEligible)
 			} else {
 				selection.Health = connectionUnavailable
-				selection.Reserve, selection.Direct = subscriptionReserve(cfg, sub.ID, health, text)
+				selection.Reserve, selection.Class = subscriptionReserve(cfg, sub.ID, health, text)
 			}
 		}
 		return selection
@@ -184,7 +189,7 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 		if sub.Unavailable {
 			selection.Health = connectionUnavailable
 			if sub.SwitchReason == "fallback" || len(sub.Nodes) == 0 {
-				selection.Reserve, selection.Direct = subscriptionReserve(cfg, sub.ID, health, text)
+				selection.Reserve, selection.Class = subscriptionReserve(cfg, sub.ID, health, text)
 			}
 			return selection
 		}
@@ -196,26 +201,30 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 		selection.Health = node.Health
 	} else if mode != "auto" {
 		selection.Health = connectionUnavailable
-		selection.Reserve, selection.Direct = subscriptionReserve(cfg, sub.ID, health, text)
+		selection.Reserve, selection.Class = subscriptionReserve(cfg, sub.ID, health, text)
 	}
 	return selection
 }
 
 func selectedManualConnection(cfg *model.Config, target string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
+	class := connectionClass(target, health)
 	active := cmp.Or(health[target].Active, target)
-	if active == model.TargetDirect || health[active].Direct {
-		selection := connectionSelection{Detail: text["overview_direct"], Direct: true}
+	switch class {
+	case stats.TargetDirect:
+		selection := connectionSelection{Detail: text["overview_direct"], Class: class}
 		if active != target {
 			selection.Reserve = selection.Detail
 		}
 		return selection
+	case stats.TargetMixed:
+		return connectionSelection{Name: connectionName(cfg, target), Class: class}
 	}
 	for _, conn := range cfg.Connections {
 		if conn.ID != active || conn.Disabled {
 			continue
 		}
 		probe := health[active]
-		selection := connectionSelection{Detail: cmp.Or(conn.Name, conn.ID) + " · " + connectionProbe(probe, text)}
+		selection := connectionSelection{Class: class, Detail: cmp.Or(conn.Name, conn.ID) + " · " + connectionProbe(probe, text)}
 		if probe.Checked {
 			selection.Health = connectionUnavailable
 			if probe.Available {
@@ -224,24 +233,35 @@ func selectedManualConnection(cfg *model.Config, target string, health map[strin
 		}
 		return selection
 	}
-	return connectionSelection{Health: connectionUnavailable}
+	return connectionSelection{Class: class, Health: connectionUnavailable}
 }
 
-func subscriptionReserve(cfg *model.Config, id string, health map[string]ConnectionStatus, text map[string]string) (string, bool) {
+func subscriptionReserve(cfg *model.Config, id string, health map[string]ConnectionStatus, text map[string]string) (string, stats.TargetClass) {
 	for _, source := range cfg.Subscriptions {
 		if source.ID != id {
 			continue
 		}
-		active := cmp.Or(health[source.Fallback].Active, source.Fallback)
-		if active == model.TargetDirect || health[active].Direct {
-			return text["overview_direct"], true
+		class := connectionClass(source.Fallback, health)
+		if class == stats.TargetDirect {
+			return text["overview_direct"], class
 		}
-		for _, conn := range cfg.Connections {
-			if conn.ID == source.Fallback {
-				return cmp.Or(conn.Name, conn.ID), false
-			}
-		}
-		break
+		return connectionName(cfg, source.Fallback), class
 	}
-	return "", false
+	return "", stats.TargetUnknown
+}
+
+func connectionName(cfg *model.Config, target string) string {
+	for _, conn := range cfg.Connections {
+		if conn.ID == target {
+			return cmp.Or(conn.Name, conn.ID)
+		}
+	}
+	return target
+}
+
+func connectionClass(target string, health map[string]ConnectionStatus) stats.TargetClass {
+	if target == model.TargetDirect {
+		return stats.TargetDirect
+	}
+	return health[target].Class
 }

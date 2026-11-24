@@ -34,7 +34,9 @@ On **Overview**, choose **Replace link** to reopen setup. Check the new link and
 
 ## 1. Read the overview
 
-**Overview** shows the main connection status, subscription usage and expiry when supplied by the provider, and the last and next scheduled updates. A warning appears when the subscription is due to expire within seven days. **Update now** queues a subscription refresh. If an update fails, the overview reports the failure alongside the latest known expiry. The chart shows the last 30 minutes of tracked VPN traffic. The device count shows how many detected LAN devices are covered by KeenProxy's current routing plan. The routing and device summaries link to their tabs.
+**Overview** shows the main connection status, subscription usage and expiry when supplied by the provider, and the last and next scheduled updates. A warning appears when the subscription is due to expire within seven days. **Update now** queues a subscription refresh. If an update fails, the overview reports the failure alongside the latest known expiry. The device count shows how many detected LAN devices are covered by KeenProxy's current routing plan. The routing and device summaries link to their tabs.
+
+The **VPN traffic** chart shows the last 30 minutes for targets that can send traffic through a tunnel. When a raw sing-box group contains both direct and tunnel members, the overview names the connection and the chart also includes any direct traffic sent by that group.
 
 Use **Enabled** to pause or resume VPN routing for all devices. While paused, all devices connect directly. Under **Main connection**, choose automatic failover, a balancing mode, a specific subscription node, or a manual connection. The selection updates the home network and **All traffic through VPN** routing when it uses the previous main connection.
 

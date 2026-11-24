@@ -44,11 +44,12 @@ type OverviewStatus struct {
 	RulesActive, RulesTotal int
 }
 
-// ConnectionStatus describes a manual connection's probe and any selected reserve.
+// ConnectionStatus describes a routing target's static class, recent probe,
+// and any selected reserve.
 type ConnectionStatus struct {
 	Active             string
 	Checked, Available bool
-	Direct             bool
+	Class              stats.TargetClass
 	LatencyMS          int64
 }
 

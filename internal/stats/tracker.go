@@ -4,7 +4,6 @@
 package stats
 
 import (
-	"cmp"
 	"context"
 	"net"
 	"slices"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/sagernet/sing-box/adapter"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/bufio"
 	N "github.com/sagernet/sing/common/network"
@@ -171,17 +169,12 @@ func HostOf(m adapter.InboundContext) string {
 
 // Resolve unwraps fallback selectors to the outbound currently selected for TCP traffic.
 func Resolve(out adapter.Outbound) adapter.Outbound {
-	return ResolveForNetwork(out, N.NetworkTCP)
-}
-
-// ResolveForNetwork follows the selector's choice for the flow's transport.
-func ResolveForNetwork(out adapter.Outbound, network string) adapter.Outbound {
 	for i := 0; i < 4 && out != nil; i++ {
 		g, ok := out.(adapter.OutboundGroup)
 		if !ok {
 			break
 		}
-		next := g.Selected(network)
+		next := g.Selected(N.NetworkTCP)
 		if next == nil {
 			break
 		}
@@ -190,35 +183,22 @@ func ResolveForNetwork(out adapter.Outbound, network string) adapter.Outbound {
 	return out
 }
 
-func tunnelOutbound(out adapter.Outbound) bool {
-	if out == nil {
-		return false
-	}
-	if _, group := out.(adapter.OutboundGroup); group {
-		return false // No concrete transport was resolved.
-	}
-	switch out.Type() {
-	case C.TypeDirect, C.TypeBlock, C.TypeDNS, model.SubscriptionBalanceOutboundType:
-		return false
-	default:
-		return true
-	}
-}
-
-// open resolves the active outbound, bounds retained hosts, and registers a new active connection.
+// open uses the router's recorded outbound, bounds retained hosts, and registers a new active connection.
 // It owns t.mu while updating shared host and connection maps.
-func (t *Tracker) open(m adapter.InboundContext, out adapter.Outbound) *conn {
+func (t *Tracker) open(ctx context.Context, m adapter.InboundContext, out adapter.Outbound) *conn {
+	target := out
 	if n := len(m.OutboundChain); n != 0 {
-		// The router already picked this flow's member. A group may make a
-		// different choice if asked again, even for the same transport.
+		target = m.OutboundChain[0]
 		out = m.OutboundChain[n-1]
 	}
 	tag := model.TargetDirect
-	if out = ResolveForNetwork(out, cmp.Or(m.Network, N.NetworkTCP)); out != nil {
+	if out != nil {
 		tag = out.Tag()
 	}
+	// Aggregate by the routed target. A mixed raw group can send some of these
+	// bytes directly, including when it chooses a member during the dial.
 	var tunnel *byteCounters
-	if tunnelOutbound(out) {
+	if class := TargetClassOf(ctx, target); class == TargetVPN || class == TargetMixed {
 		tunnel = &t.tunnel
 	}
 	name := HostOf(m)
@@ -287,21 +267,21 @@ func (c *conn) counters() (read, write []N.CountFunc) {
 }
 
 // RoutedConnection wraps a routed TCP stream with upload/download and lifetime accounting.
-func (t *Tracker) RoutedConnection(_ context.Context, nc net.Conn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) net.Conn {
+func (t *Tracker) RoutedConnection(ctx context.Context, nc net.Conn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) net.Conn {
 	if t.OnRoute != nil {
 		t.OnRoute(m, rule, out)
 	}
-	c := t.open(m, out)
+	c := t.open(ctx, m, out)
 	r, w := c.counters()
 	return &trackedConn{CounterConn: bufio.NewCounterConn(nc, r, w), done: func() { t.close(c) }}
 }
 
 // RoutedPacketConnection wraps a routed packet stream with traffic and lifetime accounting.
-func (t *Tracker) RoutedPacketConnection(_ context.Context, pc N.PacketConn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) N.PacketConn {
+func (t *Tracker) RoutedPacketConnection(ctx context.Context, pc N.PacketConn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) N.PacketConn {
 	if t.OnRoute != nil {
 		t.OnRoute(m, rule, out)
 	}
-	c := t.open(m, out)
+	c := t.open(ctx, m, out)
 	r, w := c.counters()
 	return &trackedPacketConn{CounterPacketConn: bufio.NewCounterPacketConn(pc, r, w), done: func() { t.close(c) }}
 }

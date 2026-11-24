@@ -97,6 +97,7 @@ func TestOverviewStatusUsesTheSelectedConnection(t *testing.T) {
 	f := newOverviewFixture()
 	network := &f.cfg.Networks[0]
 	network.Target = model.ManagedTarget("sample", model.SubscriptionStickySession)
+	f.status.Connections[network.Target] = ConnectionStatus{Class: stats.TargetVPN}
 	f.cfg.Subscriptions[0].Fallback = "backup"
 	eligible := 0
 	f.subs[0].BalanceEligible = &eligible
@@ -108,6 +109,15 @@ func TestOverviewStatusUsesTheSelectedConnection(t *testing.T) {
 	f.subs[0].Unavailable = true
 	f.subs[0].Metadata.Usage.Expire = time.Now().Add(-time.Hour).Unix()
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Working</span>`, "Cabin · 35 ms", `>Expired</span>`)
+}
+
+func TestOverviewKeepsTargetClassWhileFailoverIsBlocked(t *testing.T) {
+	f := newOverviewFixture()
+	network := &f.cfg.Networks[0]
+	network.Mode, network.Target = model.ModeFull, "backup"
+	f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN, Active: model.TargetBlock}
+	body := setupRequest(New(f, setupTestOptions(RoleView)), "/", nil).Body.String()
+	assertContains(t, body, `>No connection</span>`, `<p class="clip">All traffic through VPN</p>`)
 }
 
 func TestOverviewDirectAndOffPolicies(t *testing.T) {
@@ -123,7 +133,7 @@ func TestOverviewDirectAndOffPolicies(t *testing.T) {
 			f := newOverviewFixture()
 			f.cfg.Networks[0].Mode, f.cfg.Networks[0].Target = tc.mode, tc.target
 			if tc.active != "" {
-				f.status.Connections[tc.target] = ConnectionStatus{Active: tc.active}
+				f.status.Connections[tc.target] = ConnectionStatus{Active: tc.active, Class: stats.TargetDirect}
 			}
 			body := setupRequest(New(f, setupTestOptions(RoleView)), "/", nil).Body.String()
 			banner, _, _ := strings.Cut(body, `aria-label="KeenProxy sections"`)
@@ -356,7 +366,11 @@ func newOverviewFixture() *overviewFixture {
 	return &overviewFixture{
 		setupFixture: setupFixture{cfg: cfg},
 		status: OverviewStatus{Ready: true, Devices: 3, ManagedDevices: 2, RulesState: "ready", RulesActive: 1, RulesTotal: 2,
-			Connections: map[string]ConnectionStatus{"old": {Checked: true}, "backup": {Checked: true, Available: true, LatencyMS: 35}},
+			Connections: map[string]ConnectionStatus{
+				model.ManagedTarget("sample", "auto"): {Class: stats.TargetVPN},
+				"old":                                 {Class: stats.TargetVPN, Checked: true},
+				"backup":                              {Class: stats.TargetVPN, Checked: true, Available: true, LatencyMS: 35},
+			},
 		},
 		subs: []AppliedSubscription{{
 			ID: "sample", State: subscription.StateReady, ActiveNode: overviewNodeID,
