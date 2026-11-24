@@ -38,10 +38,11 @@ groups:
   - {name: Bank, target: direct, entries: ["bank.ru"]}
   - {name: Blocked in Russia, target: fi, categories: [RU-BLOCKED, RU-BLOCKED-COMMUNITY, RE-FILTER]}
 networks:
-  # default routes split traffic that matches no rule: direct when omitted, a
-  # connection or subscription target, or profile to follow the provider
-  # profile from provider_rules; profile needs the network target, e.g.
-  # {name: Home, cidr: 192.168.7.0/24, mode: split, target: "subscription:provider:auto", default: profile}
+  # default routes split traffic that matches no rule. It can be direct (the
+  # default), a connection or subscription target, or profile to follow the
+  # provider rules. Enable the subscription and provider_rules above, then
+  # replace the Home entry with the complete list item below.
+  # - {name: Home, cidr: 192.168.7.0/24, mode: split, target: "subscription:provider:auto", default: profile}
   - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi}
 clients:
   - {name: Phone, mac: "02:00:00:00:00:10", mode: full, target: fi}
