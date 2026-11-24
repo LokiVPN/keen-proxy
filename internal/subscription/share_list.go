@@ -238,6 +238,15 @@ func metadataURL(value string, sensitive displayRedactor) string {
 // text without altering its private share links.
 type displayRedactor []string
 
+const redactedDisplay = "[redacted]"
+
+// The URL and its unescaped spelling share the same redaction set. Keep
+// matching case-sensitive outside percent escapes, including in credentials.
+func (r *displayRedactor) addURL(value string) {
+	r.add(value)
+	r.add(unescapeDisplay(value))
+}
+
 func (r *displayRedactor) add(value string) {
 	if value != "" && !slices.Contains(*r, value) {
 		*r = append(*r, value)
@@ -245,14 +254,44 @@ func (r *displayRedactor) add(value string) {
 }
 
 func (r displayRedactor) replace(value string) string {
+	if len(r) == 0 {
+		return value
+	}
+	raw := r.replaceExact(value)
+	decoded := unescapeDisplay(value)
+	if decoded != value {
+		if safe := r.replaceExact(decoded); safe != decoded && safe != unescapeDisplay(raw) {
+			// A different spelling matched. Hide that field without
+			// decoding or partially exposing its original text.
+			return redactedDisplay
+		}
+	}
+	return raw
+}
+
+func (r displayRedactor) replaceExact(value string) string {
 	for _, secret := range r {
-		value = strings.ReplaceAll(value, secret, "[redacted]")
+		value = strings.ReplaceAll(value, secret, redactedDisplay)
 	}
 	return value
 }
 
 func (r displayRedactor) contains(value string) bool {
-	return slices.ContainsFunc(r, func(secret string) bool { return strings.Contains(value, secret) })
+	return r.replace(value) != value
+}
+
+var percentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+
+// Provider prose can also contain an unrelated percent sign. Decode valid
+// escapes for comparison even when url.PathUnescape rejects the entire text.
+func unescapeDisplay(value string) string {
+	if decoded, err := url.PathUnescape(value); err == nil {
+		return decoded
+	}
+	return percentEscape.ReplaceAllStringFunc(value, func(escape string) string {
+		decoded, _ := url.PathUnescape(escape)
+		return decoded
+	})
 }
 
 func parseUsage(value string) *Usage {

@@ -292,7 +292,7 @@ func TestSubscriptionRefreshIgnoresReplacedSource(t *testing.T) {
 	if request == nil {
 		t.Fatal("scheduled refresh was not claimed by the worker")
 	}
-	stale := d.fetchSubscription(t.Context(), request.source)
+	stale := d.fetchSubscription(t.Context(), request.source, false)
 
 	cfg = d.Config()
 	cfg.Subscriptions[0].URL = "https://provider.example/replacement"

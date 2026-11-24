@@ -13,17 +13,17 @@ import (
 
 // setupPage carries the link only for a retry in the failed check response.
 type setupPage struct {
-	Rev, Input, Error string
-	Replacing         bool
-	Result            *setupResult
+	Rev, Input, Error, Warning string
+	Replacing, EvaluateRules   bool
+	Result                     *setupResult
 }
 
 type setupResult struct {
-	Title, Chip, Message, AccountURL string
-	Active, HasRouting               bool
-	Token, Expiry, Traffic, Servers  string
-	Announce, RouteName, RouteHint   string
-	Actions                          []setupAction
+	Title, Chip, Message, AccountURL           string
+	Active, HasRouting                         bool
+	Token, Expiry, Traffic, Servers            string
+	Announce, RouteName, RouteHint, RulesState string
+	Actions                                    []setupAction
 }
 
 type setupAction struct {
@@ -86,11 +86,15 @@ func setupResultFor(preview SetupPreview, now, expiry time.Time, lang string) *s
 }
 
 func (r *setupResult) addRouting(preview SetupPreview, text map[string]string) {
+	switch preview.RulesState {
+	case "pending":
+		r.RulesState = text["setup_rules_pending"]
+	case "withheld":
+		r.RulesState = text["setup_rules_withheld"]
+	case "failed":
+		r.RulesState = text["setup_rules_malformed"]
+	}
 	if preview.Routing == nil {
-		r.RouteHint = text["setup_rules_withheld"]
-		if preview.RoutingMalformed {
-			r.RouteHint = text["setup_rules_malformed"]
-		}
 		return
 	}
 	r.RouteName = preview.Routing.Name

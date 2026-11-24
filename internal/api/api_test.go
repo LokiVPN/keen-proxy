@@ -176,6 +176,13 @@ func TestPutConfig(t *testing.T) {
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "sing-box") {
 		t.Errorf("apply error: %d %s", w.Code, w.Body)
 	}
+	d.failErr = &model.AppliedUnsavedError{Err: errors.New("read-only config file")}
+	w = do(t, h, "PUT", "/api/config", body, "secret", local)
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != http.StatusUnprocessableEntity ||
+		got["error"] != "configuration applied but not saved: read-only config file" {
+		t.Errorf("applied-but-unsaved API response: %d %s", w.Code, w.Body)
+	}
 }
 
 func TestParseLink(t *testing.T) {

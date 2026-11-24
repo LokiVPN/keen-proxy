@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -18,7 +20,8 @@ import (
 )
 
 func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
-	const sourceURL = "https://provider.example/list?token=synthetic-preview-secret"
+	const sourceURL = "https://PROVIDER.example:443/list?token=synthetic%2fpreview%7esecret"
+	const equivalentURL = "https://provider.example/list?token=synthetic%2Fpreview~secret"
 	const datURL = "https://provider.example/data/geosite.dat"
 	var calls int
 	var hwid string
@@ -30,7 +33,7 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		}
 		hwid = req.Header.Get("X-HWID")
 		profile := map[string]any{
-			"Name":        "<profile> " + sourceURL,
+			"Name":        "<profile> " + equivalentURL,
 			"GlobalProxy": false,
 			"Geositeurl":  datURL,
 			"DirectSites": []string{"geosite:ru@news", "geosite:ru@news", "domain:literal-direct.example"},
@@ -44,8 +47,13 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		}
 		headers := make(http.Header)
 		headers.Set("routing", "happ://routing/add/"+base64.StdEncoding.EncodeToString(raw))
-		headers.Set("announce", sourceURL+" "+hwid)
-		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(subscriptionFirst))}, nil
+		headers.Set("profile-title", "Provider "+equivalentURL)
+		headers.Set("announce", "100% ready "+equivalentURL+" "+hwid)
+		headers.Set("profile-web-page-url", equivalentURL)
+		headers.Set("support-url", "https://provider.example/help?subscription="+url.QueryEscape(equivalentURL))
+		node, _, _ := strings.Cut(subscriptionFirst, "#")
+		body := node + "#" + url.PathEscape("Provider "+equivalentURL)
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
 	d, cfg := newSubscriptionTestDaemon(t, provider)
 	initial := cfg.Clone()
@@ -58,24 +66,28 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	details := d.PreviewSubscriptionDetails(t.Context(), source)
 	summary := details.Routing
 	if details.Status.State != subscription.StateReady || len(details.Status.Nodes) != 1 ||
-		summary == nil || details.RoutingMalformed || hwid == "" {
+		summary == nil || details.Status.RulesState != ProviderRulesPending || details.PreviewID == 0 || hwid == "" {
 		t.Fatal("expected a ready preview, a parsed summary and a device identity")
 	}
 	if calls != 1 || len(d.Subscriptions()) != 0 || model.ConfigRevision(d.Config()) != rev {
 		t.Fatal("preview fetched geodata or changed the applied catalog")
 	}
-	if summary.GlobalProxy || summary.Name != "<profile> [redacted]" ||
+	if summary.GlobalProxy || summary.Name != "[redacted]" ||
 		summary.Direct.Sites.Count != 3 || !slices.Equal(summary.Direct.Sites.Categories, []string{"ru@news"}) ||
 		summary.Direct.IP.Count != 1 || !slices.Equal(summary.Direct.IP.Categories, []string{"ru"}) ||
 		summary.Proxy.Sites.Count != 3 || !slices.Equal(summary.Proxy.Sites.Categories, []string{"<rule>", "[redacted]", strings.Repeat("x", 64)}) ||
 		summary.Block.IP.Count != 10 || len(summary.Block.IP.Categories) != 8 || !summary.Block.IP.More {
 		t.Fatal("unexpected routing summary, category bounds or counts")
 	}
+	if details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != "" ||
+		details.Status.Metadata.Title != "[redacted]" || details.Status.Nodes[0].Name != "[redacted]" {
+		t.Fatal("a normalized source echo escaped display redaction")
+	}
 	projected, err := json.Marshal(details)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{sourceURL, hwid, datURL, "literal-direct.example", "198.51.100.0/24", subscriptionFirst} {
+	for _, secret := range []string{sourceURL, equivalentURL, hwid, datURL, "synthetic", "literal-direct.example", "198.51.100.0/24", subscriptionFirst} {
 		if strings.Contains(string(projected), secret) {
 			t.Fatal("preview disclosed private provider data")
 		}
@@ -87,11 +99,159 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		t.Fatal("routing detail appeared in the control API status")
 	}
 	cfg.Subscriptions[0] = source
-	if err := d.ApplyIfCurrent(t.Context(), cfg, rev); err != nil {
+	if err := d.ApplySubscriptionPreview(t.Context(), cfg, rev, subscription.PreviewRef{Source: source, ID: details.PreviewID}); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatal("Apply did not reuse the checked subscription")
+	}
+}
+
+func TestApplySubscriptionPreviewRechecksAfterGeodata(t *testing.T) {
+	d, draft, provider := newRulesTestDaemon(t)
+	initial := draft.Clone()
+	initial.Subscriptions, initial.Groups, initial.ProviderRules = nil, nil, nil
+	if err := d.Apply(t.Context(), initial); err != nil {
+		t.Fatal(err)
+	}
+	rev := model.ConfigRevision(d.Config())
+	original, err := os.ReadFile(d.opt.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := draft.Subscriptions[0]
+	first := d.PreviewSubscriptionDetails(t.Context(), source)
+	if first.Status.RulesState != ProviderRulesPending || provider.count("/geosite.dat") != 0 {
+		t.Fatal("checked profile did not leave geodata evaluation pending")
+	}
+
+	release := make(chan struct{})
+	provider.update(func(p *rulesProvider) { p.held["/geosite.dat"] = release })
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- d.ApplySubscriptionPreview(ctx, draft, rev, subscription.PreviewRef{Source: source, ID: first.PreviewID})
+	}()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for provider.count("/geosite.dat") == 0 {
+		select {
+		case err := <-done:
+			t.Fatalf("Apply returned before evaluating geodata: %v", err)
+		case <-ctx.Done():
+			t.Fatal("Apply did not start geodata evaluation")
+		case <-ticker.C:
+		}
+	}
+	provider.update(func(p *rulesProvider) { p.routing = "happ://routing/off" })
+	second := d.PreviewSubscriptionDetails(ctx, source)
+	close(release)
+	if second.Status.RulesState != ProviderRulesWithheld || second.PreviewID == first.PreviewID {
+		t.Fatal("second check did not replace the retained preview")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, subscription.ErrPreviewChanged) {
+			t.Fatalf("superseded in-flight Apply returned %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("superseded Apply did not return")
+	}
+	assertSavedBytes(t, d.opt.ConfigPath, original)
+	if model.ConfigRevision(d.Config()) != rev || provider.count("/sub") != 2 {
+		t.Fatal("superseded Apply changed the config or refetched the link")
+	}
+}
+
+func TestApplySubscriptionPreviewUsesCheckedCatalogForSameLink(t *testing.T) {
+	provider := new(subscriptionTestProvider)
+	provider.response.Store(&subscriptionTestResponse{body: subscriptionFirst})
+	d, cfg := newSubscriptionTestDaemon(t, provider)
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !d.CheckSubscription(cfg.Subscriptions[0].ID, "") || d.Subscriptions()[0].CheckProgress == nil {
+		t.Fatal("could not queue a sweep of the currently applied nodes")
+	}
+	provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond})
+	candidate := d.PreviewSubscriptionDetails(t.Context(), cfg.Subscriptions[0])
+	cfg = d.Config()
+	checked := subscription.PreviewRef{Source: cfg.Subscriptions[0], ID: candidate.PreviewID}
+	if err := d.ApplySubscriptionPreview(t.Context(), cfg, model.ConfigRevision(cfg), checked); err != nil {
+		t.Fatal(err)
+	}
+	status := d.Subscriptions()[0]
+	if len(status.Nodes) != 1 || status.Nodes[0].Name != "Second" || provider.requests.Load() != 2 {
+		t.Fatal("confirming the same link did not install the checked catalog")
+	}
+	if status.CheckProgress != nil {
+		t.Fatal("the confirmed catalog retained a check sweep of removed nodes")
+	}
+}
+
+func TestApplyCheckedSubscriptionRejectsSupersededPreview(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		headers      http.Header
+		acceptLatest bool
+	}{
+		{name: "different nodes", acceptLatest: true},
+		{name: "expired", headers: http.Header{
+			"Subscription-Userinfo": {fmt.Sprintf("expire=%d", time.Now().Add(-time.Hour).Unix())},
+		}},
+		{name: "device limit", headers: http.Header{"X-Hwid-Limit": {"true"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := new(subscriptionTestProvider)
+			provider.response.Store(&subscriptionTestResponse{body: subscriptionFirst})
+			d, draft := newSubscriptionTestDaemon(t, provider)
+			initial := draft.Clone()
+			initial.Subscriptions, initial.Groups = nil, nil
+			if err := d.Apply(t.Context(), initial); err != nil {
+				t.Fatal(err)
+			}
+			rev := model.ConfigRevision(d.Config())
+			saved, err := os.ReadFile(d.opt.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := draft.Subscriptions[0]
+			first := d.PreviewSubscriptionDetails(t.Context(), source)
+			if first.Status.State != subscription.StateReady {
+				t.Fatal("initial check was not ready")
+			}
+			provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond, headers: tc.headers})
+			second := d.PreviewSubscriptionDetails(t.Context(), source)
+			if model.ConfigRevision(d.Config()) != rev {
+				t.Fatal("check changed the applied config")
+			}
+			rejected := []uint64{first.PreviewID}
+			if !tc.acceptLatest {
+				rejected = append(rejected, second.PreviewID)
+			}
+			for _, id := range rejected {
+				err := d.ApplySubscriptionPreview(t.Context(), draft, rev, subscription.PreviewRef{Source: source, ID: id})
+				if !errors.Is(err, subscription.ErrPreviewChanged) {
+					t.Errorf("obsolete or ineligible confirmation returned %v", err)
+				}
+			}
+			if raw, err := os.ReadFile(d.opt.ConfigPath); err != nil || string(raw) != string(saved) {
+				t.Error("obsolete confirmation changed the saved config")
+			}
+			if model.ConfigRevision(d.Config()) != rev || provider.requests.Load() != 2 {
+				t.Error("obsolete confirmation changed the live config or refetched the subscription")
+			}
+			if tc.acceptLatest {
+				err := d.ApplySubscriptionPreview(t.Context(), draft, rev, subscription.PreviewRef{Source: source, ID: second.PreviewID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if nodes := d.Subscriptions()[0].Nodes; len(nodes) != 1 || nodes[0].Name != "Second" || provider.requests.Load() != 2 {
+					t.Fatal("fresh confirmation did not install the checked catalog")
+				}
+			}
+		})
 	}
 }
 

@@ -200,7 +200,8 @@ func TestMemoryLimitStartupApplyAndClear(t *testing.T) {
 	unsaved := d.Config()
 	unsaved.System.MemoryLimitMiB = new(model.MemoryLimitMiB(250))
 	err := d.Apply(context.Background(), unsaved)
-	if err == nil || !strings.Contains(err.Error(), "not saved") {
+	var applied *model.AppliedUnsavedError
+	if !errors.As(err, &applied) || !strings.Contains(err.Error(), "not saved") {
 		t.Fatalf("applied-but-unsaved: %v", err)
 	}
 	requireLimit(t, 250*memoryMiB)

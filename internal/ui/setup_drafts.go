@@ -21,7 +21,7 @@ type setupDrafts struct {
 type setupDraft struct {
 	token, user, rev string
 	expires          time.Time
-	source           subscription.Source
+	preview          subscription.PreviewRef
 }
 
 func (d *setupDrafts) save(draft setupDraft, now time.Time) string {
@@ -37,17 +37,17 @@ func (d *setupDrafts) save(draft setupDraft, now time.Time) string {
 	return draft.token
 }
 
-func (d *setupDrafts) take(token, rev, user string, now time.Time) subscription.Source {
+func (d *setupDrafts) take(token, rev, user string, now time.Time) subscription.PreviewRef {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.expire(now)
 	for i, draft := range d.entries {
 		if draft.token == token && draft.rev == rev && draft.user == user {
 			d.entries = slices.Delete(d.entries, i, i+1)
-			return draft.source
+			return draft.preview
 		}
 	}
-	return subscription.Source{}
+	return subscription.PreviewRef{}
 }
 
 func (d *setupDrafts) expire(now time.Time) {

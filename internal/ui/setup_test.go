@@ -80,21 +80,23 @@ func TestSetupCheckStates(t *testing.T) {
 			name: "ready", url: setupTestURL, status: http.StatusOK, ready: true,
 			preview: SetupPreview{
 				State: subscription.StateReady, Metadata: active, NodeCount: 2, NodeNames: []string{"Node A", "Node B"},
+				RulesState: "pending",
 				Routing: &subscription.RoutingSummary{
 					Name: "Example routing", GlobalProxy: true,
 					Direct: subscription.RoutingActionSummary{Sites: subscription.RoutingListSummary{Count: 2, Categories: []string{"ru"}}},
 				},
 			},
-			want: []string{"Test provider", "Active", "0 of 200 GB", "2: Node A, Node B", "Example routing", "Sites: 2", "ru", "Scheduled maintenance"},
+			want: []string{"Test provider", "Active", "0 of 200 GB", "2: Node A, Node B", "Example routing", "Sites: 2", "ru", "Scheduled maintenance",
+				"Provider profile default: through the VPN.", "Provider rules are pending evaluation.", "KeenProxy evaluates these rules when you enable the subscription."},
 		},
 		{
 			name: "withheld", url: setupTestURL, status: http.StatusOK, ready: true,
-			preview: SetupPreview{State: subscription.StateReady, NodeCount: 1},
-			want:    []string{"The provider does not supply routing rules.", "through the VPN"},
+			preview: SetupPreview{State: subscription.StateReady, NodeCount: 1, RulesState: "withheld"},
+			want:    []string{"The provider does not supply routing rules.", "The Home policy uses the subscription as its default."},
 		},
 		{
 			name: "malformed profile", url: setupTestURL, status: http.StatusOK, ready: true,
-			preview: SetupPreview{State: subscription.StateReady, NodeCount: 1, RoutingMalformed: true},
+			preview: SetupPreview{State: subscription.StateReady, NodeCount: 1, RulesState: "failed"},
 			want:    []string{"The provider routing rules could not be read."},
 		},
 		{
@@ -259,7 +261,10 @@ func TestSetupEnableExistingPreservesConfiguration(t *testing.T) {
 	}
 	deps := &setupFixture{
 		cfg: cfg, lanErr: errors.New("missing LAN"),
-		preview: SetupPreview{State: subscription.StateReady, NodeCount: 1},
+		preview: SetupPreview{
+			State: subscription.StateReady, NodeCount: 1, RulesState: "pending",
+			Routing: &subscription.RoutingSummary{Name: "Provider profile", GlobalProxy: true},
+		},
 	}
 	h := New(deps, setupTestOptions(RoleManage))
 	initial := setupRequest(h, "/setup", nil)
@@ -267,7 +272,15 @@ func TestSetupEnableExistingPreservesConfiguration(t *testing.T) {
 	if strings.Contains(initial.Body.String(), "old-link") {
 		t.Error("replacement form disclosed the current subscription link")
 	}
-	form := checkSetupLink(t, h)
+	rev := setupFormRevision(t, h)
+	checked := setupRequest(h, "/setup/check", url.Values{"rev": {rev}, "url": {setupTestURL}})
+	if checked.Code != http.StatusOK {
+		t.Fatalf("replacement check HTTP %d", checked.Code)
+	}
+	body := checked.Body.String()
+	assertContains(t, body, "Provider profile default: through the VPN.", "Replacing the link keeps your saved routing mode.",
+		"KeenProxy evaluates these rules when you replace the link.")
+	form := url.Values{"rev": {rev}, "preview": {formField(t, body, "preview")}}
 	if deps.source.ID != "keep-id" {
 		t.Error("replacement preview did not use the saved subscription ID")
 	}
@@ -353,12 +366,81 @@ func TestSetupEnableTokenBelongsToManagerAndIsSingleUse(t *testing.T) {
 	}
 }
 
+func TestSetupReplacementPreservesDisabledProviderRules(t *testing.T) {
+	cfg := &model.Config{
+		Subscriptions: []subscription.Source{{ID: "sample", URL: "https://provider.example/old-link"}},
+		Networks: []model.Network{{
+			Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit,
+			Target: "subscription:sample:auto", Default: model.TargetDirect,
+		}},
+	}
+	deps := &setupFixture{cfg: cfg, preview: SetupPreview{
+		State: subscription.StateReady, NodeCount: 1, RulesState: "pending",
+		Routing: &subscription.RoutingSummary{Name: "Provider profile", GlobalProxy: true},
+	}}
+	h := New(deps, setupTestOptions(RoleManage))
+	w := setupRequest(h, "/setup/check", url.Values{"rev": {setupFormRevision(t, h)}, "url": {setupTestURL}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("replacement check HTTP %d", w.Code)
+	}
+	body := w.Body.String()
+	assertContains(t, body, "Provider profile default: through the VPN.", "Replacing the link keeps your saved routing mode.")
+	if strings.Contains(body, "KeenProxy evaluates these rules") || strings.Contains(body, "Traffic that matches no rule goes through the VPN") {
+		t.Fatal("preview promised to change a saved direct default or enable provider rules")
+	}
+}
+
+func TestSetupEnableRequiresFreshCheckForObsoletePreview(t *testing.T) {
+	deps := &setupFixture{
+		cfg:     &model.Config{},
+		lan:     netip.MustParsePrefix("192.168.7.1/24"),
+		preview: SetupPreview{State: subscription.StateReady, NodeCount: 1},
+	}
+	h := New(deps, setupTestOptions(RoleManage))
+	form := checkSetupLink(t, h)
+	deps.preview.Metadata.Usage = &subscription.Usage{Expire: time.Now().Add(-time.Minute).Unix()}
+	next := setupRequest(h, "/setup/check", url.Values{"rev": {form.Get("rev")}, "url": {setupTestURL}})
+	assertContains(t, next.Body.String(), "Expired")
+	older := setupRequest(h, "/setup/enable", form)
+	if older.Code != http.StatusConflict || deps.applies != 0 || len(deps.cfg.Subscriptions) != 0 {
+		t.Fatalf("obsolete preview returned HTTP %d with %d writes", older.Code, deps.applies)
+	}
+	assertContains(t, older.Body.String(), "Check the subscription link again before saving.")
+	if strings.Contains(older.Body.String(), "synthetic-token") {
+		t.Fatal("obsolete preview response disclosed the link")
+	}
+}
+
+func TestSetupEnableReportsAppliedButUnsaved(t *testing.T) {
+	deps := &setupFixture{
+		cfg:     &model.Config{},
+		lan:     netip.MustParsePrefix("192.168.7.1/24"),
+		preview: SetupPreview{State: subscription.StateReady, NodeCount: 1},
+		saveErr: &model.AppliedUnsavedError{Err: errors.New("failed write " + setupTestURL)},
+	}
+	h := New(deps, setupTestOptions(RoleManage))
+	form := checkSetupLink(t, h)
+	w := setupRequest(h, "/setup/enable", form)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("enable with failed persistence returned HTTP %d", w.Code)
+	}
+	assertPageHeaders(t, w.Result(), "en")
+	body := w.Body.String()
+	assertContains(t, body, "The new settings are active.", "A restart may restore the previous saved settings.")
+	if len(deps.cfg.Subscriptions) != 1 || formField(t, body, "rev") != Revision(deps.Config()) ||
+		Revision(deps.Config()) == form.Get("rev") || strings.Contains(body, "synthetic-token") ||
+		strings.Contains(body, "Check the link again and retry") || w.Header().Get("Location") != "" {
+		t.Fatal("save failure did not report the current, unsaved configuration safely")
+	}
+}
+
 type setupFixture struct {
 	cfg                         *model.Config
 	preview                     SetupPreview
 	source                      subscription.Source
 	lan                         netip.Prefix
 	lanErr                      error
+	saveErr                     error
 	lanInterface                string
 	checks, applies, lanLookups int
 }
@@ -368,7 +450,9 @@ func (f *setupFixture) Config() *model.Config { return f.cfg.Clone() }
 func (f *setupFixture) PreviewSubscription(_ context.Context, source subscription.Source) SetupPreview {
 	f.checks++
 	f.source = source
-	return f.preview
+	preview := f.preview
+	preview.PreviewID = uint64(f.checks)
+	return preview
 }
 
 func (f *setupFixture) LANPrefix(iface string) (netip.Prefix, error) {
@@ -383,7 +467,14 @@ func (f *setupFixture) Apply(_ context.Context, cfg *model.Config, rev string) e
 		return errors.New("unexpected revision in Apply")
 	}
 	f.cfg = cfg.Clone()
-	return nil
+	return f.saveErr
+}
+
+func (f *setupFixture) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, rev string, checked subscription.PreviewRef) error {
+	if checked.ID != uint64(f.checks) || checked.Source != f.source {
+		return subscription.ErrPreviewChanged
+	}
+	return f.Apply(ctx, cfg, rev)
 }
 
 func checkSetupLink(t *testing.T, h http.Handler) url.Values {

@@ -54,13 +54,17 @@ func (p pages) setupCheck(w http.ResponseWriter, r *http.Request) {
 		page.Input, page.Error = source.URL, text["setup_unreachable"]
 	case !result.Active:
 		page.Input = source.URL
+	case preview.PreviewID == 0:
+		page.Result, page.Error = nil, text["setup_check_again"]
 	default:
+		page.EvaluateRules = len(cfg.Subscriptions) == 0 || (cfg.ProviderRules != nil && cfg.ProviderRules.Source == source.ID)
 		deadline := now.Add(setupDraftLifetime)
 		if !expiry.IsZero() && expiry.Before(deadline) {
 			deadline = expiry
 		}
 		result.Token = p.setupDrafts.save(setupDraft{
-			source: source, rev: Revision(cfg), user: p.setupUser(r), expires: deadline,
+			preview: subscription.PreviewRef{Source: source, ID: preview.PreviewID},
+			rev:     Revision(cfg), user: p.setupUser(r), expires: deadline,
 		}, now)
 	}
 	p.renderSetup(w, r, http.StatusOK, cfg, page)
@@ -74,14 +78,15 @@ func (p pages) setupEnable(w http.ResponseWriter, r *http.Request) {
 	text := localized(r)
 	rev := Revision(cfg)
 	token := r.PostForm["preview"]
-	var source subscription.Source
+	var checked subscription.PreviewRef
 	if len(token) == 1 {
-		source = p.setupDrafts.take(token[0], rev, p.setupUser(r), time.Now())
+		checked = p.setupDrafts.take(token[0], rev, p.setupUser(r), time.Now())
 	}
-	if source.ID == "" {
+	if checked.ID == 0 {
 		p.renderSetup(w, r, http.StatusConflict, cfg, setupPage{Error: text["setup_check_again"]})
 		return
 	}
+	source := checked.Source
 	if len(cfg.Subscriptions) == 0 {
 		lan, err := p.deps.LANPrefix(cfg.LAN.Interface)
 		if err != nil || !lan.IsValid() {
@@ -97,9 +102,14 @@ func (p pages) setupEnable(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
-	switch err := p.deps.Apply(ctx, cfg, rev); {
+	var unsaved *model.AppliedUnsavedError
+	switch err := p.deps.ApplySubscriptionPreview(ctx, cfg, rev, checked); {
 	case errors.Is(err, model.ErrConfigChanged):
 		p.renderSetup(w, r, http.StatusConflict, p.deps.Config(), setupPage{Error: text["revision_changed"]})
+	case errors.Is(err, subscription.ErrPreviewChanged):
+		p.renderSetup(w, r, http.StatusConflict, p.deps.Config(), setupPage{Error: text["setup_check_again"]})
+	case errors.As(err, &unsaved):
+		p.renderSetup(w, r, http.StatusInternalServerError, p.deps.Config(), setupPage{Warning: text["apply_not_saved"]})
 	case err != nil:
 		p.renderSetup(w, r, http.StatusUnprocessableEntity, p.deps.Config(), setupPage{Error: text["setup_apply_error"]})
 	default:

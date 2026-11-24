@@ -16,6 +16,7 @@ type managementDaemon interface {
 	api.Daemon
 	PreviewSubscriptionDetails(context.Context, subscription.Source) daemon.SubscriptionPreviewDetails
 	ApplyIfCurrent(context.Context, *model.Config, string) error
+	ApplySubscriptionPreview(context.Context, *model.Config, string, subscription.PreviewRef) error
 }
 
 // uiDeps gives the pages display-only previews and revision-checked Apply.
@@ -32,7 +33,7 @@ func (d uiDeps) PreviewSubscription(ctx context.Context, source subscription.Sou
 	status := details.Status
 	result := ui.SetupPreview{
 		State: status.State, Metadata: status.Metadata, NodeCount: len(status.Nodes),
-		Routing: details.Routing, RoutingMalformed: details.RoutingMalformed,
+		Routing: details.Routing, RulesState: string(status.RulesState), PreviewID: details.PreviewID,
 	}
 	const maxNames = 6
 	for _, node := range status.Nodes[:min(len(status.Nodes), maxNames)] {
@@ -48,6 +49,11 @@ func (uiDeps) LANPrefix(iface string) (netip.Prefix, error) {
 func (d uiDeps) Apply(ctx context.Context, cfg *model.Config, revision string) error {
 	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
 	return d.daemon.ApplyIfCurrent(ctx, cfg, revision)
+}
+
+func (d uiDeps) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error {
+	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
+	return d.daemon.ApplySubscriptionPreview(ctx, cfg, revision, checked)
 }
 
 func pageRole(r *http.Request) ui.Role {

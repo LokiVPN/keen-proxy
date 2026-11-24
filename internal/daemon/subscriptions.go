@@ -66,9 +66,9 @@ type SubscriptionStatus struct {
 // SubscriptionPreviewDetails adds the parsed routing summary for setup. It
 // describes what the provider sent before geodata or rules are evaluated.
 type SubscriptionPreviewDetails struct {
-	Status           SubscriptionStatus
-	Routing          *subscription.RoutingSummary
-	RoutingMalformed bool
+	Status    SubscriptionStatus
+	Routing   *subscription.RoutingSummary
+	PreviewID uint64 `json:"-"`
 }
 
 // subscriptionRuntime separates downloads from the state committed under d.mu.
@@ -87,6 +87,7 @@ type subscriptionRuntime struct {
 
 	states     map[string]appliedSubscription
 	previews   map[subscription.Source]subscriptionAttempt
+	previewSeq uint64
 	selectors  []compile.SubscriptionSelector
 	balances   []compile.SubscriptionBalance
 	members    []string
@@ -113,8 +114,9 @@ type appliedSubscription struct {
 }
 
 type subscriptionAttempt struct {
-	result subscription.Result
-	at     time.Time
+	result    subscription.Result
+	at        time.Time
+	previewID uint64 // zero for an attempt that cannot be confirmed by setup
 	// rules is the provider-rules state built from result for the configured
 	// source; nil when this attempt did not evaluate rules.
 	rules *rulesSnapshot
@@ -147,25 +149,47 @@ func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
 // PreviewSubscription validates provider data against the running build and
 // caches usable previews for Apply. It never modifies applied sources.
 func (d *Daemon) PreviewSubscription(ctx context.Context, source subscription.Source) SubscriptionStatus {
-	return d.previewSubscription(ctx, source).previewStatus(source.ID)
+	return d.fetchSubscription(ctx, source, true).previewStatus(source.ID)
 }
 
 // PreviewSubscriptionDetails uses the existing preview path and cache, with
 // display-only routing information for the server-rendered setup page.
 func (d *Daemon) PreviewSubscriptionDetails(ctx context.Context, source subscription.Source) SubscriptionPreviewDetails {
-	attempt := d.previewSubscription(ctx, source)
+	attempt := d.fetchSubscription(ctx, source, true)
+	status := attempt.previewStatus(source.ID)
+	if status.State == subscription.StateReady {
+		switch {
+		case attempt.result.RoutingError != "":
+			status.RulesState = ProviderRulesFailed
+		case attempt.result.Routing != nil:
+			status.RulesState = ProviderRulesPending
+		default:
+			status.RulesState = ProviderRulesWithheld
+		}
+	}
 	return SubscriptionPreviewDetails{
-		Status:           attempt.previewStatus(source.ID),
-		Routing:          attempt.result.RoutingSummary,
-		RoutingMalformed: attempt.result.RoutingError != "",
+		Status: status, Routing: attempt.result.RoutingSummary, PreviewID: attempt.previewID,
 	}
 }
 
-func (d *Daemon) previewSubscription(ctx context.Context, source subscription.Source) subscriptionAttempt {
-	attempt := d.fetchSubscription(ctx, source)
-	if attempt.result.State == subscription.StateReady {
-		d.mu.Lock()
-		d.expireSubscriptionPreviewsLocked(attempt.at)
+// cacheSubscriptionPreview publishes the check before releasing the fetch
+// slot, so a later check cannot be overwritten by an older response.
+func (d *Daemon) cacheSubscriptionPreview(source subscription.Source, attempt subscriptionAttempt) subscriptionAttempt {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.expireSubscriptionPreviewsLocked(attempt.at)
+	identity := subscriptionIdentity(source)
+	old, exists := d.subscriptions.previews[identity]
+	if attempt.result.State != subscription.StateReady {
+		if exists {
+			// A failed check revokes setup confirmation. Ordinary Apply can
+			// still use a previously validated catalog as before.
+			old.previewID = 0
+			d.subscriptions.previews[identity] = old
+		}
+		return attempt
+	}
+	if !exists && len(d.subscriptions.previews) >= subscriptionPreviewLimit {
 		var oldest subscription.Source
 		var first time.Time
 		for key, preview := range d.subscriptions.previews {
@@ -173,14 +197,13 @@ func (d *Daemon) previewSubscription(ctx context.Context, source subscription.So
 				oldest, first = key, preview.at
 			}
 		}
-		if _, exists := d.subscriptions.previews[subscriptionIdentity(source)]; !exists && len(d.subscriptions.previews) >= subscriptionPreviewLimit {
-			delete(d.subscriptions.previews, oldest)
-		}
-		cached := attempt
-		cached.result.RoutingSummary = nil
-		d.subscriptions.previews[subscriptionIdentity(source)] = cached
-		d.mu.Unlock()
+		delete(d.subscriptions.previews, oldest)
 	}
+	d.subscriptions.previewSeq++
+	attempt.previewID = d.subscriptions.previewSeq
+	cached := attempt
+	cached.result.RoutingSummary = nil
+	d.subscriptions.previews[identity] = cached
 	return attempt
 }
 
@@ -317,11 +340,28 @@ func (d *Daemon) expireSubscriptionPreviewsLocked(now time.Time) {
 	}
 }
 
+// checkedPreviewLocked validates both cache identity and provider expiry at
+// the point of use. A usable node catalog alone does not imply eligibility.
+func (d *Daemon) checkedPreviewLocked(check subscription.PreviewRef, now time.Time) (subscriptionAttempt, error) {
+	attempt, ok := d.subscriptions.previews[check.Source]
+	if !ok || attempt.previewID != check.ID || now.Sub(attempt.at) >= subscriptionPreviewTTL {
+		return subscriptionAttempt{}, subscription.ErrPreviewChanged
+	}
+	if usage := attempt.result.Metadata.Usage; usage != nil && usage.Expire > 0 && usage.Expire <= now.Unix() {
+		return subscriptionAttempt{}, subscription.ErrPreviewChanged
+	}
+	return attempt, nil
+}
+
 // applyWithSubscriptions obtains missing candidates, and the provider rules of
 // a new candidate for the configured source, outside the Apply lock and
 // rechecks them against the configuration that is active when Apply acquires it.
-func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, revision string) error {
+func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, revision string, checked *subscription.PreviewRef) error {
 	candidates := make(map[subscription.Source]subscriptionAttempt)
+	var checkedSource subscription.Source
+	if checked != nil {
+		checkedSource = checked.Source
+	}
 	for {
 		d.mu.Lock()
 		if err := d.applyAdmissionLocked(ctx); err != nil {
@@ -333,25 +373,40 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, 
 			d.mu.Unlock()
 			return model.ErrConfigChanged
 		}
-		d.expireSubscriptionPreviewsLocked(time.Now())
-		source, missing := d.missingSubscriptionLocked(cfg, candidates)
-		if !missing {
-			identity, pending := d.pendingProviderRulesLocked(cfg, candidates)
-			if !pending {
-				err := d.applyConfigLocked(ctx, cfg, true, candidates)
+		now := time.Now()
+		d.expireSubscriptionPreviewsLocked(now)
+		if checked != nil {
+			attempt, err := d.checkedPreviewLocked(*checked, now)
+			if err != nil {
 				d.mu.Unlock()
 				return err
+			}
+			if _, exists := candidates[checkedSource]; !exists {
+				candidates[checkedSource] = attempt
+			}
+		}
+		source, missing := d.missingSubscriptionLocked(cfg, candidates)
+		if !missing {
+			identity, pending := d.pendingProviderRulesLocked(cfg, candidates, checkedSource)
+			if !pending {
+				err := d.applyConfigLocked(ctx, cfg, true, candidates, checked)
+				d.mu.Unlock()
+				return err
+			}
+			var previous *rulesSnapshot
+			if state := d.subscriptions.states[identity.ID]; subscriptionIdentity(state.source) == identity {
+				previous = state.snapshot.Rules
 			}
 			d.mu.Unlock()
 			candidate := candidates[identity]
 			geoCtx, cancel := applyGeoContext(ctx)
-			candidate.rules = d.evaluateProviderRules(geoCtx, candidate.result, nil)
+			candidate.rules = d.evaluateProviderRules(geoCtx, candidate.result, previous)
 			cancel()
 			candidates[identity] = candidate
 			continue
 		}
 		d.mu.Unlock()
-		attempt := d.fetchSubscription(ctx, source)
+		attempt := d.fetchSubscription(ctx, source, false)
 		if attempt.result.State != subscription.StateReady {
 			message := attempt.result.Error
 			if message == "" {
@@ -384,13 +439,13 @@ func (d *Daemon) missingSubscriptionLocked(cfg *model.Config, candidates map[sub
 }
 
 // pendingProviderRulesLocked finds the candidate of the configured rules source
-// whose rules this Apply has not evaluated yet. A source kept from the running
-// configuration is left to the refresh worker.
-func (d *Daemon) pendingProviderRulesLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) (subscription.Source, bool) {
+// whose rules this Apply has not evaluated yet. Reconfirming the same link
+// evaluates the checked candidate. Other unchanged sources use the worker.
+func (d *Daemon) pendingProviderRulesLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt, checked subscription.Source) (subscription.Source, bool) {
 	id := providerRulesSource(cfg)
 	for _, source := range cfg.Subscriptions {
 		identity := subscriptionIdentity(source)
-		if source.ID != id || subscriptionIdentity(d.subscriptions.states[id].source) == identity {
+		if source.ID != id || (subscriptionIdentity(d.subscriptions.states[id].source) == identity && identity != checked) {
 			continue
 		}
 		if candidate, ok := candidates[identity]; ok && candidate.rules == nil {
@@ -400,34 +455,41 @@ func (d *Daemon) pendingProviderRulesLocked(cfg *model.Config, candidates map[su
 	return subscription.Source{}, false
 }
 
-func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) map[string]appliedSubscription {
+func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt, checked subscription.Source) map[string]appliedSubscription {
 	if len(cfg.Subscriptions) == 0 {
 		return nil
 	}
 	states := make(map[string]appliedSubscription, len(cfg.Subscriptions))
 	for _, source := range cfg.Subscriptions {
-		previous := d.subscriptions.states[source.ID]
-		if subscriptionIdentity(previous.source) == subscriptionIdentity(source) {
-			previous.source = source // a reserve edit keeps nodes, health and selection
-			syncProviderRules(cfg, &previous)
-			states[source.ID] = previous
-			continue
+		state := d.subscriptions.states[source.ID]
+		identity := subscriptionIdentity(source)
+		replaced := subscriptionIdentity(state.source) != identity
+		if replaced {
+			state = appliedSubscription{snapshot: subscriptionSnapshot{Selection: state.snapshot.Selection}}
 		}
-		state := appliedSubscription{source: source}
-		state.snapshot.Selection = previous.snapshot.Selection
-		if candidate, ok := candidates[subscriptionIdentity(source)]; ok {
+		state.source = source
+		if candidate, ok := candidates[identity]; ok && (replaced || identity == checked) {
+			previousEpoch := state.probeEpoch
+			state.request = nil
 			state.recordAttempt(candidate)
 			state.accept(candidate)
+			if state.probeEpoch != previousEpoch {
+				// Keep the running queue available to a rollback.
+				state.checks.pending = maps.Clone(state.checks.pending)
+				state.checks.retain(state.snapshot.Nodes)
+			}
 		}
 		syncProviderRules(cfg, &state)
-		state.scheduleRulesRetry(time.Now())
+		if replaced || identity == checked {
+			state.scheduleRulesRetry(time.Now())
+		}
 		states[source.ID] = state
 	}
 	return states
 }
 
 // fetchSubscription serializes direct downloads and bounds concurrent validation.
-func (d *Daemon) fetchSubscription(ctx context.Context, source subscription.Source) subscriptionAttempt {
+func (d *Daemon) fetchSubscription(ctx context.Context, source subscription.Source, preview bool) subscriptionAttempt {
 	select {
 	case d.subscriptions.slot <- struct{}{}:
 	case <-ctx.Done():
@@ -443,7 +505,11 @@ func (d *Daemon) fetchSubscription(ctx context.Context, source subscription.Sour
 			result.State, result.Error = subscription.StateUnsupported, "no subscription nodes are supported by this build"
 		}
 	}
-	return subscriptionAttempt{result: result, at: time.Now()}
+	attempt := subscriptionAttempt{result: result, at: time.Now()}
+	if preview {
+		return d.cacheSubscriptionPreview(source, attempt)
+	}
+	return attempt
 }
 
 // supportedSubscriptionNodes validates the common case in one engine instance.
@@ -510,7 +576,7 @@ func (d *Daemon) runSubscriptionRequest(ctx context.Context, request *subscripti
 		}
 		return
 	}
-	attempt := d.fetchSubscription(ctx, request.source)
+	attempt := d.fetchSubscription(ctx, request.source, false)
 	if request.rules && attempt.result.State == subscription.StateReady {
 		attempt.rules = d.evaluateProviderRules(ctx, attempt.result, request.previous)
 	}

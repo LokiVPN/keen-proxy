@@ -34,6 +34,16 @@ type Source struct {
 	Fallback string `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 }
 
+// PreviewRef identifies the specific checked result that a setup form accepted.
+// The source and its URL stay server-side.
+type PreviewRef struct {
+	Source Source
+	ID     uint64
+}
+
+// ErrPreviewChanged asks setup to check again before activating a subscription.
+var ErrPreviewChanged = errors.New("checked subscription preview is no longer available")
+
 // Node contains the original share link for the private snapshot and compiler.
 // API handlers must project it to an ID and display name before returning it.
 type Node struct {

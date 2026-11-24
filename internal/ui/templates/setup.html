@@ -20,6 +20,7 @@
         <button class="btn{{if $checked}} soft{{end}} setup-submit" type="submit"{{if $disabled}} disabled{{end}}>{{.Text.setup_check}}</button>
       </form>
       {{if .Setup.Error}}<p id="setup-error" class="setup-error" role="alert">{{.Setup.Error}}</p>{{end}}
+      {{if .Setup.Warning}}<p class="note" role="alert">{{.Setup.Warning}}</p>{{end}}
       {{if not $checked}}<p class="hint setup-hwid">{{.Text.setup_hwid_hint}}</p>{{end}}
       {{with .Setup.Result}}
       <section class="setup-result" aria-labelledby="setup-provider">
@@ -35,7 +36,14 @@
           <dt>{{$.Text.setup_routing}}</dt>
           <dd>
             {{if .RouteName}}<strong class="clip">{{.RouteName}}</strong>{{end}}
-            <p>{{.RouteHint}}{{if and (not .HasRouting) (not $.Setup.Replacing)}} {{$.Text.setup_profile_vpn}}{{end}}</p>
+            {{if .RouteHint}}<p>{{.RouteHint}}</p>{{end}}
+            {{if .RulesState}}<p>{{.RulesState}}</p>{{end}}
+            {{if $.Setup.Replacing}}<p>{{$.Text.setup_mode_kept}}</p>{{end}}
+            {{if and .HasRouting $.Setup.EvaluateRules}}
+            <p>{{if $.Setup.Replacing}}{{$.Text.setup_rules_on_replace}}{{else}}{{$.Text.setup_rules_on_enable}}{{end}}</p>
+            {{else if and (not .HasRouting) (not $.Setup.Replacing)}}
+            <p>{{$.Text.setup_without_rules_fallback}}</p>
+            {{end}}
             {{if .Actions}}
             <ul class="setup-rules">
               {{range .Actions}}

@@ -24,7 +24,7 @@ ends, the panel returns to a sign-in screen with a link to KeeneticOS.
 
 ## First run { #first-run }
 
-Open KeenProxy with a router management account. Paste the HTTPS subscription link from your LokiVPN account, then choose **Check**. KeenProxy sends its stable device ID to the provider. This can use a slot on your subscription. The check shows the supported servers, provider message, and any usage, expiry, or routing information the provider supplies.
+Open KeenProxy with a router management account. Paste the HTTPS subscription link from your LokiVPN account, then choose **Check**. KeenProxy sends its stable device ID to the provider. This can use a slot on your subscription. The check shows the supported servers, provider message, and any usage, expiry, or routing information the provider supplies. Routing details describe the provider profile. KeenProxy evaluates its rules when you enable the subscription.
 
 Choose **Enable** to save the subscription and set split routing for the home network detected on the configured LAN interface. The network follows the provider profile. If the provider supplies no routing profile, unmatched traffic goes through the subscription. The first setup needs a private IPv4 address on that interface.
 

@@ -296,7 +296,7 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 // startup commits only after saving; an already-active daemon can report an
 // applied-but-unsaved change.
 func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
-	return d.apply(ctx, cfg, "")
+	return d.apply(ctx, cfg, "", nil)
 }
 
 // ApplyIfCurrent applies a page draft only while the configuration used to
@@ -306,10 +306,25 @@ func (d *Daemon) ApplyIfCurrent(ctx context.Context, cfg *model.Config, revision
 	if revision == "" {
 		return model.ErrConfigChanged
 	}
-	return d.apply(ctx, cfg, revision)
+	return d.apply(ctx, cfg, revision, nil)
 }
 
-func (d *Daemon) apply(ctx context.Context, cfg *model.Config, revision string) error {
+// ApplySubscriptionPreview applies only the checked attempt for the selected
+// source. It cannot substitute another preview or retry the download.
+func (d *Daemon) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error {
+	if revision == "" {
+		return model.ErrConfigChanged
+	}
+	checked.Source = subscriptionIdentity(checked.Source)
+	if checked.ID == 0 || !slices.ContainsFunc(cfg.Subscriptions, func(source subscription.Source) bool {
+		return subscriptionIdentity(source) == checked.Source
+	}) {
+		return subscription.ErrPreviewChanged
+	}
+	return d.apply(ctx, cfg, revision, &checked)
+}
+
+func (d *Daemon) apply(ctx context.Context, cfg *model.Config, revision string, checked *subscription.PreviewRef) error {
 	by, from := applyActor(ctx)
 	cfg.Defaults()
 	if err := cfg.Validate(); err != nil {
@@ -323,7 +338,7 @@ func (d *Daemon) apply(ctx context.Context, cfg *model.Config, revision string) 
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
 	}
-	return d.applyWithSubscriptions(ctx, cfg, revision)
+	return d.applyWithSubscriptions(ctx, cfg, revision, checked)
 }
 
 func applyActor(ctx context.Context) (by, from string) {
@@ -342,7 +357,7 @@ func (d *Daemon) applyAdmissionLocked(ctx context.Context) error {
 }
 
 // applyConfigLocked is shared by draft Apply and saved recovery.
-func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save bool, candidates map[subscription.Source]subscriptionAttempt) error {
+func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save bool, candidates map[subscription.Source]subscriptionAttempt, checked *subscription.PreviewRef) error {
 	if err := d.applyAdmissionLocked(ctx); err != nil {
 		return err
 	}
@@ -354,6 +369,13 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	if err := d.applyAdmissionLocked(ctx); err != nil {
 		return err
 	}
+	var checkedSource subscription.Source
+	if checked != nil {
+		if _, err := d.checkedPreviewLocked(*checked, time.Now()); err != nil {
+			return err
+		}
+		checkedSource = checked.Source
+	}
 	prev := d.cfg
 	changes := configChanges(prev, cfg)
 	activation := d.startupBlocked
@@ -364,7 +386,7 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		previousHealth = maps.Clone(d.health)
 	}
 	restoreBalanceSessions := d.eng.SubscriptionBalanceCheckpoint()
-	d.subscriptions.states = d.subscriptionDraftLocked(cfg, candidates)
+	d.subscriptions.states = d.subscriptionDraftLocked(cfg, candidates, checkedSource)
 	d.discardReplacedSubscriptionHealthLocked(previousSubscriptions)
 	err := d.applyLocked(ctx, cfg)
 	if err == nil {
@@ -425,7 +447,7 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 			d.auditSubscriptionSelectionsLocked(previousSubscriptions)
 			wakeSubscriptionWorker(d.subscriptions.wake)
 			d.audit(by, "Configuration applied but not saved", "config", "warn", err.Error()+from)
-			return fmt.Errorf("configuration applied but not saved: %w", err)
+			return &model.AppliedUnsavedError{Err: err}
 		}
 	}
 	if save {
