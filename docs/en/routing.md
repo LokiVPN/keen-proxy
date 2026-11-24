@@ -93,7 +93,7 @@ Every split policy, for a network or a device, applies the rules after its own g
 
 Entries use Xray syntax. Domain lists accept `domain:` (suffix), `full:`, `keyword:`, `regexp:`, `geosite:<category>` (an `@attribute` suffix is accepted and the whole category is used) and plain text, which is a keyword. Address lists accept IP or CIDR literals and `geoip:<tag>`. `geoip:private` and `geosite:private` are skipped because private addresses always go direct. Entries that are not supported (`ext:`, `ext-domain:`, `dotless:`, negated `!` categories, invalid regular expressions, unreadable addresses) are skipped and listed in the rule status, up to 50 entries. A category whose data file is missing or could not be loaded is shown as unavailable and does not route. The `GlobalProxy` field of the profile decides only the `profile` default route, not these rules.
 
-Provider rules are applied only by the rule order described above. When the profile lists no usable rules, a policy behaves as without provider rules, and the `profile` default uses the network's target.
+When the profile lists no usable rules, a policy behaves as without provider rules, and the `profile` default uses the network's target.
 
 Provider domain rules also apply to connections without a readable name. KeenProxy learns their addresses only from DNS answers that devices receive through it, and an address follows the rule until the answer's TTL ends: unlike names in your groups, provider names are never resolved in the background. Only domain entries take part in this (`domain:`, `full:` and the domains of geosite categories); keywords and regular expressions need a readable name.
 
@@ -101,7 +101,7 @@ For devices on a split policy, KeenProxy itself answers the domain names of prov
 
 ### Data files, limits and refresh { #provider-rules-data }
 
-Categories come from the `Geositeurl` and `Geoipurl` data files that the profile names. KeenProxy downloads them directly (not through a connection), over HTTPS only, without following redirects, and extracts only the categories the profile references. A profile is limited to 256 KiB after decoding, each data file to 16 MiB, geosite data to 100,000 domains and geoip data to 200,000 prefixes in total; a file over a limit fails with a fixed message and its rules stay unavailable. Each file has a one-minute download timeout. A profile with only two-letter `geoip:` tags and no geoip file uses the built-in country databases.
+Categories come from the `Geositeurl` and `Geoipurl` data files that the profile names. KeenProxy downloads them directly (not through a connection), over HTTPS only, following at most three HTTPS redirects (for example from a release download) and never leaving HTTPS, and extracts only the categories the profile references. A profile is limited to 256 KiB after decoding, each data file to 16 MiB, geosite data to 100,000 domains and geoip data to 200,000 prefixes in total; a file over a limit fails with a fixed message and its rules stay unavailable. Each file has a one-minute download timeout. A profile with only two-letter `geoip:` tags and no geoip file uses the built-in country databases.
 
 Apply spends at most 20 seconds on these downloads and stops 15 seconds before its own deadline; with less than a second left, it skips them. Rules that lack a data file are installed anyway, and the missing files are downloaded again in the background after 1 minute, then 2, 4 and so on up to 1 hour, without refetching the subscription. Data from an unchanged file is reused for up to one week.
 
