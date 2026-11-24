@@ -104,6 +104,9 @@ func configChanges(prev, cfg *model.Config) string {
 		return "first start"
 	}
 	var parts []string
+	if prev.Paused != cfg.Paused {
+		parts = append(parts, map[bool]string{true: "paused", false: "unpaused"}[cfg.Paused])
+	}
 	count := func(name string, a, b int, same bool) {
 		switch {
 		case a != b:
@@ -129,10 +132,33 @@ func configChanges(prev, cfg *model.Config) string {
 	if !reflect.DeepEqual(prev.System.MemoryLimitMiB, cfg.System.MemoryLimitMiB) {
 		parts = append(parts, memoryLimitChange(prev.System.MemoryLimitMiB, cfg.System.MemoryLimitMiB))
 	}
+	if change := providerRulesChange(prev.ProviderRules, cfg.ProviderRules); change != "" {
+		parts = append(parts, change)
+	}
 	if len(parts) == 0 {
 		return "no changes"
 	}
 	return strings.Join(parts, "; ")
+}
+
+// providerRulesChange describes a change of the provider-rules settings
+// without their keys, which are provider text; "" means none.
+func providerRulesChange(prev, next *model.ProviderRulesSettings) string {
+	switch {
+	case prev == nil && next == nil:
+		return ""
+	case prev == nil:
+		return "provider rules on"
+	case next == nil:
+		return "provider rules off"
+	case prev.Source != next.Source:
+		return "provider rules source changed"
+	case len(prev.Disabled) != len(next.Disabled):
+		return fmt.Sprintf("switched-off provider rules: %d → %d", len(prev.Disabled), len(next.Disabled))
+	case !slices.Equal(prev.Disabled, next.Disabled):
+		return "switched-off provider rules changed"
+	}
+	return ""
 }
 
 func memoryLimitChange(prev, next *model.MemoryLimitMiB) string {

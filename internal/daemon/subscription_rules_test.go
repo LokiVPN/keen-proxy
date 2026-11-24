@@ -423,6 +423,37 @@ func TestProviderRulesStates(t *testing.T) {
 	}
 }
 
+// The audit journal, which feeds the support archive, names pause and
+// provider-rules changes in fixed English without provider text.
+func TestAppliedChangesNamePauseAndProviderRules(t *testing.T) {
+	d, cfg, _ := newRulesTestDaemon(t)
+	cur := cfg.Clone()
+	cur.ProviderRules = nil
+	if err := d.Apply(t.Context(), cur); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		change func(*model.Config)
+		want   string
+	}{
+		{func(c *model.Config) { c.Paused = true }, "paused"},
+		{func(c *model.Config) { c.Paused = false }, "unpaused"},
+		{func(c *model.Config) { c.ProviderRules = &model.ProviderRulesSettings{Source: "sample"} }, "provider rules on"},
+		{func(c *model.Config) { c.ProviderRules.Disabled = []string{"block:geosite:ads"} }, "switched-off provider rules: 0 → 1"},
+		{func(c *model.Config) { c.ProviderRules.Disabled = []string{"proxy:geosite:video"} }, "switched-off provider rules changed"},
+		{func(c *model.Config) { c.ProviderRules = nil }, "provider rules off"},
+	} {
+		cur = cur.Clone()
+		step.change(cur)
+		if err := d.Apply(t.Context(), cur); err != nil {
+			t.Fatal(err)
+		}
+		if got := lastAudit(t, d, "Apply configuration"); !strings.HasPrefix(got, step.want+";") {
+			t.Errorf("audit for %q: %q", step.want, got)
+		}
+	}
+}
+
 func TestProviderRulesFollowTheSettings(t *testing.T) {
 	d, cfg, p := newRulesTestDaemon(t)
 	settings := cfg.ProviderRules
