@@ -3,11 +3,12 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -23,27 +24,21 @@ import (
 // observeDomain keeps device DNS answers for names that fill a DNS fallback
 // set of the applied configuration: own lists and enabled provider domain
 // rules. Provider names are learned only this way, never resolved by the
-// daemon (see refreshDomainNames). It runs on DNS goroutines without d.mu.
+// daemon (see refreshDomainNames), so their records are spare: they give way
+// to own-list records in a full cache and leave once their answers expire.
+// It runs on DNS goroutines without d.mu.
 func (d *Daemon) observeDomain(name string, m *dns.Msg) {
 	name = domaincache.Normalize(name)
 	if names := d.publishedDNSNames(); names != nil && names.Observed(name) {
-		d.domains.Observe(name, m, "observed")
+		d.domains.Observe(name, m, "observed", !names.InGroups(name))
 	}
 }
 
-// domainRecords filters fresh cache records against the published DNS names.
-func (d *Daemon) domainRecords() []domaincache.Record {
-	out := []domaincache.Record{}
-	names := d.publishedDNSNames()
-	if names == nil {
-		return out
+// holdsAddress selects the cache records with ip among their addresses.
+func holdsAddress(ip string) func(domaincache.Record) bool {
+	return func(r domaincache.Record) bool {
+		return slices.ContainsFunc(r.Addresses, func(a domaincache.Address) bool { return a.IP == ip })
 	}
-	for _, r := range d.domains.Snapshot(nil) {
-		if names.Observed(r.Name) {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 // dnsNamesState is the DNS names published to DNS goroutines with the
@@ -88,47 +83,55 @@ func (d *Daemon) providerBlocked(name string, client netip.Addr) bool {
 	return split != nil && names != nil && split.Contains(client) && names.ProviderBlocked(name)
 }
 
-func recordsMap(records []domaincache.Record) map[string][]string {
-	out := map[string][]string{}
-	for _, r := range records {
-		for _, a := range r.Addresses {
-			out[r.Name] = append(out[r.Name], a.IP)
-		}
-	}
-	return out
+// dnsFiles records the dns-* rule-set files as the daemon last wrote them,
+// so it writes them only when an answer or the DNS names changed and
+// rewrites only the files whose contents changed, without reading them back.
+type dnsFiles struct {
+	names    *compile.DNSNames // the names of the last complete write
+	answers  uint64            // the cache generation of the last complete write
+	contents map[string][]byte // by file name, as written
+	cleaned  *compile.DNSNames // the names whose stale files were removed
 }
 
-// flushDomains serializes with Apply, preventing stale writes after group edits.
+// flushDomains brings the DNS fallback sets up to date once a second. It
+// serializes with Apply, preventing stale writes after group edits.
 func (d *Daemon) flushDomains() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.cfg == nil {
 		return
 	}
-	// Nothing refreshes provider names: drop their expired records so they do
-	// not fill the cache that every flush reads.
-	names := d.dnsNamesLocked()
-	d.domains.DropExpired(func(name string) bool { return !names.InGroups(name) })
 	d.writeDNSLocked()
-	if d.domainError == "" {
+	if d.domainError == "" && d.dnsFiles.cleaned != d.dnsFiles.names {
 		d.cleanDNSFilesLocked()
 	}
 }
 
-// writeDNSLocked writes changed DNS fallback sets and records write progress while d.mu is held.
+// writeDNSLocked writes the DNS fallback sets of the published names from
+// the cache's answers while d.mu is held. Nothing is built while neither
+// changed since the last complete write, and only changed files are written.
 func (d *Daemon) writeDNSLocked() {
-	sets := d.dnsNamesLocked().RuleSets(recordsMap(d.domainRecords()))
-	fingerprint, _ := json.Marshal(sets)
-	if bytes.Equal(fingerprint, d.domainFingerprint) && d.domainError == "" {
+	names, f := d.dnsNamesLocked(), &d.dnsFiles
+	if d.domainError == "" && f.names == names && f.answers == d.domains.Generation() {
 		return
 	}
+	answers, generation := d.domains.Addresses()
+	sets := names.RuleSets(answers)
+	if f.contents == nil {
+		f.contents = make(map[string][]byte, len(sets))
+	}
 	for name, raw := range sets {
-		if err := writeFile(filepath.Join(d.opt.RuleSetDir, name), raw, 0o644); err != nil {
+		if bytes.Equal(f.contents[name], raw) {
+			continue
+		}
+		if err := replaceFile(filepath.Join(d.opt.RuleSetDir, name), raw, 0o644); err != nil {
 			d.domainError = err.Error()
 			return
 		}
+		f.contents[name] = raw
 	}
-	d.domainFingerprint = fingerprint
+	maps.DeleteFunc(f.contents, func(name string, _ []byte) bool { return sets[name] == nil })
+	f.names, f.answers = names, generation
 	d.domainError = ""
 }
 
@@ -211,7 +214,7 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string) error {
 				cache.SetError(name, "DNS: "+dns.RcodeToString[resp.Rcode])
 				return
 			}
-			cache.Observe(name, resp, "resolved")
+			cache.Observe(name, resp, "resolved", false)
 		}(name)
 	}
 	wg.Wait()
@@ -246,14 +249,15 @@ func (d *Daemon) runDomains(ctx context.Context) {
 			if cfg == nil {
 				return
 			}
-			names := refreshDomainNames(cfg, d.domainRecords(), time.Now())
-			existing := map[string]domaincache.Record{}
-			for _, r := range d.domainRecords() {
+			// Spare records belong to names nothing refreshes.
+			records := d.domains.Snapshot(func(r domaincache.Record) bool { return !r.Spare })
+			now := time.Now()
+			names := refreshDomainNames(cfg, records, now)
+			existing := make(map[string]domaincache.Record, len(records))
+			for _, r := range records {
 				existing[r.Name] = r
-
 			}
 			due := []string{}
-			now := time.Now()
 			for _, name := range names {
 				r := existing[name]
 				if now.Sub(r.AttemptedAt) < 30*time.Second {
@@ -352,30 +356,37 @@ func appendUnique(ss []string, s string) []string {
 	return append(ss, s)
 }
 
-// dnsRouteNote explains potential DNS-derived routing for connection journal entries.
-func dnsRouteNote(cfg *model.Config, records []domaincache.Record, raw, ip string) string {
+// dnsRouteNote names, for a connection journal entry, the observed names
+// behind a DNS fallback route of an own list: the names of the groups raw
+// matched whose answers held ip. holding returns the cache records that hold
+// ip; it is called only for such routes, so provider DNS sets, whose names
+// the journal does not explain, never read the cache. Without names there
+// is no note.
+func dnsRouteNote(cfg *model.Config, raw, ip string, holding func() []domaincache.Record) string {
 	if cfg == nil || !strings.Contains(raw, "dns-") {
 		return ""
 	}
-	names := []string{}
+	var groups []model.Group
 	for _, g := range cfg.Groups {
-		if g.Disabled {
-			continue
+		if !g.Disabled && strings.Contains(raw, compile.DomainTag(g)) {
+			groups = append(groups, g)
 		}
-		if !strings.Contains(raw, compile.DomainTag(g)) {
-			continue
-		}
+	}
+	if len(groups) == 0 {
+		return ""
+	}
+	records, holds := holding(), holdsAddress(ip)
+	names := []string{}
+	for _, g := range groups {
 		m := compile.NewDomainMatcher(&model.Config{Groups: []model.Group{g}})
 		for _, r := range records {
-			if !m.Match(r.Name) {
-				continue
-			}
-			for _, a := range r.Addresses {
-				if a.IP == ip {
-					names = appendUnique(names, r.Name)
-				}
+			if m.Match(r.Name) && holds(r) {
+				names = appendUnique(names, r.Name)
 			}
 		}
+	}
+	if len(names) == 0 {
+		return ""
 	}
 	sort.Strings(names)
 	if len(names) > 4 {
@@ -388,9 +399,10 @@ func dnsRouteNote(cfg *model.Config, records []domaincache.Record, raw, ip strin
 	return note
 }
 
-// Called after Apply/rollback is finished, never while the old engine still uses its files.
+// cleanDNSFilesLocked removes the dns-* files the last complete write did not
+// produce, once per change of the DNS names. It runs after Apply or rollback
+// is finished, never while the old engine still uses its files.
 func (d *Daemon) cleanDNSFilesLocked() {
-	keep := d.dnsNamesLocked().RuleSets(nil)
 	entries, err := os.ReadDir(d.opt.RuleSetDir)
 	if err != nil {
 		return
@@ -398,11 +410,12 @@ func (d *Daemon) cleanDNSFilesLocked() {
 	for _, e := range entries {
 		name := e.Name()
 		if !e.IsDir() && strings.HasPrefix(name, "dns-") && strings.HasSuffix(name, ".json") {
-			if _, ok := keep[name]; !ok {
+			if _, ok := d.dnsFiles.contents[name]; !ok {
 				if err := os.Remove(filepath.Join(d.opt.RuleSetDir, name)); err != nil && !os.IsNotExist(err) {
 					d.log.Warn("failed to remove stale DNS rule set", "err", err)
 				}
 			}
 		}
 	}
+	d.dnsFiles.cleaned = d.dnsFiles.names
 }

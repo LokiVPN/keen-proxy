@@ -66,16 +66,16 @@ type Options struct {
 
 // Daemon owns runtime components and coordinates serialized configuration changes.
 type Daemon struct {
-	domainGeneration  atomic.Pointer[domainGeneration]
-	dnsRouteMu        sync.Mutex
-	dnsRoute          string // latest DNS route, to journal fallback transitions
-	domains           *domaincache.Cache
-	domainSlots       chan struct{}
-	domainError       string
-	domainFingerprint []byte
-	opt               Options
-	log               *slog.Logger
-	tproxyProbe       func(context.Context) netfilter.TProxyReadiness
+	domainGeneration atomic.Pointer[domainGeneration]
+	dnsRouteMu       sync.Mutex
+	dnsRoute         string // latest DNS route, to journal fallback transitions
+	domains          *domaincache.Cache
+	domainSlots      chan struct{}
+	domainError      string
+	dnsFiles         dnsFiles // protected by mu
+	opt              Options
+	log              *slog.Logger
+	tproxyProbe      func(context.Context) netfilter.TProxyReadiness
 
 	// startupBlocked is protected by mu and closed on first successful activation.
 	startupBlocked chan struct{}
@@ -960,6 +960,11 @@ func writeFile(path string, data []byte, perm os.FileMode) error {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
 		return nil
 	}
+	return replaceFile(path, data, perm)
+}
+
+// replaceFile atomically replaces a file through a temporary file and rename.
+func replaceFile(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, perm); err != nil {
 		return err

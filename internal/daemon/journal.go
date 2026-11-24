@@ -12,6 +12,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 
 	"github.com/ordo-systems/keen-proxy/internal/compile"
+	"github.com/ordo-systems/keen-proxy/internal/domaincache"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
@@ -81,7 +82,7 @@ func (d *Daemon) onRoute(m adapter.InboundContext, rule adapter.Rule, out adapte
 	}
 	e.Rule = journal.DescribeRule(cfg, e.RuleRaw) + note
 	if strings.Contains(e.RuleRaw, "dns-") {
-		e.Rule += dnsRouteNote(cfg, d.domainRecords(), e.RuleRaw, e.IP)
+		e.Rule += dnsRouteNote(cfg, e.RuleRaw, e.IP, func() []domaincache.Record { return d.domains.Snapshot(holdsAddress(e.IP)) })
 	}
 	d.journals[journal.Routes].Add(e)
 }

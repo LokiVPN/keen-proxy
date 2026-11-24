@@ -14,6 +14,21 @@ import (
 	"time"
 )
 
+// domainRecords returns the fresh cache records of the published DNS names.
+func (d *Daemon) domainRecords() []domaincache.Record {
+	out := []domaincache.Record{}
+	names := d.publishedDNSNames()
+	if names == nil {
+		return out
+	}
+	for _, r := range d.domains.Snapshot(nil) {
+		if names.Observed(r.Name) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func TestDomainsObserveAndReconcile(t *testing.T) {
 	d := New(Options{RuleSetDir: t.TempDir()})
 	cfg := &model.Config{Groups: []model.Group{{Name: "test", Target: "direct", Entries: []string{"example.com"}}}}
@@ -59,7 +74,7 @@ func TestSameDomainDifferentGroupsIsConflict(t *testing.T) {
 	if len(domainConflicts(cfg, records)["203.0.113.1"]) != 2 {
 		t.Fatal("same name hides group ambiguity")
 	}
-	note := dnsRouteNote(cfg, records, compile.DomainTag(cfg.Groups[0]), "203.0.113.1")
+	note := dnsRouteNote(cfg, compile.DomainTag(cfg.Groups[0]), "203.0.113.1", func() []domaincache.Record { return records })
 	if !strings.Contains(note, "example.com") || !strings.Contains(note, "ambiguous") {
 		t.Fatal(note)
 	}
