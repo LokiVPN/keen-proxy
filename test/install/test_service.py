@@ -157,6 +157,21 @@ esac''')
         self.assertNotIn(b'OTHER=1', environ)
         self.assert_success(self.action('stop'))
 
+    def test_env_file_with_crlf_line_endings(self):
+        """A file saved with Windows line endings yields the same settings."""
+        for name in ('KEENPROXY_KEENETIC_AUTH_ORIGIN', 'KEENPROXY_QUOTED'):
+            self.env.pop(name, None)
+        env_file = self.prefix / 'etc/keenproxy/keenproxy.env'
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_bytes(b'# saved on Windows\r\n\r\nKEENPROXY_KEENETIC_AUTH_ORIGIN=off\r\nKEENPROXY_QUOTED="a b"\r\n')
+        result = self.action('start')
+        self.assert_success(result)
+        self.assertNotIn('ignored a line', result.stderr)
+        environ = Path(f'/proc/{self.running_pid()}/environ').read_bytes().split(b'\0')
+        self.assertIn(b'KEENPROXY_KEENETIC_AUTH_ORIGIN=off', environ)
+        self.assertIn(b'KEENPROXY_QUOTED=a b', environ)
+        self.assert_success(self.action('stop'))
+
     def test_start_is_idempotent_and_restart_replaces_the_process(self):
         self.assert_success(self.action('start'))
         first = self.running_pid()
