@@ -96,7 +96,7 @@ func (p *profileParser) finish() (map[string]any, error) {
 
 func interfaceField(ep map[string]any, name, value string) error {
 	if name == "dns" {
-		return dnsMetadata(value)
+		return ValidateDNSMetadata(value)
 	}
 	out, parsed, err := interfaceValue(name, value)
 	if err != nil {
@@ -138,8 +138,9 @@ func mtuValue(value string) (uint64, error) {
 	return n, nil
 }
 
-// DNS is accepted only as metadata; awg-quick cannot replace router DNS policy.
-func dnsMetadata(value string) error {
+// ValidateDNSMetadata checks wg-quick search domains and unscoped IP addresses.
+// DNS in a tunnel profile cannot replace router DNS policy.
+func ValidateDNSMetadata(value string) error {
 	for item := range strings.SplitSeq(value, ",") {
 		item = strings.TrimSpace(item)
 		ip, err := netip.ParseAddr(item)
