@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"slices"
 	"time"
 
@@ -32,6 +33,24 @@ type subscriptionChecks struct {
 func (d *Daemon) CheckSubscription(sourceID, nodeID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.checkSubscriptionLocked(sourceID, nodeID)
+}
+
+// CheckSubscriptionIfCurrent admits a browser action under the same lock as
+// source replacement, so the page can only queue checks for its saved config.
+func (d *Daemon) CheckSubscriptionIfCurrent(sourceID, nodeID, revision string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.matchesConfigRevisionLocked(revision) {
+		return model.ErrConfigChanged
+	}
+	if !d.checkSubscriptionLocked(sourceID, nodeID) {
+		return errors.New("applied subscription node or catalog is unavailable")
+	}
+	return nil
+}
+
+func (d *Daemon) checkSubscriptionLocked(sourceID, nodeID string) bool {
 	state, exists := d.subscriptions.states[sourceID]
 	nodes := state.snapshot.Nodes
 	if !exists || d.closed || d.startupBlocked != nil || len(nodes) == 0 {

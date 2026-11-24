@@ -24,6 +24,7 @@ type managementDaemon interface {
 	Subscriptions() []daemon.SubscriptionStatus
 	TrafficSeries() []stats.Point
 	RefreshSubscriptionIfCurrent(id, revision string) error
+	CheckSubscriptionIfCurrent(source, node, revision string) error
 }
 
 // uiDeps gives pages display snapshots and revision-checked management operations.
@@ -137,6 +138,7 @@ func (d uiDeps) Subscriptions() []ui.AppliedSubscription {
 			Unavailable: status.Unavailable, SwitchReason: status.SwitchReason,
 			RulesWithheld:   status.RulesWithheld,
 			BalanceEligible: status.BalanceEligible, Refreshing: status.Refreshing,
+			Skipped: status.Skipped, CheckingAll: status.CheckProgress != nil,
 			Nodes: make([]ui.SubscriptionNode, 0, len(status.Nodes)),
 		}
 		if status.LastSuccess != nil {
@@ -147,7 +149,7 @@ func (d uiDeps) Subscriptions() []ui.AppliedSubscription {
 		}
 		for _, node := range status.Nodes {
 			view.Nodes = append(view.Nodes, ui.SubscriptionNode{
-				ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS,
+				ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS, Checking: node.Checking,
 			})
 		}
 		list = append(list, view)
@@ -161,6 +163,10 @@ func (d uiDeps) TrafficSeries() []stats.Point {
 
 func (d uiDeps) RefreshSubscription(id, revision string) error {
 	return d.daemon.RefreshSubscriptionIfCurrent(id, revision)
+}
+
+func (d uiDeps) CheckSubscription(source, node, revision string) error {
+	return d.daemon.CheckSubscriptionIfCurrent(source, node, revision)
 }
 
 func pageRole(r *http.Request) ui.Role {

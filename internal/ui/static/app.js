@@ -51,7 +51,7 @@
   document.documentElement.classList.add("js");
 
   async function refresh(fragment) {
-    if (pending.has(fragment)) return;
+    if (pending.has(fragment) || fragment.contains(document.activeElement)) return;
     pending.add(fragment);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
@@ -68,7 +68,10 @@
       if (!response.ok || !response.headers.get("Content-Type")?.startsWith("text/html")) return;
 
       const html = await response.text();
-      if (!document.hidden && fragment.isConnected) fragment.innerHTML = html;
+      // Keep focused controls in place until the user moves on.
+      if (!document.hidden && fragment.isConnected && !fragment.contains(document.activeElement)) {
+        fragment.innerHTML = html;
+      }
     } catch {
       // Retain the last rendered fragment if a refresh fails.
     } finally {

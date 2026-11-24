@@ -23,6 +23,7 @@ type Deps interface {
 	ProviderRules() RoutingRules
 	TrafficSeries() []stats.Point
 	RefreshSubscription(id, revision string) error
+	CheckSubscription(source, node, revision string) error
 }
 
 // DiscoveredDevice is an observation from the LAN snapshot. The applied
@@ -86,10 +87,13 @@ type AppliedSubscription struct {
 	BalanceEligible                     *int
 	LastSuccess, NextRefresh            time.Time
 	Refreshing                          bool
+	Skipped                             int
+	CheckingAll                         bool
 }
 
 // SubscriptionNode carries an opaque target ID and its latest probe state.
 type SubscriptionNode struct {
 	ID, Name, Health string
 	LatencyMS        *int64
+	Checking         bool
 }

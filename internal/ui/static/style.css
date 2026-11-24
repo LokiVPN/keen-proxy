@@ -383,7 +383,7 @@
 }
 .overview-section { margin-top: 40px; }
 .overview-section:first-of-type { margin-top: 32px; }
-.overview-section-head {
+.overview-section-head, .connections-head {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -391,7 +391,7 @@
   gap: 4px 16px;
   margin-bottom: 12px;
 }
-.kp .overview-section-head h2 { font-size: 20px; line-height: 28px; }
+.kp .overview-section-head h2, .kp .connections-head h2 { font-size: 20px; line-height: 28px; }
 .overview-provider { max-width: 100%; font-size: 16px; font-weight: 500; }
 .overview-renewal > .icon { color: var(--caut-t); }
 .overview-usage { max-width: 420px; margin-top: 16px; }
@@ -419,7 +419,7 @@
 .kp .overview-updates { max-width: none; margin-top: 12px; }
 .overview-main-connection { margin-top: 20px; }
 .overview-main-connection .fld { flex: 1 1 340px; min-width: 0; margin: 0; }
-.overview-main-connection .fld::after {
+.overview-main-connection .fld::after, .connections-select::after {
   content: "";
   position: absolute;
   top: 14px;
@@ -431,7 +431,7 @@
   transform: rotate(45deg);
   pointer-events: none;
 }
-.overview-main-connection select { display: block; appearance: none; padding-right: 36px; text-overflow: ellipsis; }
+.overview-main-connection select, .connections-select select { display: block; appearance: none; padding-right: 36px; text-overflow: ellipsis; }
 .traffic-legend { display: flex; flex-wrap: wrap; gap: 4px 20px; font-variant-numeric: tabular-nums; }
 .traffic-legend span { display: inline-flex; align-items: center; gap: 8px; }
 .traffic-legend span::before { content: ""; width: 12px; height: 3px; border-radius: 2px; }
@@ -486,6 +486,22 @@
 .kp .devices-default .hint { margin-left: 48px; }
 .kp .devices-validation { margin-top: 6px; white-space: pre-line; overflow-wrap: anywhere; }
 
+.connections-section { margin-top: 40px; }
+.tabs + .connections-section { margin-top: 32px; }
+.connections-head { align-items: center; }
+.connections-head h2 { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+.connections-head .clip { flex: 1 1 150px; }
+.connections-select { margin-top: 28px; }
+.connections-check { min-height: 24px; }
+.connections-nodes, .connections-manual { table-layout: fixed; }
+.connections-nodes .connections-probe { width: 18%; }
+.connections-manual .connections-probe { width: 22%; }
+.connections-nodes .c-tg { width: 104px; }
+.connections-manual .c-res { width: 30%; }
+.connections-node { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.connections-node .clip { max-width: 100%; }
+.connections-manual .tg { min-height: 22px; vertical-align: middle; }
+
 .chart {
   display: grid;
   grid-template-columns: minmax(28px, auto) minmax(0, 1fr);
@@ -527,4 +543,15 @@
   .overview-section { margin-top: 32px; }
   .routing-section { margin-top: 32px; }
   .routing-lists { grid-template-columns: minmax(0, 1fr); }
+  .connections-section { margin-top: 32px; }
+  .connections-nodes .c-tg { width: 80px; }
+  .connections-nodes .connections-probe { width: 28%; }
+  .connections-manual .connections-probe { width: 32%; }
+  .connections-manual .c-tg { width: 44px; }
+  .connections-node .clip, .connections-manual .res-inline .clip {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+  }
 }

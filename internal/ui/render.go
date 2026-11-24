@@ -36,6 +36,8 @@ type pageData struct {
 	Overview                *overviewPage
 	Routing                 *routingPage
 	Devices                 *devicesPage
+	Connections             *connectionsPage
+	SubscriptionNodes       subscriptionNodesView
 	Traffic                 trafficView
 }
 

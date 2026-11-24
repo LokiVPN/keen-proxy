@@ -348,7 +348,7 @@ func (d *Daemon) RefreshSubscription(id string) bool {
 func (d *Daemon) RefreshSubscriptionIfCurrent(id, revision string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if revision == "" || d.cfg == nil || model.ConfigRevision(d.cfg.Clone()) != revision {
+	if !d.matchesConfigRevisionLocked(revision) {
 		return model.ErrConfigChanged
 	}
 	if !d.refreshSubscriptionLocked(id) {
@@ -415,7 +415,7 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, 
 			return err
 		}
 		// Hash the same configuration representation returned by Config.
-		if revision != "" && (d.cfg == nil || model.ConfigRevision(d.cfg.Clone()) != revision) {
+		if revision != "" && !d.matchesConfigRevisionLocked(revision) {
 			d.mu.Unlock()
 			return model.ErrConfigChanged
 		}

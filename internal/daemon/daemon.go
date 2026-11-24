@@ -1045,6 +1045,11 @@ func (d *Daemon) Config() *model.Config {
 	return d.cfg.Clone()
 }
 
+// matchesConfigRevisionLocked uses the same copied representation as Config.
+func (d *Daemon) matchesConfigRevisionLocked(revision string) bool {
+	return revision != "" && d.cfg != nil && model.ConfigRevision(d.cfg.Clone()) == revision
+}
+
 // Status summarizes daemon, engine, interception, and connection health for the API.
 type Status struct {
 	Started       time.Time `json:"started"`

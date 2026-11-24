@@ -563,7 +563,7 @@ func (c *Config) Validate() error {
 		conns[cn.ID] = true
 		validateConnection(cn, add)
 	}
-	c.validateSubscriptionFallbacks(conns, add)
+	c.validateSubscriptionFallbacks(add)
 	for i, cn := range c.Connections {
 		where := fmt.Sprintf("connections[%d] %q", i, cn.ID)
 		switch {

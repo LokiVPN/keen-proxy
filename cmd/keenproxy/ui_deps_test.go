@@ -51,6 +51,44 @@ func (deviceSnapshotDaemon) Devices() []daemon.Device {
 	}}
 }
 
+func TestConnectionsAdapterUsesDaemonCatalogAndChecks(t *testing.T) {
+	const source, node, revision = "sample", "aabbccddeeff00112233445566778899", "displayed-revision"
+	d := &connectionCheckDaemon{}
+	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	form := url.Values{"rev": {revision}, "node": {node}}
+	r := httptest.NewRequest(http.MethodPost, "/connections/subscriptions/"+source+"/check", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther || d.check != [3]string{source, node, revision} {
+		t.Fatalf("check = HTTP %d, daemon arguments %v", w.Code, d.check)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fragments/connections/"+source, nil))
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, "Checking") || !strings.Contains(body, "Unsupported entries skipped: 1") ||
+		!strings.Contains(body, "Check all nodes") || strings.Contains(body, "private-probe-detail") {
+		t.Fatalf("fragment did not project the daemon's safe check state, HTTP %d", w.Code)
+	}
+}
+
+type connectionCheckDaemon struct {
+	managementDaemon
+	check [3]string
+}
+
+func (d *connectionCheckDaemon) CheckSubscriptionIfCurrent(source, node, revision string) error {
+	d.check = [3]string{source, node, revision}
+	return nil
+}
+
+func (d *connectionCheckDaemon) Subscriptions() []daemon.SubscriptionStatus {
+	return []daemon.SubscriptionStatus{{
+		ID: d.check[0], State: subscription.StateReady, Skipped: 1,
+		Nodes: []daemon.SubscriptionNodeStatus{{ID: d.check[1], Name: "North", Checking: true, CheckError: "private-probe-detail"}},
+	}}
+}
+
 func TestRoutingRulesProjection(t *testing.T) {
 	rules := compile.BuildProviderRules(&subscription.RoutingProfile{
 		RouteOrder: "block-direct-proxy", GlobalProxy: true,

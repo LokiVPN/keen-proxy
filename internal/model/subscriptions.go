@@ -65,12 +65,26 @@ func (c *Config) validateSubscriptions(add func(string, ...any)) {
 	}
 }
 
-// validateSubscriptionFallbacks runs once connection IDs are known. A reserve
-// is a manual connection or a built-in target, never another subscription.
-func (c *Config) validateSubscriptionFallbacks(conns map[string]bool, add func(string, ...any)) {
+// SubscriptionFallbackTargets returns the explicit reserve choices for a
+// subscription. A disabled manual connection still has its configured chain.
+func (c *Config) SubscriptionFallbackTargets() []string {
+	targets := make([]string, 0, len(c.Connections)+2)
+	for _, cn := range c.Connections {
+		if cn.ID != "" && cn.ID != TargetDirect && cn.ID != TargetBlock && !c.HasManagedTarget(cn.ID) {
+			targets = append(targets, cn.ID)
+		}
+	}
+	return append(targets, TargetDirect, TargetBlock)
+}
+
+func (c *Config) validateSubscriptionFallbacks(add func(string, ...any)) {
+	if len(c.Subscriptions) == 0 {
+		return
+	}
+	targets := c.SubscriptionFallbackTargets()
 	for i, source := range c.Subscriptions {
 		switch fb := source.Fallback; {
-		case fb == "" || fb == TargetDirect || fb == TargetBlock || conns[fb]:
+		case fb == "" || slices.Contains(targets, fb):
 		case c.HasManagedTarget(fb):
 			add("subscriptions[%d]: fallback cannot be a subscription target", i)
 		default:

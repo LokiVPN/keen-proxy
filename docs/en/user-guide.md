@@ -1,7 +1,7 @@
 # User guide
 
 !!! note "Server-rendered interface preview"
-    The panel opens [first-run setup](#first-run) on a fresh configuration. After setup, `/` opens the overview. Sections from **Configure a connection** onward describe the previous panel. Edit the [YAML file](getting-started.md#first-configuration) or use the loopback [control API](development.md#control-api) for the remaining settings.
+    The panel opens [first-run setup](#first-run) on a fresh configuration. After setup, `/` opens the overview. The Connections tab shows saved subscriptions and manual connections. For settings beyond this preview, edit the [YAML file](getting-started.md) or use the loopback [control API](development.md#control-api). Other sections of this guide still describe parts of the previous panel.
 
 The screenshots below are synthetic.
 
@@ -46,41 +46,33 @@ Changes apply as soon as you use the switch or select a connection. With JavaScr
 
 ## 2. Configure a connection
 
-Open **Connections**. Select a profile to inspect its settings and status. Choose **Add** to use the wizard: import a supported connection link/file or enter a supported protocol manually. Use a descriptive name and inspect the proposed protocol and endpoint before accepting.
+Open **Connections**. The **Manual connections** table shows each profile's protocol, latest check result, and configured [reserve chain](routing.md#fallback-chains). Use **On** to enable or disable a profile. Choose **Save** to apply the switches and subscription reserves, or **Cancel** to return to the saved settings. Router accounts with view access can read the tables with the controls disabled.
 
-The file picker accepts `.conf`, `.txt`, `.json`, and `.vpn` up to 2 MiB. For a sing-box file with multiple profiles, choose the outbound or endpoint to import. Router DNS and routes stay under KeenProxy control. In **Failover**, choose the immediate backup and review the inherited chain. Connection parameters stay hidden until you reveal them. See [how failover works](routing.md#fallback-chains).
-
-Changes enter the shared draft. Real credentials belong only in your local management session.
-
-Use the connection's **Enabled** switch to pause it without deleting its profile, credentials, or routing references. The switch changes the draft only; the running connection changes after **Apply**, and **Discard** restores the saved state. A disabled connection stays visible and editable, but its tunnel/client and availability checks do not run.
+Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Connection creation and details are pending in this preview. Use the [YAML configuration](getting-started.md) to add a profile or edit its parameters.
 
 Groups, devices, networks, and DNS settings keep their references to a disabled connection. Traffic follows its configured enabled fallback chain; with no enabled fallback it is blocked, not silently routed directly or passed to the next rule. An explicitly configured **Direct** fallback remains intentional. DNS keeps its separate strict/direct failure policy: disabling a connection must not create a direct DNS path in strict mode.
 
 Raw sing-box profiles keep their `detour` and selector references to the configured connection ID. When that connection is disabled, its runtime relay uses the same enabled fallback chain, or blocks if none is available; the saved raw profile is not rewritten.
 
-**Traffic by host** ranks the selected connection's destinations by received traffic since KeenProxy started. It shows the 10 busiest hosts first; when more match, choose **Show all** to load the full list. Search filters the ranking and keeps the chosen view; selecting another connection returns to the top 10. The table refreshes every 5 seconds.
-
-![Connection profiles and routing targets](../assets/screenshots/en-connections.png)
-
-![Connection creation wizard](../assets/screenshots/en-wizard.png)
-
 ### Native subscriptions { #native-subscriptions }
 
-Open **Connections → Subscriptions** and add a provider's HTTPS URL for an Xray share list. KeenProxy accepts plain text and Base64 lists up to 2 MiB and 256 distinct nodes. For a provider that requires a specific client, use its explicit Xray share-list URL or enable the KeenProxy client in the provider settings. **Preview** displays the supported nodes, skipped entries, provider message, usage, and expiry when available. Enable **Send HWID** if your provider requires a device ID. KeenProxy derives a stable ID for that provider origin. A preview with this option can register the router with the provider.
+Set up or replace a subscription as described in [First run](#first-run). KeenProxy accepts HTTPS Xray share lists in plain text or Base64, up to 2 MiB and 256 distinct nodes. For a provider that requires a specific client, use its Xray share-list URL or enable KeenProxy in the provider settings.
 
-Save the source to the shared draft. Choose a target in a group or a full-tunnel device or network policy, then choose **Apply**.
+The subscription's section on **Connections** shows the catalog status and the latest HTTPS result for each node. Choose **Check** for one node or **Check all nodes** for the catalog. KeenProxy queues the checks and updates the results as they arrive. The successful duration includes connection setup. The probe uses the configured HTTPS check URL or its default endpoint and verifies the server certificate.
+
+Under **Reserve if none of the nodes respond**, choose a manual connection, **Direct — without VPN**, or **None — block VPN traffic**, then choose **Save**. A manual reserve follows its configured chain if its own tunnel is disabled. **No reserve configured** preserves an existing unset reserve.
+
+Choose a subscription target under **Main connection** on **Overview**.
 
 - A specific node stays fixed. The route blocks if the node disappears from the subscription, unless the subscription has a [reserve](routing.md#subscription-reserve), which then takes the traffic.
-- **Auto (on failure)** starts in provider order and switches after sustained failure of the active node. By default, checks run every 15 seconds and the failure window is 60 seconds. A working replacement stays selected when a preferred node recovers. The subscription shows the active node and the reason for the last switch.
-- **Round robin** cycles through eligible nodes for successive new connections.
-- **By site** assigns each site to the same eligible node across devices. It uses the registrable domain when available and the destination IP otherwise.
-- **By session** keeps the same eligible node for each device IP and site pair, up to 1,024 pairs per subscription. The assignment expires after 30 minutes of inactivity or when that node stops being eligible.
+- **Auto — switch nodes on failure** starts in provider order and switches after sustained failure of the active node. By default, checks run every 15 seconds and the failure window is 60 seconds. A working replacement stays selected when a preferred node recovers. **Connections** marks the active node.
+- **Balancing by rotation** cycles through eligible nodes for successive new connections.
+- **Balancing by site** assigns each site to the same eligible node across devices. It uses the registrable domain when available and the destination IP otherwise.
+- **Balancing by session** keeps the same eligible node for each device IP and site pair, up to 1,024 pairs per subscription. The assignment expires after 30 minutes of inactivity or when that node stops being eligible.
 
-The three balancing modes use nodes that passed their latest check and support the connection's transport. If no eligible node supports the transport, new connections are blocked, or go to the subscription's [reserve](routing.md#subscription-reserve) when one is set. When a balancing target is applied, the subscription shows how many nodes are eligible.
+The three balancing modes use nodes that passed their latest check and support the connection's transport. If no eligible node supports the transport, new connections use the subscription's [reserve](routing.md#subscription-reserve) when one is set, or are blocked.
 
-For a saved subscription, open **Supported nodes** and choose **Check** for one node, or choose **Check all** to check the full list. The panel shows progress and the last result, including the check time, HTTPS duration in milliseconds on success, or the reason for failure. Duration includes connection setup. KeenProxy uses the configured HTTPS probe URL or its default HTTPS endpoint and verifies the server certificate.
-
-Choose **Refresh saved source** to fetch the provider's latest list and metadata over HTTPS. If a fetch fails, the provider rejects the device, or the response contains no usable nodes, KeenProxy shows the status and retains its last validated list. Keep subscription URLs private. They are included in full YAML backups.
+Choose **Update now** on **Overview** to fetch the provider's latest list and metadata. If the fetch fails, KeenProxy retains its last validated list and reports the update status. Keep subscription URLs private. They are included in full YAML backups.
 
 ### AmneziaWG profiles (experimental lx build)
 
