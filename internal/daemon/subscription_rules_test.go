@@ -489,6 +489,15 @@ func TestProviderRulesStates(t *testing.T) {
 			p.routing = routingHeader(fmt.Sprintf(`{"Geositeurl": %q, "Geoipurl": %q, "ProxySites": ["geosite:video"], "DirectIp": ["geoip:direct"]}`,
 				p.URL+"/missing-geosite.dat", p.URL+"/missing-geoip.dat"))
 		}, ProviderRulesFailed, "geosite file could not be downloaded; geoip file could not be downloaded", false},
+		{"invalid geosite regexp and failed geoip", func(_ *model.Config, p *rulesProvider) {
+			domain := protowire.AppendTag(nil, 1, protowire.VarintType)
+			domain = protowire.AppendVarint(domain, 1) // regexp
+			domain = appendMessage(domain, 2, []byte("["))
+			category := appendMessage(appendMessage(nil, 1, []byte("VIDEO")), 2, domain)
+			p.files["/invalid-geosite.dat"] = appendMessage(nil, 1, category)
+			p.routing = routingHeader(fmt.Sprintf(`{"Geositeurl": %q, "Geoipurl": %q, "ProxySites": ["geosite:video"], "DirectIp": ["geoip:direct"]}`,
+				p.URL+"/invalid-geosite.dat", p.URL+"/missing-geoip.dat"))
+		}, ProviderRulesFailed, "geoip file could not be downloaded", false},
 		{"only unavailable category", func(_ *model.Config, p *rulesProvider) {
 			p.routing = routingHeader(`{"ProxySites": ["geosite:video"]}`)
 		}, ProviderRulesFailed, "No provider rules are available", false},

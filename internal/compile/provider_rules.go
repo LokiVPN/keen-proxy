@@ -15,9 +15,10 @@ import (
 )
 
 // ProviderRule is one switchable rule of a provider's routing profile: one
-// geosite:/geoip: category entry, or all literal entries of one list. An
-// unavailable rule keeps its key with empty lists and a fixed English reason.
-// Built rules are shared read-only values.
+// geosite:/geoip: category entry, or all literal entries of one list.
+// Unavailable gives a fixed English reason. The lists retain raw entries
+// so the compiler can count rejected entries and geo file reuse can use
+// the same data again. Built rules are shared read-only values.
 type ProviderRule struct {
 	Key         string   `json:"key"`    // <action>:<entry>, or <action>:literals:<kind>
 	Action      string   `json:"action"` // proxy, direct or block
@@ -59,14 +60,22 @@ const (
 	maxCategoryEntry = model.MaxProviderRuleKey - len(providerDirect+":")
 )
 
-// Fixed reasons of unavailable category rules.
+// Fixed reasons of unavailable provider rules.
 const (
-	providerMissing   = "not in the provider's data"
-	providerNoGeosite = "provider sent no geosite file"
-	providerNoGeoip   = "provider sent no geoip file"
-	providerNotLoaded = "provider data not loaded"
-	providerNoCountry = "not in the built-in country data"
+	providerMissing         = "not in the provider's data"
+	providerNoGeosite       = "provider sent no geosite file"
+	providerNoGeoip         = "provider sent no geoip file"
+	providerNotLoaded       = "provider data not loaded"
+	providerNoCountry       = "not in the built-in country data"
+	providerNoUsableEntries = "provider rule has no usable entries"
 )
+
+// HasData reports whether a rule holds evaluated entries. Rules whose
+// entries were all rejected still hold the data for compile diagnostics
+// and reuse of a downloaded geo file.
+func (r ProviderRule) HasData() bool {
+	return r.Unavailable == "" || r.Unavailable == providerNoUsableEntries
+}
 
 var providerLiteralLabels = map[string]string{
 	providerSite: "Other sites from the subscription",
@@ -127,7 +136,19 @@ func BuildProviderRules(p *subscription.RoutingProfile, sites map[string]geodata
 			b.add(list.action, list.kind, entry)
 		}
 	}
+	b.out.MarkUnusableRules()
 	return b.out
+}
+
+// MarkUnusableRules classifies rules that would produce no rule set. It runs
+// on newly built or decoded rules before they are published to readers.
+func (p *ProviderRules) MarkUnusableRules() {
+	for i := range p.Rules {
+		r := &p.Rules[i]
+		if r.Unavailable == "" && !r.hasUsableEntries() {
+			r.Unavailable = providerNoUsableEntries
+		}
+	}
 }
 
 // ProviderRuleRefs returns the geosite references and geoip tags that the
@@ -411,8 +432,9 @@ func providerProfile(c *model.Config, all map[string]ProviderRules) *ProviderRul
 	return &rules
 }
 
-// enabledProviderRules returns the rules of p that route traffic, in profile
-// order: available, not switched off and of a known action and kind.
+// enabledProviderRules returns rules with evaluated data in profile order.
+// The compiler also checks entries of enabled rules with no usable data to
+// report how many entries were rejected.
 func enabledProviderRules(c *model.Config, p *ProviderRules) []ProviderRule {
 	if p == nil {
 		return nil
@@ -421,7 +443,7 @@ func enabledProviderRules(c *model.Config, p *ProviderRules) []ProviderRule {
 	for _, r := range p.Rules {
 		known := (r.Kind == providerSite || r.Kind == providerIP) &&
 			(r.Action == providerProxy || r.Action == providerDirect || r.Action == providerBlock)
-		if known && r.Unavailable == "" && !slices.Contains(c.ProviderRules.Disabled, r.Key) {
+		if known && r.HasData() && !slices.Contains(c.ProviderRules.Disabled, r.Key) {
 			out = append(out, r)
 		}
 	}
@@ -534,6 +556,15 @@ func providerRuleSet(r ProviderRule) (raw []byte, dropped int) {
 	}
 	raw, _ = json.Marshal(obj{"version": 3, "rules": []obj{rule}})
 	return raw, dropped
+}
+
+// hasUsableEntries checks the same entry predicates as providerRuleSet
+// without allocating rule sets or traversing more entries than necessary.
+func (r ProviderRule) hasUsableEntries() bool {
+	if r.Kind == providerIP {
+		return slices.ContainsFunc(r.CIDR, nonEmpty)
+	}
+	return providerDNSNames(r) || slices.ContainsFunc(r.Keyword, nonEmpty) || slices.ContainsFunc(r.Regex, validRegex)
 }
 
 // usableEntries returns the entries valid accepts and how many it rejected.

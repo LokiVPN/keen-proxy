@@ -90,6 +90,9 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 			nodes, skipped := supportedSubscriptionNodes(ctx, snapshot.Nodes)
 			if len(nodes) > 0 {
 				snapshot.Nodes, snapshot.Skipped = nodes, snapshot.Skipped+skipped
+				if snapshot.Rules != nil && snapshot.Rules.Built != nil {
+					snapshot.Rules.Built.MarkUnusableRules()
+				}
 				state.snapshot = snapshot
 				state.recordAttempt(subscriptionAttempt{at: snapshot.LastSuccess, result: subscription.Result{
 					State: subscription.StateReady,
