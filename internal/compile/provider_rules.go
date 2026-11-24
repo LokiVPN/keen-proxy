@@ -52,6 +52,11 @@ const (
 
 	maxUnsupported      = 50
 	maxUnsupportedBytes = 128
+
+	// maxCategoryEntry bounds category entries: their rule key is the action
+	// and the entry, which provider_rules.disabled must hold, so a longer
+	// entry would make a rule that could never be switched off.
+	maxCategoryEntry = model.MaxProviderRuleKey - len(providerDirect+":")
 )
 
 // Fixed reasons of unavailable category rules.
@@ -178,7 +183,7 @@ const (
 func parseProviderEntry(kind, entry string) (entryClass, string) {
 	if kind == providerIP {
 		if tag, ok := strings.CutPrefix(entry, "geoip:"); ok {
-			return providerCategory(tag, tag)
+			return providerCategory(entry, tag, tag)
 		}
 		if prefix, ok := literalPrefix(entry); ok {
 			return entryCIDR, prefix
@@ -192,7 +197,7 @@ func parseProviderEntry(kind, entry string) (entryClass, string) {
 	switch prefix {
 	case "geosite":
 		name, _, _ := strings.Cut(value, "@")
-		return providerCategory(name, value)
+		return providerCategory(entry, name, value)
 	case "domain":
 		return providerLiteral(entrySuffix, strings.ToLower(value))
 	case "full":
@@ -210,9 +215,11 @@ func parseProviderEntry(kind, entry string) (entryClass, string) {
 	return entryKeyword, entry // plain text containing a colon
 }
 
-func providerCategory(name, ref string) (entryClass, string) {
+// providerCategory classifies the category entry entry naming category
+// name with reference ref.
+func providerCategory(entry, name, ref string) (entryClass, string) {
 	switch {
-	case name == "" || strings.HasPrefix(name, "!"):
+	case name == "" || strings.HasPrefix(name, "!") || len(entry) > maxCategoryEntry:
 		return entryUnsupported, ""
 	case strings.EqualFold(name, "private"):
 		return entryPrivate, ""

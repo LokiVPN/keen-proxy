@@ -77,10 +77,11 @@ type ProviderRulesSettings struct {
 	Disabled []string `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 }
 
-// Bounds for provider_rules.disabled.
+// Bounds for provider_rules.disabled. Compile keeps provider rule keys
+// within MaxProviderRuleKey bytes, so every rule can be switched off.
 const (
 	maxDisabledProviderRules = 1024
-	maxProviderRuleKey       = 256
+	MaxProviderRuleKey       = 256
 )
 
 func (c *Config) validateProviderRules(add func(string, ...any)) {
@@ -96,8 +97,8 @@ func (c *Config) validateProviderRules(add func(string, ...any)) {
 		return
 	}
 	for i, key := range r.Disabled {
-		if key == "" || len(key) > maxProviderRuleKey {
-			add("provider_rules.disabled[%d]: a key must have 1 to %d bytes", i, maxProviderRuleKey)
+		if key == "" || len(key) > MaxProviderRuleKey {
+			add("provider_rules.disabled[%d]: a key must have 1 to %d bytes", i, MaxProviderRuleKey)
 		}
 	}
 }

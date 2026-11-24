@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ordo-systems/keen-proxy/internal/geodata"
+	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
@@ -161,6 +162,38 @@ func TestBuildProviderRulesBoundsUnsupportedEntries(t *testing.T) {
 		if len(entry) > 128 || !utf8.ValidString(entry) {
 			t.Fatalf("unbounded unsupported entry %q", entry)
 		}
+	}
+}
+
+// Every rule the builder makes can be switched off: provider_rules.disabled
+// accepts its key. A category entry too long for that is unsupported, and
+// no reference, so no download, depends on it.
+func TestProviderRuleKeysFitTheDisabledList(t *testing.T) {
+	p := &subscription.RoutingProfile{RouteOrder: "block-direct-proxy",
+		GeositeURL: "https://cdn.example/geosite.dat", GeoipURL: "https://cdn.example/geoip.dat"}
+	sites, ips := map[string]geodata.Sites{}, map[string][]netip.Prefix{}
+	for n := 240; n <= 260; n++ {
+		site, tag := strings.Repeat("s", n-len("geosite:")), strings.Repeat("i", n-len("geoip:"))
+		p.DirectSites = append(p.DirectSites, "geosite:"+site)
+		p.BlockIP = append(p.BlockIP, "geoip:"+tag)
+		sites[site] = geodata.Sites{Suffix: []string{"x.example"}}
+		ips[tag] = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
+	}
+	got := BuildProviderRules(p, sites, ips, nil)
+	// The lengths span the limit: some entries make rules, others are
+	// listed as unsupported (truncated, so the long ones collapse).
+	if len(got.Rules) == 0 || len(got.Rules) == len(p.DirectSites)+len(p.BlockIP) || len(got.Unsupported) == 0 {
+		t.Fatalf("%d rules and %d unsupported entries", len(got.Rules), len(got.Unsupported))
+	}
+	for _, r := range got.Rules {
+		raw := fmt.Sprintf("subscriptions:\n  - {id: prov, url: \"https://provider.example/s\"}\nprovider_rules: {source: prov, disabled: [%q]}\n", r.Key)
+		if _, err := model.Parse([]byte(raw)); err != nil {
+			t.Errorf("a rule with a %d-byte key cannot be switched off: %v", len(r.Key), err)
+		}
+	}
+	refSites, refIPs := ProviderRuleRefs(p)
+	if len(refSites)+len(refIPs) != len(got.Rules) {
+		t.Errorf("%d references for %d rules", len(refSites)+len(refIPs), len(got.Rules))
 	}
 }
 
