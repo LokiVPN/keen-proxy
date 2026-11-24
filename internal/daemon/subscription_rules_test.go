@@ -702,3 +702,39 @@ func TestProviderRulesRefreshRewritesRuleSets(t *testing.T) {
 		t.Fatalf("updated rule set %q, want %q", got, video)
 	}
 }
+
+// A daemon started from a reset v0.10 configuration has provider_rules set and
+// a snapshot without rules: the worker evaluates them on its first pass instead
+// of waiting for the subscription's refresh interval.
+func TestProviderRulesEvaluatedOnTheFirstWorkerPassAfterStartup(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	settings := cfg.ProviderRules
+	cfg.ProviderRules = nil
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	d.shutdown()
+
+	opt := d.opt
+	opt.Config = cfg.Clone()
+	opt.Config.ProviderRules = settings
+	reopened := New(opt)
+	t.Cleanup(reopened.shutdown)
+	reopened.subscriptions.fetcher = d.subscriptions.fetcher
+	if _, err := reopened.startLocked(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := reopened.ProviderRules(); ok {
+		t.Fatal("rules existed before the worker ran")
+	}
+	runSubscriptionTestWorker(t, reopened)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if _, _, ok := reopened.ProviderRules(); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rules were not evaluated on the first worker pass (geosite requests: %d)", p.count("/geosite.dat"))
+		}
+	}
+	requireAppliedProviderRules(t, reopened)
+}

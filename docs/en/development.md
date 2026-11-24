@@ -290,7 +290,12 @@ New configurations are written with `schema_version: 2`.
   backed up.
 - A schema 1 or unreadable file that no longer loads is reset in memory at
   startup: `api.listen`, `lan` and the first valid subscription are kept, and
-  everything else starts from defaults. Startup does not change the file. The
+  everything else starts from defaults. When a subscription is kept and the
+  `lan.interface` has a private IPv4 address, the reset also adds the `Home`
+  network for that subnet: split mode, target `subscription:<id>:auto`,
+  `default: profile`, with `provider_rules` on for the kept subscription
+  (`Config.RouteHomeThroughSubscription`, shared with the first-run setup).
+  Without such an address no network is created. Startup does not change the file. The
   first save copies it byte for byte to `config.v1.yaml` (unless it holds only
   installer starter settings) and then writes schema 2, so an older release can still read its file if the update is
   rolled back before any save, and every restart until then computes the same

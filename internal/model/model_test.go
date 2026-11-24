@@ -2,9 +2,12 @@ package model
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 const validYAML = `
@@ -278,5 +281,26 @@ func TestProviderRulesValidation(t *testing.T) {
 	}
 	if c, err := Parse([]byte(base)); err != nil || c.ProviderRules != nil {
 		t.Fatalf("provider rules must default to off: %+v, %v", c.ProviderRules, err)
+	}
+}
+
+func TestRouteHomeThroughSubscription(t *testing.T) {
+	cfg, err := Parse([]byte(validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Subscriptions = []subscription.Source{{ID: "prov", URL: "https://provider.example/s/x"}}
+	cfg.Networks = []Network{{Name: "Old", CIDR: "10.9.0.0/16", Mode: ModeFull, Target: "fi"}}
+	cfg.ProviderRules = &ProviderRulesSettings{Source: "other", Disabled: []string{"x"}}
+	cfg.RouteHomeThroughSubscription("prov", netip.MustParsePrefix("192.168.7.1/24"))
+	want := []Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: ModeSplit, Target: "subscription:prov:auto", Default: DefaultProfile}}
+	if !slices.Equal(cfg.Networks, want) {
+		t.Fatalf("networks = %+v, want %+v", cfg.Networks, want)
+	}
+	if cfg.ProviderRules == nil || cfg.ProviderRules.Source != "prov" || len(cfg.ProviderRules.Disabled) != 0 {
+		t.Fatalf("provider rules = %+v", cfg.ProviderRules)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("result is invalid: %v", err)
 	}
 }

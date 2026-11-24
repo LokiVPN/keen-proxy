@@ -73,6 +73,48 @@ func lanAddress(iface string, lookup ifaceLookup) (netip.Addr, error) {
 	return netip.Addr{}, fmt.Errorf("lan interface %s: no private IPv4 address", iface)
 }
 
+// prefixLookup returns the address prefixes configured on a local interface.
+type prefixLookup func(name string) ([]netip.Prefix, error)
+
+// lanPrefixes is the LAN prefix source for resets; tests replace it.
+var lanPrefixes prefixLookup = interfacePrefixes
+
+// lanPrefix returns the subnet of the LAN interface's first private IPv4
+// address, the same address lanAddress selects.
+func lanPrefix(iface string, lookup prefixLookup) (netip.Prefix, error) {
+	prefixes, err := lookup(iface)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("lan interface %s: %w", iface, err)
+	}
+	for _, prefix := range prefixes {
+		if addr := prefix.Addr(); addr.Is4() && addr.IsPrivate() {
+			return prefix, nil
+		}
+	}
+	return netip.Prefix{}, fmt.Errorf("lan interface %s: no private IPv4 address", iface)
+}
+
+func interfacePrefixes(name string) ([]netip.Prefix, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := iface.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]netip.Prefix, 0, len(raw))
+	for _, addr := range raw {
+		if ipnet, ok := addr.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(ipnet.IP); ok {
+				ones, _ := ipnet.Mask.Size()
+				out = append(out, netip.PrefixFrom(ip.Unmap(), ones))
+			}
+		}
+	}
+	return out, nil
+}
+
 func explicitURL(listen string, ap netip.AddrPort) (string, error) {
 	if ap.Addr().Zone() == "" {
 		raw := "http://" + listen

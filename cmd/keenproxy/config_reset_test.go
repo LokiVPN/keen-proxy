@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/devices"
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -510,4 +512,96 @@ func TestBrokenSchema2LogHasNoLoadError(t *testing.T) {
 		t.Fatalf("dry run: code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	assertDirNames(t, dryRun)
+}
+
+// useLANPrefixes replaces the LAN interface lookup for one test.
+func useLANPrefixes(t *testing.T, lookup prefixLookup) {
+	t.Helper()
+	previous := lanPrefixes
+	lanPrefixes = lookup
+	t.Cleanup(func() { lanPrefixes = previous })
+}
+
+// A reset v0.10 file with a subscription and a LAN prefix compiles into split
+// routing through the subscription: LAN sources are intercepted and traffic
+// that matches no rule follows the provider profile.
+func TestResetRoutesLANThroughSubscription(t *testing.T) {
+	var asked string
+	useLANPrefixes(t, func(name string) ([]netip.Prefix, error) {
+		asked = name
+		return []netip.Prefix{netip.MustParsePrefix("fe80::1/64"), netip.MustParsePrefix("203.0.113.5/24"), netip.MustParsePrefix("192.168.7.1/24")}, nil
+	})
+	_, path := writeConfigFile(t, v010Config)
+	log, logs := bufferLog()
+	cfg, err := startupConfig(path, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked != "br1" {
+		t.Fatalf("looked up interface %q, want the LAN interface br1", asked)
+	}
+	want := []model.Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit, Target: "subscription:lokivpn:auto", Default: model.DefaultProfile}}
+	if !slices.Equal(cfg.Networks, want) || cfg.ProviderRules == nil || cfg.ProviderRules.Source != "lokivpn" {
+		t.Fatalf("networks %+v, provider rules %+v", cfg.Networks, cfg.ProviderRules)
+	}
+	if strings.Contains(logs.String(), "192.168.7") {
+		t.Fatalf("reset log disclosed the LAN prefix: %s", logs)
+	}
+
+	node := subscription.Node{ID: strings.Repeat("a", 32), Name: "Node", Link: "socks5://203.0.113.2:1080"}
+	for _, global := range []bool{true, false} {
+		out, err := compile.Compile(compile.Input{
+			Config:        cfg,
+			RuleSetDir:    t.TempDir(),
+			Subscriptions: map[string][]subscription.Node{"lokivpn": {node}},
+			ProviderRules: map[string]compile.ProviderRules{"lokivpn": {Name: "Test", RouteOrder: "block-direct-proxy", GlobalProxy: global}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sb struct {
+			Route struct {
+				Rules []map[string]any `json:"rules"`
+			} `json:"route"`
+		}
+		if err := json.Unmarshal(out.SingBox, &sb); err != nil {
+			t.Fatal(err)
+		}
+		final := ""
+		for _, rule := range sb.Route.Rules {
+			if src, _ := rule["source_ip_cidr"].([]any); len(src) == 1 && src[0] == "192.168.7.0/24" {
+				final, _ = rule["outbound"].(string)
+			}
+		}
+		wantFinal := "direct"
+		if global {
+			wantFinal = "subscription:lokivpn:auto"
+		}
+		if final != wantFinal {
+			t.Errorf("GlobalProxy %t: LAN default goes to %q, want %q\n%s", global, final, wantFinal, out.SingBox)
+		}
+	}
+}
+
+// Without a usable LAN prefix the reset keeps no network, as before, and the
+// lookup failure is not a startup error.
+func TestResetWithoutLANPrefixKeepsNoNetwork(t *testing.T) {
+	for name, lookup := range map[string]prefixLookup{
+		"lookup fails": func(string) ([]netip.Prefix, error) { return nil, errors.New("no such interface") },
+		"no private IPv4": func(string) ([]netip.Prefix, error) {
+			return []netip.Prefix{netip.MustParsePrefix("203.0.113.5/24")}, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			useLANPrefixes(t, lookup)
+			_, path := writeConfigFile(t, v010Config)
+			cfg, err := startupConfig(path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Networks) != 0 || cfg.ProviderRules != nil || len(cfg.Subscriptions) != 1 {
+				t.Fatalf("networks %+v, provider rules %+v, subscriptions %+v", cfg.Networks, cfg.ProviderRules, cfg.Subscriptions)
+			}
+		})
+	}
 }

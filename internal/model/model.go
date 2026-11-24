@@ -345,6 +345,24 @@ type Network struct {
 	Default string `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
+// RouteHomeThroughSubscription replaces the networks with one split network,
+// Home, that covers the LAN prefix and routes through the subscription: its
+// provider rules, then the provider profile default (DefaultProfile),
+// both tunnelling to the subscription's auto target. It also turns on provider
+// rules for that subscription, dropping any earlier settings. The reset after
+// an upgrade and the first-run setup share it. The caller supplies a configured
+// subscription ID and a LAN prefix; Validate checks the result.
+func (c *Config) RouteHomeThroughSubscription(id string, lan netip.Prefix) {
+	c.Networks = []Network{{
+		Name:    "Home",
+		CIDR:    lan.Masked().String(),
+		Mode:    ModeSplit,
+		Target:  "subscription:" + id + ":auto",
+		Default: DefaultProfile,
+	}}
+	c.ProviderRules = &ProviderRulesSettings{Source: id}
+}
+
 // Client identifies a device by MAC and optionally overrides its network policy.
 type Client struct {
 	Name   string `yaml:"name" json:"name"`

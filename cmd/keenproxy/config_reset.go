@@ -21,7 +21,9 @@ const resetReason = "an older or unreadable configuration does not load in this 
 // release cannot load, such as a v0.10 file with removed sections, is reset to
 // defaults that keep only the API address, the LAN section and the first valid
 // subscription, so an unattended upgrade keeps the VPN subscription; reset
-// reports that case. A schema 2 file that does not load returns the load
+// reports that case. When the kept subscription and a private IPv4 prefix of
+// the LAN interface exist, the home LAN routes through the subscription with
+// its provider rules (model.Config.RouteHomeThroughSubscription). A schema 2 file that does not load returns the load
 // error, and a file that cannot be read returns the read error, as model.Load
 // does.
 //
@@ -51,6 +53,9 @@ func startupConfig(path string, log *slog.Logger) (*model.Config, error) {
 	cfg, reset, err := loadOrReset(path)
 	if err == nil && reset {
 		logReset(log, "configuration reset after upgrade; the first save keeps the file for older releases unless it holds only installer starter settings", cfg)
+		if len(cfg.Subscriptions) > 0 && len(cfg.Networks) == 0 {
+			log.Warn("no home network created: the LAN interface has no private IPv4 address; add a network to route traffic")
+		}
 	}
 	return cfg, err
 }
@@ -87,5 +92,12 @@ func resetConfig(raw []byte) *model.Config {
 		}
 	}
 	cfg.Defaults()
+	// A failed lookup leaves the reset without a network: nothing is routed
+	// until the user adds one.
+	if len(cfg.Subscriptions) > 0 {
+		if lan, err := lanPrefix(cfg.LAN.Interface, lanPrefixes); err == nil {
+			cfg.RouteHomeThroughSubscription(cfg.Subscriptions[0].ID, lan)
+		}
+	}
 	return cfg
 }
