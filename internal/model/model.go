@@ -336,7 +336,8 @@ type Network struct {
 	CIDR string `yaml:"cidr" json:"cidr"`
 	Mode Mode   `yaml:"mode" json:"mode"`
 	// Target tunnels full mode; in split mode it receives provider proxy rules
-	// and the profile default. Clients without their own target inherit it.
+	// and the profile default, so it is required for them. Clients without
+	// their own target inherit it.
 	Target string `yaml:"target,omitempty" json:"target,omitempty"`
 	// Default routes split traffic that matches no rule: empty or direct goes
 	// direct, a connection or managed target tunnels it, and profile follows
@@ -598,11 +599,17 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	// Provider proxy rules and the profile default go to the policy target;
+	// without one they would go direct without saying so.
+	const splitNeedsTarget = "split mode needs a target while provider_rules is set"
+	var prefixes []netip.Prefix // of c.Networks, invalid ones as the zero prefix
 	for i, n := range c.Networks {
 		where := fmt.Sprintf("networks[%d] %q", i, n.Name)
-		if _, err := netip.ParsePrefix(n.CIDR); err != nil {
+		prefix, err := netip.ParsePrefix(n.CIDR)
+		if err != nil {
 			add("%s: cidr: %v", where, err)
 		}
+		prefixes = append(prefixes, prefix.Masked())
 		validateMode(where, n.Mode, false, add)
 		target(where, n.Target, n.Mode != ModeFull)
 		if n.Target == TargetBlock {
@@ -613,6 +620,12 @@ func (c *Config) Validate() error {
 		}
 		if n.Default == TargetBlock {
 			add("%s: default cannot be block; add a block group instead", where)
+		}
+		if n.Default == DefaultProfile && n.Target == "" {
+			add("%s: default profile needs a target", where)
+		}
+		if n.Mode == ModeSplit && n.Target == "" && c.ProviderRules != nil {
+			add("%s: %s", where, splitNeedsTarget)
 		}
 	}
 	macs := map[string]bool{}
@@ -635,6 +648,15 @@ func (c *Config) Validate() error {
 		target(where, cl.Target, true)
 		if cl.Target == TargetBlock {
 			add("%s: target block is not supported for devices", where)
+		}
+		// A split device without a target takes the target of the first
+		// network holding its address, as routing does. A device known only
+		// by its MAC address gets that address at run time, so it cannot be
+		// checked here; the documentation asks for its own target.
+		if ip, err := netip.ParseAddr(cl.IP); err == nil && cl.Mode == ModeSplit && cl.Target == "" && c.ProviderRules != nil {
+			if i := slices.IndexFunc(prefixes, func(p netip.Prefix) bool { return p.Contains(ip) }); i < 0 || c.Networks[i].Target == "" {
+				add("%s: %s; its address is in no network with one", where, splitNeedsTarget)
+			}
 		}
 	}
 

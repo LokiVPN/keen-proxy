@@ -284,6 +284,49 @@ func TestProviderRulesValidation(t *testing.T) {
 	}
 }
 
+// Provider proxy rules and the profile default go to the policy's target, so
+// a split policy that uses them without one would send that traffic direct
+// without saying so. Validation rejects such configurations instead.
+func TestSplitPoliciesNeedATargetForProviderRules(t *testing.T) {
+	const head = `
+lan: {interface: br0}
+connections:
+  - {id: fi, type: link, link: "socks5://203.0.113.9:1080"}
+subscriptions:
+  - {id: lv, url: "https://provider.example/s"}
+`
+	const rules = "provider_rules: {source: lv}\n"
+	const network = "default profile needs a target"
+	const split = "split mode needs a target while provider_rules is set"
+	cases := []struct{ name, config, want string }{
+		{"profile default without a target", "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: profile}\n", network},
+		{"profile default on an off network without a target", "networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: off, default: profile}\n", network},
+		{"profile default with a target", "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi, default: profile}\n", ""},
+		{"provider rules and a split network without a target", rules + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split}\n", split},
+		{"provider rules and a split network with a target", rules + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi}\n", ""},
+		{"provider rules and an off network without a target", rules + "networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: off}\n", ""},
+		{"a split network without a target and without provider rules", "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split}\n", ""},
+		{"a static split device outside every network", rules + "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 10.9.0.5, mode: split}\n", split},
+		{"a static split device in an off network without a target", rules +
+			"networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: off}\nclients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 192.168.8.5, mode: split}\n", split},
+		{"a static split device with its own target", rules + "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 10.9.0.5, mode: split, target: fi}\n", ""},
+		{"a static split device in a network with a target", rules +
+			"networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: full, target: fi}\nclients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 192.168.8.5, mode: split}\n", ""},
+		// Its address is known only at run time, so the documentation asks
+		// for its own target instead.
+		{"a split device known by its MAC address", rules + "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", mode: split}\n", ""},
+		{"a static split device without provider rules", "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 10.9.0.5, mode: split}\n", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(head + tc.config))
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRouteHomeThroughSubscription(t *testing.T) {
 	cfg, err := Parse([]byte(validYAML))
 	if err != nil {

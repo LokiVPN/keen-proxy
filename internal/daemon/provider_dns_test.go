@@ -54,9 +54,10 @@ func dnsServer(d *Daemon) *dnsfront.Server {
 // lanDevice is a device of the split network withLAN adds, as host:port.
 const lanDevice = "192.168.77.10:5353"
 
-// withLAN adds the split network the DNS tests query from.
+// withLAN adds the split network the DNS tests query from. Provider rules
+// need its target.
 func withLAN(cfg *model.Config) {
-	cfg.Networks = append(cfg.Networks, model.Network{Name: "LAN", CIDR: "192.168.77.0/24", Mode: model.ModeSplit})
+	cfg.Networks = append(cfg.Networks, model.Network{Name: "LAN", CIDR: "192.168.77.0/24", Mode: model.ModeSplit, Target: "subscription:sample:auto"})
 }
 
 // resolveA asks srv for the A record of name as the device at client

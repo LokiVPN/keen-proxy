@@ -462,6 +462,8 @@ import json, sys
 c = json.load(open("/tmp/provider-baseline.json"))
 c["subscriptions"] = [{"id": "prov", "url": "https://198.51.100.2:8444/sub"}]
 c["provider_rules"] = {"source": "prov", "disabled": json.loads(sys.argv[1])}
+# Provider proxy rules go to the split network's target, which they require.
+c["networks"][0]["target"] = "ss"
 c["groups"].append({"name": "Provider exception", "target": "direct", "entries": ["keep.provads.test"]})
 c["clients"] = [{"name": "Full tunnel", "mac": "02:00:00:00:00:88", "ip": "192.168.77.11", "mode": "full", "target": "ss"}]
 print(json.dumps(c))

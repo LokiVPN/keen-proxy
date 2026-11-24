@@ -133,10 +133,13 @@ func TestDifferentDefaultsDoNotMerge(t *testing.T) {
 	hasLines(t, got, "192.168.7.0/24  → fi", "192.168.8.0/24,192.168.9.0/24  → direct")
 }
 
-// profile follows the network target, so a network without one stays direct.
-func TestProfileDefaultWithoutTargetStaysDirect(t *testing.T) {
-	out := compileDefault(t, "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: profile}\n")
-	hasLines(t, routeLines(t, out), "192.168.7.0/24  → direct")
+// profile follows the network target, so a network without one is rejected
+// rather than sending unmatched traffic direct without saying so.
+func TestProfileDefaultWithoutTargetIsRejected(t *testing.T) {
+	_, err := model.Parse([]byte(defaultHead + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: profile}\n"))
+	if err == nil || !strings.Contains(err.Error(), "default profile needs a target") {
+		t.Fatalf("err = %v", err)
+	}
 }
 
 func TestDefaultRejectsBlock(t *testing.T) {
