@@ -57,6 +57,9 @@ type SubscriptionStatus struct {
 	// RulesError tells why the latest provider-rules update of the configured
 	// source failed, as a fixed English message.
 	RulesError string `json:"rules_error,omitempty"`
+	// RulesState is the provider-rules state of the configured source, as
+	// ProviderRules reports it; empty for other sources.
+	RulesState ProviderRulesState `json:"rules_state,omitempty"`
 }
 
 // subscriptionRuntime separates downloads from the state committed under d.mu.
@@ -186,6 +189,9 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		}
 		if snapshot.Rules != nil {
 			status.RulesError = snapshot.Rules.Error
+		}
+		if source.ID == providerRulesSource(d.cfg) {
+			status.RulesState = snapshot.Rules.state()
 		}
 		if !snapshot.Selection.At.IsZero() {
 			status.LastSwitch = &snapshot.Selection.At

@@ -177,9 +177,9 @@ func providerRule(t *testing.T, rules compile.ProviderRules, key string) compile
 
 func requireAppliedProviderRules(t *testing.T, d *Daemon) compile.ProviderRules {
 	t.Helper()
-	rules, settings, ok := d.ProviderRules()
-	if !ok || settings == nil || settings.Source != "sample" || !slices.Equal(settings.Disabled, []string{"block:geosite:ads"}) {
-		t.Fatalf("provider rules unavailable: %v %+v", ok, settings)
+	rules, settings, state := d.ProviderRules()
+	if state != ProviderRulesReady || settings == nil || settings.Source != "sample" || !slices.Equal(settings.Disabled, []string{"block:geosite:ads"}) {
+		t.Fatalf("provider rules unavailable: %s %+v", state, settings)
 	}
 	if rules.Name != "Test rules" || rules.GlobalProxy || rules.RouteOrder != "block-direct-proxy" {
 		t.Fatalf("profile settings were not copied: %+v", rules)
@@ -230,8 +230,8 @@ func TestProviderRulesAppliedAndRestoredWithoutProvider(t *testing.T) {
 	if _, err := reopened.startLocked(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	restored, _, ok := reopened.ProviderRules()
-	if !ok || !reflect.DeepEqual(restored, rules) {
+	restored, _, state := reopened.ProviderRules()
+	if state != ProviderRulesReady || !reflect.DeepEqual(restored, rules) {
 		t.Fatalf("rules did not survive a restart:\n got %+v\nwant %+v", restored, rules)
 	}
 }
@@ -244,8 +244,8 @@ func TestProviderRulesPreviewDownloadsNothingAndRefreshReusesDatFiles(t *testing
 	if n := p.count("/geosite.dat") + p.count("/geoip.dat"); n != 0 {
 		t.Fatalf("preview downloaded %d dat files", n)
 	}
-	if _, _, ok := d.ProviderRules(); ok {
-		t.Fatal("preview produced provider rules")
+	if _, _, state := d.ProviderRules(); state != ProviderRulesOff {
+		t.Fatalf("preview produced provider rules: %s", state)
 	}
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
@@ -260,7 +260,7 @@ func TestProviderRulesPreviewDownloadsNothingAndRefreshReusesDatFiles(t *testing
 	if p.count("/sub") != 2 || p.count("/geosite.dat") != 1 || p.count("/geoip.dat") != 1 {
 		t.Fatalf("refresh requests: sub %d, geosite %d, geoip %d", p.count("/sub"), p.count("/geosite.dat"), p.count("/geoip.dat"))
 	}
-	if again, _, ok := d.ProviderRules(); !ok || !reflect.DeepEqual(again, rules) {
+	if again, _, state := d.ProviderRules(); state != ProviderRulesReady || !reflect.DeepEqual(again, rules) {
 		t.Fatalf("reused rules changed: %+v", again)
 	}
 
@@ -313,7 +313,8 @@ func TestProviderRulesKeepLastGoodRulesOnFailures(t *testing.T) {
 	} {
 		tc.change()
 		refreshProviderRules(t, d, func(got SubscriptionStatus) bool { return got.RulesError == tc.reason })
-		if rules, _, ok := d.ProviderRules(); !ok || !reflect.DeepEqual(rules, good) {
+		// The last good rules are complete, so they stay ready.
+		if rules, _, state := d.ProviderRules(); state != ProviderRulesReady || !reflect.DeepEqual(rules, good) {
 			t.Fatalf("%s: last good rules were not kept: %+v", tc.name, rules)
 		}
 	}
@@ -328,9 +329,9 @@ func TestProviderRulesFirstFailureLeavesAffectedRulesUnavailable(t *testing.T) {
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	rules, _, ok := d.ProviderRules()
-	if !ok {
-		t.Fatal("rules without a geosite file are unavailable")
+	rules, _, state := d.ProviderRules()
+	if state != ProviderRulesPartial {
+		t.Fatalf("rules without a geosite file: %s", state)
 	}
 	for _, key := range []string{"proxy:geosite:video", "block:geosite:ads"} {
 		if rule := providerRule(t, rules, key); rule.Unavailable != "geosite file could not be downloaded" || rule.Suffix != nil {
@@ -373,8 +374,52 @@ func TestProviderRulesDroppedWhenProviderWithholdsThem(t *testing.T) {
 	p.update(func(p *rulesProvider) { p.enable = "0" })
 	runSubscriptionTestWorker(t, d)
 	status := refreshProviderRules(t, d, func(got SubscriptionStatus) bool { return got.State == subscription.StateReady })
-	if _, settings, ok := d.ProviderRules(); ok || settings == nil || status.RulesError != "" {
-		t.Fatalf("withheld rules: ok %v, settings %+v, error %q", ok, settings, status.RulesError)
+	if rules, settings, state := d.ProviderRules(); state != ProviderRulesWithheld || rules.Rules != nil || settings == nil ||
+		status.RulesError != "" || status.RulesState != ProviderRulesWithheld {
+		t.Fatalf("withheld rules: state %s, settings %+v, status %+v", state, settings, status)
+	}
+}
+
+// The accessor and the configured source's status tell why rules are
+// missing: switched off, withheld by the provider or failed; ready and
+// partial rules come with the rules.
+func TestProviderRulesStates(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*model.Config, *rulesProvider)
+		want   ProviderRulesState
+		error  string
+	}{
+		{"off", func(c *model.Config, _ *rulesProvider) { c.ProviderRules = nil }, ProviderRulesOff, ""},
+		{"ready", nil, ProviderRulesReady, ""},
+		{"partial", func(_ *model.Config, p *rulesProvider) { delete(p.files, "/geoip.dat") }, ProviderRulesPartial, "geoip file could not be downloaded"},
+		{"no profile", func(_ *model.Config, p *rulesProvider) { p.routing = "" }, ProviderRulesWithheld, ""},
+		{"routing off", func(_ *model.Config, p *rulesProvider) { p.routing = "happ://routing/off" }, ProviderRulesWithheld, ""},
+		{"routing-enable", func(_ *model.Config, p *rulesProvider) { p.enable = "0" }, ProviderRulesWithheld, ""},
+		{"malformed profile", func(_ *model.Config, p *rulesProvider) { p.routing = "happ://routing/add/!!!" }, ProviderRulesFailed,
+			"The provider routing profile could not be read"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, cfg, p := newRulesTestDaemon(t)
+			if tc.change != nil {
+				p.update(func(p *rulesProvider) { tc.change(cfg, p) })
+			}
+			if err := d.Apply(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			rules, settings, state := d.ProviderRules()
+			status := d.Subscriptions()[0]
+			withRules := state == ProviderRulesReady || state == ProviderRulesPartial
+			statusState := tc.want
+			if tc.want == ProviderRulesOff {
+				statusState = "" // only the configured source reports rules
+			}
+			if state != tc.want || status.RulesState != statusState || status.RulesError != tc.error ||
+				(settings == nil) != (state == ProviderRulesOff) || (len(rules.Rules) != 0) != withRules {
+				t.Fatalf("state %s, settings %+v, %d rules, status state %q error %q",
+					state, settings, len(rules.Rules), status.RulesState, status.RulesError)
+			}
+		})
 	}
 }
 
@@ -385,8 +430,8 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, got, ok := d.ProviderRules(); ok || got != nil || p.count("/geosite.dat") != 0 {
-		t.Fatalf("rules without settings: ok %v, settings %+v", ok, got)
+	if _, got, state := d.ProviderRules(); state != ProviderRulesOff || got != nil || p.count("/geosite.dat") != 0 {
+		t.Fatalf("rules without settings: %s, settings %+v", state, got)
 	}
 
 	// Turning rules on for a running subscription does not wait for its schedule.
@@ -397,7 +442,7 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		if _, _, ok := d.ProviderRules(); ok {
+		if _, _, state := d.ProviderRules(); state == ProviderRulesReady {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -412,8 +457,8 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 	if err := d.Apply(t.Context(), off); err != nil {
 		t.Fatal(err)
 	}
-	if _, got, ok := d.ProviderRules(); ok || got != nil {
-		t.Fatalf("rules after turning them off: ok %v, settings %+v", ok, got)
+	if _, got, state := d.ProviderRules(); state != ProviderRulesOff || got != nil {
+		t.Fatalf("rules after turning them off: %s, settings %+v", state, got)
 	}
 	raw, err := os.ReadFile(d.subscriptionSnapshotPath(off))
 	if err != nil {
@@ -443,9 +488,9 @@ func TestProviderRulesApplyBoundsStalledGeoDownloads(t *testing.T) {
 	if waited := time.Since(started); waited > 5*time.Second {
 		t.Fatalf("Apply waited %v for a stalled geo file", waited)
 	}
-	rules, _, ok := d.ProviderRules()
-	if !ok {
-		t.Fatal("rules are unavailable")
+	rules, _, state := d.ProviderRules()
+	if state != ProviderRulesPartial {
+		t.Fatalf("rules with a stalled geo file: %s", state)
 	}
 	if rule := providerRule(t, rules, "direct:geoip:direct"); rule.Unavailable != "geoip file could not be downloaded" || rule.CIDR != nil {
 		t.Fatalf("rule of the stalled file = %+v", rule)
@@ -469,9 +514,9 @@ func TestProviderRulesApplyWithoutTimeLeavesGeoFilesToTheWorker(t *testing.T) {
 	if n := p.count("/geosite.dat") + p.count("/geoip.dat"); n != 0 {
 		t.Fatalf("Apply started %d geo downloads without time for them", n)
 	}
-	rules, _, ok := d.ProviderRules()
-	if !ok || providerRule(t, rules, "proxy:geosite:video").Unavailable == "" || providerRule(t, rules, "direct:literals:site").Unavailable != "" {
-		t.Fatalf("rules = %+v", rules)
+	rules, _, state := d.ProviderRules()
+	if state != ProviderRulesPartial || providerRule(t, rules, "proxy:geosite:video").Unavailable == "" || providerRule(t, rules, "direct:literals:site").Unavailable != "" {
+		t.Fatalf("rules = %s %+v", state, rules)
 	}
 }
 
@@ -724,12 +769,12 @@ func TestProviderRulesEvaluatedOnTheFirstWorkerPassAfterStartup(t *testing.T) {
 	if _, err := reopened.startLocked(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := reopened.ProviderRules(); ok {
-		t.Fatal("rules existed before the worker ran")
+	if _, _, state := reopened.ProviderRules(); state != ProviderRulesPending || reopened.Subscriptions()[0].RulesState != ProviderRulesPending {
+		t.Fatalf("rules before the worker ran: %s", state)
 	}
 	runSubscriptionTestWorker(t, reopened)
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		if _, _, ok := reopened.ProviderRules(); ok {
+		if _, _, state := reopened.ProviderRules(); state == ProviderRulesReady {
 			break
 		}
 		if time.Now().After(deadline) {

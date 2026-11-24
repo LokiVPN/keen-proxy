@@ -184,22 +184,61 @@ func syncProviderRules(cfg *model.Config, s *appliedSubscription) {
 	}
 }
 
-// ProviderRules returns the rules of the configured source and its settings.
-// ok is false when provider rules are off or none are available. The rules
-// share storage with the daemon and must not be modified.
-func (d *Daemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, bool) {
+// ProviderRulesState tells what the provider rules of the configured source
+// can do, so a page can tell rules that are still loading from rules the
+// provider does not offer or that failed.
+type ProviderRulesState string
+
+const (
+	// ProviderRulesOff: provider rules are not configured.
+	ProviderRulesOff ProviderRulesState = "off"
+	// ProviderRulesPending: configured, but not evaluated yet.
+	ProviderRulesPending ProviderRulesState = "pending"
+	// ProviderRulesWithheld: the provider sends no rules: no routing
+	// profile, happ://routing/off, or routing-enable withholds them.
+	ProviderRulesWithheld ProviderRulesState = "withheld"
+	// ProviderRulesReady: every rule is available.
+	ProviderRulesReady ProviderRulesState = "ready"
+	// ProviderRulesPartial: some rules are unavailable; each says why.
+	ProviderRulesPartial ProviderRulesState = "partial"
+	// ProviderRulesFailed: evaluation failed and no rules are available;
+	// the status's rules_error says why.
+	ProviderRulesFailed ProviderRulesState = "failed"
+)
+
+// state classifies the rules of the configured source. Last good rules kept
+// after a failed update stay ready or partial; their error is only reported.
+func (s *rulesSnapshot) state() ProviderRulesState {
+	switch {
+	case s == nil:
+		return ProviderRulesPending
+	case s.Built == nil && s.Error == "":
+		return ProviderRulesWithheld
+	case s.Built == nil:
+		return ProviderRulesFailed
+	case slices.ContainsFunc(s.Built.Rules, func(r compile.ProviderRule) bool { return r.Unavailable != "" }):
+		return ProviderRulesPartial
+	}
+	return ProviderRulesReady
+}
+
+// ProviderRules returns the rules of the configured source, its settings and
+// the rules' state. The rules are empty unless the state is ready or
+// partial; the settings are nil only when the state is off. The rules share
+// storage with the daemon and must not be modified.
+func (d *Daemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, ProviderRulesState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.cfg == nil || d.cfg.ProviderRules == nil {
-		return compile.ProviderRules{}, nil, false
+		return compile.ProviderRules{}, nil, ProviderRulesOff
 	}
 	settings := *d.cfg.ProviderRules
 	settings.Disabled = slices.Clone(settings.Disabled)
 	rules := d.subscriptions.states[settings.Source].snapshot.Rules
 	if rules == nil || rules.Built == nil {
-		return compile.ProviderRules{}, &settings, false
+		return compile.ProviderRules{}, &settings, rules.state()
 	}
-	return *rules.Built, &settings, true
+	return *rules.Built, &settings, rules.state()
 }
 
 // warnDroppedProviderEntries reports provider entries compile left out when
