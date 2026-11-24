@@ -6,7 +6,6 @@ import (
 	"maps"
 	"net"
 	"net/http"
-	"net/url"
 	"slices"
 	"time"
 
@@ -15,10 +14,11 @@ import (
 
 const devicesFormSize = 2 << 20
 
-// devicesDraft holds the modes of the exact rows submitted with the form.
-// Discovery can change without changing the applied config revision.
+// devicesDraft holds the edited switches and the effective modes originally
+// displayed by the form. Discovery changes independently of the revision.
 type devicesDraft struct {
-	Modes               map[string]model.Mode // ModeInherit keeps a skipped row untouched.
+	Modes, Displayed    map[string]model.Mode
+	Snapshot            string
 	Rows                []deviceRow
 	NewDevices, Blocked bool
 	Bulk                model.Mode
@@ -50,11 +50,12 @@ func (p pages) devicesPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	home := homeNetwork(cfg)
-	draft, ok := parseDevicesDraft(r.PostForm)
-	if !ok || (home == nil && draft.NewDevices) || !draft.prepareRows(cfg, home, p.deps.Devices()) {
+	draft, ok := p.parseDevicesDraft(r.PostForm)
+	if !ok || (home == nil && draft.NewDevices) {
 		p.renderDevices(w, r, http.StatusBadRequest, cfg, nil, "devices_invalid_form", "")
 		return
 	}
+	draft.prepareRows(cfg, home, p.deps.Devices())
 	if draft.Blocked {
 		p.renderDevices(w, r, http.StatusUnprocessableEntity, cfg, &draft, "devices_enable_unavailable", "")
 		return
@@ -73,9 +74,6 @@ func (p pages) devicesPost(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, mac := range slices.Sorted(maps.Keys(draft.Modes)) {
 		mode := draft.Modes[mac]
-		if mode == model.ModeInherit {
-			continue
-		}
 		if i, exists := clients[mac]; exists {
 			cfg.Clients[i].Mode = mode
 		} else {
@@ -85,77 +83,31 @@ func (p pages) devicesPost(w http.ResponseWriter, r *http.Request) {
 	p.applyDevices(w, r, cfg, &draft)
 }
 
-// parseDevicesDraft reads the submitted rows and treats unchecked, editable
-// switches as off. Kept rows remain visible after a bulk action skips them.
-func parseDevicesDraft(form url.Values) (devicesDraft, bool) {
-	newDevices, bulk := form["new"], form["bulk"]
-	if len(newDevices) > 1 || (len(newDevices) == 1 && newDevices[0] != "1") || len(bulk) > 1 {
-		return devicesDraft{}, false
-	}
-	draft := devicesDraft{
-		Modes: make(map[string]model.Mode, len(form["device"])+len(form["keep"])), NewDevices: len(newDevices) == 1,
-	}
-	if len(bulk) == 1 {
-		draft.Bulk = model.Mode(bulk[0])
-		if draft.Bulk != model.ModeSplit && draft.Bulk != model.ModeOff {
-			return devicesDraft{}, false
-		}
-	}
-	for field, mode := range map[string]model.Mode{"device": model.ModeOff, "keep": model.ModeInherit} {
-		for _, raw := range form[field] {
-			mac := deviceMAC(raw)
-			if _, exists := draft.Modes[mac]; mac == "" || exists {
-				return devicesDraft{}, false
-			}
-			draft.Modes[mac] = mode
-		}
-	}
-	for _, mode := range []model.Mode{model.ModeSplit, model.ModeFull} {
-		for _, raw := range form[string(mode)] {
-			mac := deviceMAC(raw)
-			if draft.Modes[mac] != model.ModeOff {
-				return devicesDraft{}, false
-			}
-			draft.Modes[mac] = mode
-		}
-	}
-	return draft, true
-}
-
-// prepareRows checks the current address for new split modes and the applied
-// policy for an untouched full switch, before any network or client edits.
-func (d *devicesDraft) prepareRows(cfg *model.Config, home *model.Network, discovered []DiscoveredDevice) bool {
+// prepareRows checks the current address only for an edit to split mode.
+// Every submitted row keeps an explicit mode, including bulk skips.
+func (d *devicesDraft) prepareRows(cfg *model.Config, home *model.Network, discovered []DiscoveredDevice) {
 	byMAC := deviceSnapshot(cfg, home, discovered)
-	homeChanged := home != nil && home.Mode != d.homeMode(home)
 	d.Rows = make([]deviceRow, 0, len(d.Modes))
 	for mac, mode := range d.Modes {
 		row, found := byMAC[mac]
 		if !found {
 			row = resolveDevicePolicy(deviceRow{MAC: mac}, cfg.Networks, home)
 		}
+		displayed := d.Displayed[mac]
+		blocked := row.EnableProblem != "" && displayed != model.ModeSplit
 		switch {
-		case d.Bulk == model.ModeSplit && row.EnableProblem != "":
-			mode = model.ModeInherit
+		case d.Bulk == model.ModeSplit && blocked:
 			d.Skipped++
 		case d.Bulk != model.ModeInherit:
 			mode = d.Bulk
-		case mode == model.ModeFull && row.Mode != model.ModeFull:
-			return false
-		case mode == model.ModeSplit && row.EnableProblem != "" && row.savedMode != model.ModeSplit:
-			mode = model.ModeInherit
-			d.Blocked = true
-		case mode == model.ModeInherit && homeChanged && row.inheritsHome && row.EnableProblem != "":
-			// Changing Home must not change the effective mode of a kept row.
-			d.Blocked = true
 		}
-		d.Modes[mac] = mode
-		row.Keep = mode == model.ModeInherit
-		if !row.Keep {
-			row.Mode = mode
+		if mode == model.ModeSplit && blocked {
+			mode = displayed
+			d.Blocked = d.Bulk == model.ModeInherit
 		}
+		d.Modes[mac], row.Mode = mode, mode
 		d.Rows = append(d.Rows, row)
 	}
-	return true
 }
 
 func (d *devicesDraft) homeMode(home *model.Network) model.Mode {

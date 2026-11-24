@@ -11,18 +11,16 @@ import (
 )
 
 type devicesPage struct {
-	Revision, Validation       string
-	Rows                       []deviceRow
-	HasHome, NewDevices, Draft bool
-	Skipped                    int
+	Revision, Validation, Snapshot string
+	Rows                           []deviceRow
+	HasHome, NewDevices, Draft     bool
+	Skipped                        int
 }
 
 type deviceRow struct {
 	MAC, Name, EnableProblem string
 	IP                       netip.Addr
 	Mode                     model.Mode
-	Keep, inheritsHome       bool
-	savedMode                model.Mode
 	clientTarget             string
 }
 
@@ -41,8 +39,10 @@ func (p pages) renderDevices(w http.ResponseWriter, r *http.Request, status int,
 		}
 		if draft != nil {
 			page.Rows, page.NewDevices, page.Skipped = draft.Rows, draft.NewDevices, draft.Skipped
+			page.Snapshot = draft.Snapshot
 		} else {
 			page.Rows = slices.Collect(maps.Values(deviceSnapshot(cfg, home, p.deps.Devices())))
+			page.Snapshot = p.deviceFormSnapshot(page.Revision, page.Rows)
 		}
 		slices.SortFunc(page.Rows, compareDevices)
 		data.Devices = page
@@ -65,7 +65,7 @@ func deviceSnapshot(cfg *model.Config, home *model.Network, discovered []Discove
 			continue
 		}
 		row := byMAC[mac]
-		row.MAC, row.savedMode, row.clientTarget = mac, client.Mode, client.Target
+		row.MAC, row.Mode, row.clientTarget = mac, client.Mode, client.Target
 		if strings.TrimSpace(client.Name) != "" {
 			row.Name = client.Name
 		}
@@ -82,12 +82,10 @@ func deviceSnapshot(cfg *model.Config, home *model.Network, discovered []Discove
 
 func resolveDevicePolicy(row deviceRow, networks []model.Network, home *model.Network) deviceRow {
 	network := deviceNetwork(row.IP, networks, home)
-	row.Mode = row.savedMode
 	if row.Mode == model.ModeInherit {
 		row.Mode = model.ModeOff
 		if network != nil {
 			row.Mode = network.Mode
-			row.inheritsHome = network == home
 		}
 	}
 	if row.clientTarget == "" && (network == nil || network.Target == "") {

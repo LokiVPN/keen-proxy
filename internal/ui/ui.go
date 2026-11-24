@@ -3,6 +3,7 @@ package ui
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"fmt"
@@ -32,14 +33,15 @@ type Options struct {
 }
 
 type pages struct {
-	deps        Deps
-	opts        Options
-	setupDrafts *setupDrafts
+	deps          Deps
+	opts          Options
+	setupDrafts   *setupDrafts
+	deviceFormKey string
 }
 
 // New builds the page handler for the central HTTP server to authorize.
 func New(deps Deps, opts Options) http.Handler {
-	p := pages{deps: deps, opts: opts, setupDrafts: &setupDrafts{}}
+	p := pages{deps: deps, opts: opts, setupDrafts: &setupDrafts{}, deviceFormKey: rand.Text()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.home)
 	mux.HandleFunc("POST /overview/pause", p.overviewPause)

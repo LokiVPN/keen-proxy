@@ -11,6 +11,7 @@
       <form method="post" action="/devices" data-guard{{if .Devices.Draft}} data-dirty{{end}}>
         <input type="hidden" name="rev" value="{{.Devices.Revision}}">
         <fieldset class="devices-fields"{{if .ViewOnly}} disabled{{end}}>
+          <input type="hidden" name="displayed" value="{{.Devices.Snapshot}}">
           {{if .Devices.Rows}}
           <div class="row-btns">
             <button class="linkbtn" type="submit" name="bulk" value="split" data-device-bulk>{{.Text.devices_enable_all}}</button>
@@ -23,7 +24,7 @@
             <tbody>
               {{range .Devices.Rows}}
               {{$name := .Name}}{{if not $name}}{{$name = $.Text.devices_unnamed}}{{end}}
-              <tr{{if or .EnableProblem .Keep}} data-device-constrained{{end}}>
+              <tr{{if .EnableProblem}} data-device-constrained{{end}}>
                 <td>
                   <span class="clip" title="{{$name}}">{{$name}}</span>
                   {{if not .Name}}<span class="device-detail muted small">MAC {{.MAC}}</span>{{end}}
@@ -33,9 +34,8 @@
                 </td>
                 <td class="c-ip">{{if .IP.IsValid}}{{.IP}}{{else}}<span class="muted">—</span>{{end}}</td>
                 <td class="c-tg">
-                  <input type="hidden" name="{{if .Keep}}keep{{else}}device{{end}}" value="{{.MAC}}">
                   <label class="tg">
-                    <input type="checkbox" role="switch" name="{{if eq .Mode "full"}}full{{else}}split{{end}}" value="{{.MAC}}"{{if ne .Mode "off"}} checked{{end}} aria-label="{{$name}}{{if not .Name}} ({{.MAC}}){{end}}"{{if .EnableProblem}} aria-describedby="device-note-{{.MAC}}"{{end}}{{if or .Keep (and .EnableProblem (eq .Mode "off"))}} disabled{{end}} data-device-switch>
+                    <input type="checkbox" role="switch" name="{{if eq .Mode "full"}}full{{else}}split{{end}}" value="{{.MAC}}"{{if ne .Mode "off"}} checked{{end}} aria-label="{{$name}}{{if not .Name}} ({{.MAC}}){{end}}"{{if .EnableProblem}} aria-describedby="device-note-{{.MAC}}"{{end}}{{if and .EnableProblem (eq .Mode "off")}} disabled{{end}} data-device-switch>
                     <span class="tg-track" aria-hidden="true"></span>
                   </label>
                 </td>
