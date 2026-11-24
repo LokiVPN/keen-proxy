@@ -189,9 +189,11 @@ See [Country rules](routing.md#country-rules) for an illustrated setup, country 
 
 ## 4. Choose devices and networks
 
-Open **Connections → Clients**. Network defaults apply to matching subnets; per-device entries let you select a policy for individual clients. **Split** uses selective rules, **Full** selects a default connection, and **Off** bypasses KeenProxy interception for that policy. Review both the device and network settings before Apply. When available, the device row also shows a discovered hostname and its DHCP/DNS source. A manually assigned name takes priority; searching matches either name. Discovery refreshes in the background and does not write names to configuration.
+Open **Devices**. The list includes devices discovered on the LAN and saved devices that are offline. A manually assigned name takes priority over a discovered name. You can identify an unnamed device by its MAC address.
 
-![Networks and individual client policies](../assets/screenshots/en-clients.png)
+Turn on **VPN** for a device to use the selected routing rules. Turn it off to bypass KeenProxy interception. **Enable for all** and **Disable for all** set the switches for every listed device. A device configured for a full tunnel keeps that mode until you edit its switch or use a bulk action.
+
+**New devices use the VPN right away** sets the default for the home network. When you select **Save**, KeenProxy records the displayed switches so listed devices keep their chosen states when the default changes. If validation rejects a change, read the error on the Devices page and correct the settings before saving again.
 
 ## 5. Review and Apply
 

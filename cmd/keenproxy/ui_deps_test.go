@@ -23,6 +23,34 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/ui"
 )
 
+func TestDevicesPageUsesDaemonDiscovery(t *testing.T) {
+	deps := uiDeps{daemon: deviceSnapshotDaemon{
+		cfg: &model.Config{Networks: []model.Network{{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeSplit}}},
+	}}
+	h := ui.New(deps, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/devices", nil))
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, "Published laptop") || !strings.Contains(body, "192.0.2.20") ||
+		!strings.Contains(body, `name="split" value="02:00:00:00:00:20" checked`) || strings.Contains(body, "Old config name") {
+		t.Fatalf("devices page did not use the daemon discovery snapshot, HTTP %d", w.Code)
+	}
+}
+
+type deviceSnapshotDaemon struct {
+	managementDaemon
+	cfg *model.Config
+}
+
+func (d deviceSnapshotDaemon) Config() *model.Config { return d.cfg.Clone() }
+
+func (deviceSnapshotDaemon) Devices() []daemon.Device {
+	return []daemon.Device{{
+		MAC: "02:00:00:00:00:20", IP: "192.0.2.20", Hostname: "Published laptop", HostnameSource: "dhcp",
+		Client: "Old config name", Mode: model.ModeOff,
+	}}
+}
+
 func TestRoutingRulesProjection(t *testing.T) {
 	rules := compile.BuildProviderRules(&subscription.RoutingProfile{
 		RouteOrder: "block-direct-proxy", GlobalProxy: true,

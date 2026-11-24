@@ -35,6 +35,7 @@ type pageData struct {
 	Setup                   *setupPage
 	Overview                *overviewPage
 	Routing                 *routingPage
+	Devices                 *devicesPage
 	Traffic                 trafficView
 }
 

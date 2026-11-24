@@ -18,10 +18,17 @@ type Deps interface {
 	Apply(ctx context.Context, cfg *model.Config, revision string) error
 	ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error
 	OverviewStatus() OverviewStatus
+	Devices() []DiscoveredDevice
 	Subscriptions() []AppliedSubscription
 	ProviderRules() RoutingRules
 	TrafficSeries() []stats.Point
 	RefreshSubscription(id, revision string) error
+}
+
+// DiscoveredDevice is an observation from the LAN snapshot. The applied
+// config supplies any manual name, static address, and routing policy.
+type DiscoveredDevice struct {
+	MAC, IP, Name string
 }
 
 // RoutingRules describes the applied provider profile for the routing page.

@@ -51,6 +51,8 @@ func New(deps Deps, opts Options) http.Handler {
 	mux.HandleFunc("POST /setup/enable", p.setupEnable)
 	mux.HandleFunc("GET /routing", p.routingGet)
 	mux.HandleFunc("POST /routing", p.routingPost)
+	mux.HandleFunc("GET /devices", p.devicesGet)
+	mux.HandleFunc("POST /devices", p.devicesPost)
 	mux.HandleFunc("GET /static/", serveAsset)
 	mux.HandleFunc("GET /", p.notFound)
 

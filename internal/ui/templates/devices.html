@@ -1,0 +1,70 @@
+{{define "devices"}}{{template "page-start" .}}
+      <h1>KeenProxy</h1>
+      {{template "tabs" .}}
+      {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
+      {{if .Message}}<div class="note" role="alert"><div>
+        {{.Message}}
+        {{with .Devices}}{{if .Validation}}<p class="devices-validation">{{.Validation}}</p>{{end}}{{end}}
+      </div></div>{{end}}
+      {{if .Devices}}
+      <p class="lead devices-intro">{{.Text.devices_intro}}</p>
+      <form method="post" action="/devices" data-guard{{if .Devices.Draft}} data-dirty{{end}}>
+        <input type="hidden" name="rev" value="{{.Devices.Revision}}">
+        <fieldset class="devices-fields"{{if .ViewOnly}} disabled{{end}}>
+          {{if .Devices.Rows}}
+          <div class="row-btns">
+            <button class="linkbtn" type="submit" name="bulk" value="split" data-device-bulk>{{.Text.devices_enable_all}}</button>
+            <span class="muted" aria-hidden="true">·</span>
+            <button class="linkbtn" type="submit" name="bulk" value="off" data-device-bulk>{{.Text.devices_disable_all}}</button>
+          </div>
+          <table class="tbl devices-table">
+            <thead><tr><th scope="col">{{.Text.devices_device}}</th><th scope="col" class="c-ip">{{.Text.devices_ip}}</th><th scope="col" class="c-tg">VPN</th></tr></thead>
+            <tbody>
+              {{range .Devices.Rows}}
+              {{$name := .Name}}{{if not $name}}{{$name = $.Text.devices_unnamed}}{{end}}
+              <tr>
+                <td>
+                  <span class="clip" title="{{$name}}">{{$name}}</span>
+                  {{if not .Name}}<span class="device-detail muted small">MAC {{.MAC}}</span>{{end}}
+                  {{if eq .Mode "full"}}<span class="device-detail muted small device-full-note">{{$.Text.devices_full}}</span>{{end}}
+                  {{if .IP.IsValid}}<span class="dev-ip muted small">{{.IP}}</span>{{end}}
+                </td>
+                <td class="c-ip">{{if .IP.IsValid}}{{.IP}}{{else}}<span class="muted">—</span>{{end}}</td>
+                <td class="c-tg">
+                  <input type="hidden" name="device" value="{{.MAC}}">
+                  <label class="tg">
+                    <input type="checkbox" role="switch" name="{{if eq .Mode "full"}}full{{else}}split{{end}}" value="{{.MAC}}"{{if ne .Mode "off"}} checked{{end}} aria-label="{{$name}}{{if not .Name}} ({{.MAC}}){{end}}" data-device-switch>
+                    <span class="tg-track" aria-hidden="true"></span>
+                  </label>
+                </td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+          {{else}}
+          <p class="note">{{.Text.overview_no_devices}}</p>
+          {{end}}
+
+          {{if .Devices.HasHome}}
+          <div class="devices-default">
+            <label class="tg">
+              <input type="checkbox" role="switch" name="new" value="1"{{if .Devices.NewDevices}} checked{{end}} aria-describedby="new-devices-hint">
+              <span class="tg-track" aria-hidden="true"></span><span class="tg-label">{{.Text.devices_new}}</span>
+            </label>
+            <p class="hint" id="new-devices-hint">{{.Text.devices_new_hint}}</p>
+          </div>
+          {{else}}
+          <p class="note">{{.Text.overview_no_home}}</p>
+          {{end}}
+          {{if or .Devices.HasHome .Devices.Rows}}
+          <div class="actions">
+            <button class="btn" type="submit">{{.Text.overview_save}}</button>
+            {{if not .ViewOnly}}<a class="btn soft" href="/devices">{{.Text.setup_cancel}}</a>{{end}}
+          </div>
+          {{end}}
+        </fieldset>
+      </form>
+      {{else}}
+      <p class="note">{{.Text.setup_unavailable}}</p>
+      {{end}}
+{{template "page-end" .}}{{end}}

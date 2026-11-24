@@ -7,8 +7,7 @@
     event.returnValue = "";
   }
 
-  function markDirty(event) {
-    const form = event.target.form;
+  function markDirty(form) {
     if (form?.matches("form[data-guard]")) {
       dirty.add(form);
       window.addEventListener("beforeunload", warnBeforeLeaving);
@@ -22,16 +21,32 @@
     }
   }
 
-  document.addEventListener("input", markDirty);
+  document.addEventListener("input", (event) => markDirty(event.target.form));
   document.addEventListener("change", (event) => {
-    markDirty(event);
     const control = event.target;
-    if (control.form && control.matches("[data-autosubmit]:enabled")) {
-      control.form.requestSubmit();
+    const form = control.form;
+    if (!form) return;
+    if (control.matches('[data-device-switch][name="full"]')) control.name = "split";
+    markDirty(form);
+    if (control.matches("[data-autosubmit]:enabled")) {
+      form.requestSubmit();
     }
   });
   document.addEventListener("reset", clearDirty);
-  document.addEventListener("submit", clearDirty);
+  document.addEventListener("submit", (event) => {
+    const button = event.submitter;
+    if (button?.matches("[data-device-bulk]")) {
+      event.preventDefault();
+      for (const control of event.target.querySelectorAll("[data-device-switch]")) {
+        control.name = "split";
+        control.checked = button.value === "split";
+      }
+      markDirty(event.target);
+      return;
+    }
+    clearDirty(event);
+  });
+  for (const form of document.querySelectorAll("form[data-guard][data-dirty]")) markDirty(form);
   document.documentElement.classList.add("js");
 
   async function refresh(fragment) {

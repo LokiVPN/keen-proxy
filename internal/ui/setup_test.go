@@ -487,6 +487,7 @@ type setupFixture struct {
 func (f *setupFixture) Config() *model.Config { return f.cfg.Clone() }
 
 func (*setupFixture) OverviewStatus() OverviewStatus       { return OverviewStatus{} }
+func (*setupFixture) Devices() []DiscoveredDevice          { return nil }
 func (*setupFixture) Subscriptions() []AppliedSubscription { return nil }
 func (*setupFixture) ProviderRules() RoutingRules          { return RoutingRules{} }
 func (*setupFixture) TrafficSeries() []stats.Point         { return nil }

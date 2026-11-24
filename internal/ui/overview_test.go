@@ -422,6 +422,7 @@ func TestOverviewRefreshAndConcurrentApply(t *testing.T) {
 func TestOverviewTrafficFragmentAndEmptyStates(t *testing.T) {
 	f := newOverviewFixture()
 	f.cfg.Subscriptions, f.cfg.ProviderRules, f.cfg.Networks, f.subs = nil, nil, nil, nil
+	f.cfg.Clients = nil
 	f.status = OverviewStatus{Ready: true}
 	h := New(f, setupTestOptions(RoleView))
 	w := setupRequest(h, "/", nil)
@@ -436,6 +437,9 @@ func TestOverviewTrafficFragmentAndEmptyStates(t *testing.T) {
 			t.Fatalf("linked tab %s returned HTTP %d", path, page.Code)
 		}
 		assertContains(t, page.Body.String(), `href="`+path+`" aria-current="page"`)
+		if path == "/devices" {
+			assertContains(t, page.Body.String(), "No home network configured", "No LAN devices detected")
+		}
 	}
 	now := time.Now().Add(-time.Second)
 	f.traffic = []stats.Point{{T: now.Add(-time.Minute).UnixMilli(), Down: 16e6, Up: 2e6}, {T: now.UnixMilli(), Down: 24.8e6, Up: 2.1e6}}

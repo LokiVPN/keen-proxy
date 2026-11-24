@@ -99,6 +99,15 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 	return status
 }
 
+func (d uiDeps) Devices() []ui.DiscoveredDevice {
+	observed := d.daemon.Devices()
+	list := make([]ui.DiscoveredDevice, 0, len(observed))
+	for _, dev := range observed {
+		list = append(list, ui.DiscoveredDevice{MAC: dev.MAC, IP: dev.IP, Name: dev.Hostname})
+	}
+	return list
+}
+
 func (d uiDeps) ProviderRules() ui.RoutingRules {
 	rules, settings, state := d.daemon.ProviderRules()
 	view := ui.RoutingRules{
