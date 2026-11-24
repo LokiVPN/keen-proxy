@@ -489,7 +489,7 @@ func TestProviderRulesStates(t *testing.T) {
 		{"all categories failed", func(_ *model.Config, p *rulesProvider) {
 			p.routing = routingHeader(fmt.Sprintf(`{"Geositeurl": %q, "Geoipurl": %q, "ProxySites": ["geosite:video"], "DirectIp": ["geoip:direct"]}`,
 				p.URL+"/missing-geosite.dat", p.URL+"/missing-geoip.dat"))
-		}, ProviderRulesFailed, "geosite file could not be downloaded; geoip file could not be downloaded", false},
+		}, ProviderRulesFailed, "geosite file could not be downloaded; geoip file could not be downloaded", true},
 		{"invalid geosite regexp and failed geoip", func(_ *model.Config, p *rulesProvider) {
 			domain := protowire.AppendTag(nil, 1, protowire.VarintType)
 			domain = protowire.AppendVarint(domain, 1) // regexp
@@ -498,10 +498,10 @@ func TestProviderRulesStates(t *testing.T) {
 			p.files["/invalid-geosite.dat"] = appendMessage(nil, 1, category)
 			p.routing = routingHeader(fmt.Sprintf(`{"Geositeurl": %q, "Geoipurl": %q, "ProxySites": ["geosite:video"], "DirectIp": ["geoip:direct"]}`,
 				p.URL+"/invalid-geosite.dat", p.URL+"/missing-geoip.dat"))
-		}, ProviderRulesFailed, "geoip file could not be downloaded", false},
+		}, ProviderRulesFailed, "geoip file could not be downloaded", true},
 		{"only unavailable category", func(_ *model.Config, p *rulesProvider) {
 			p.routing = routingHeader(`{"ProxySites": ["geosite:video"]}`)
-		}, ProviderRulesFailed, "No provider rules are available", false},
+		}, ProviderRulesFailed, "No provider rules are available", true},
 		{"empty profile", func(_ *model.Config, p *rulesProvider) { p.routing = routingHeader(`{}`) }, ProviderRulesReady, "", false},
 		{"no profile", func(_ *model.Config, p *rulesProvider) { p.routing = "" }, ProviderRulesWithheld, "", false},
 		{"routing off", func(_ *model.Config, p *rulesProvider) { p.routing = "happ://routing/off" }, ProviderRulesWithheld, "", false},
@@ -530,6 +530,13 @@ func TestProviderRulesStates(t *testing.T) {
 			}
 			if state == ProviderRulesOff && (p.count("/geosite.dat") != 0 || p.count("/geoip.dat") != 0) {
 				t.Fatal("the daemon fetched geodata while provider rules were off")
+			}
+			if state == ProviderRulesFailed {
+				for _, rule := range rules.Rules {
+					if rule.Unavailable == "" {
+						t.Errorf("failed rules reported an available key %q", rule.Key)
+					}
+				}
 			}
 		})
 	}

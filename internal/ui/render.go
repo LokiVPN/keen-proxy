@@ -34,6 +34,7 @@ type pageData struct {
 	Status                  int
 	Setup                   *setupPage
 	Overview                *overviewPage
+	Routing                 *routingPage
 	Traffic                 trafficView
 }
 

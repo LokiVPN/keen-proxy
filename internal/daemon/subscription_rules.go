@@ -239,9 +239,9 @@ func (s *rulesSnapshot) state() ProviderRulesState {
 }
 
 // ProviderRules returns the rules of the configured source, its settings and
-// the rules' state. The rules are empty unless the state is ready or
-// partial; the settings are nil only when the state is off. The rules share
-// storage with the daemon and must not be modified.
+// the rules' state. An evaluated profile can contain unavailable rules,
+// including when all rules failed. Settings are nil when the state is off.
+// The rules share storage with the daemon and must not be modified.
 func (d *Daemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, ProviderRulesState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -253,7 +253,7 @@ func (d *Daemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSet
 	settings.Disabled = slices.Clone(settings.Disabled)
 	rules := d.subscriptions.states[settings.Source].snapshot.Rules
 	state := rules.state()
-	if state != ProviderRulesReady && state != ProviderRulesPartial {
+	if rules == nil || rules.Built == nil {
 		return compile.ProviderRules{}, &settings, state
 	}
 	return *rules.Built, &settings, state

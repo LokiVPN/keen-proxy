@@ -488,6 +488,7 @@ func (f *setupFixture) Config() *model.Config { return f.cfg.Clone() }
 
 func (*setupFixture) OverviewStatus() OverviewStatus       { return OverviewStatus{} }
 func (*setupFixture) Subscriptions() []AppliedSubscription { return nil }
+func (*setupFixture) ProviderRules() RoutingRules          { return RoutingRules{} }
 func (*setupFixture) TrafficSeries() []stats.Point         { return nil }
 
 func (f *setupFixture) PreviewSubscription(_ context.Context, source subscription.Source) SetupPreview {

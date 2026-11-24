@@ -19,8 +19,23 @@ type Deps interface {
 	ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error
 	OverviewStatus() OverviewStatus
 	Subscriptions() []AppliedSubscription
+	ProviderRules() RoutingRules
 	TrafficSeries() []stats.Point
 	RefreshSubscription(id, revision string) error
+}
+
+// RoutingRules describes the applied provider profile for the routing page.
+// Large domain and address lists stay with the daemon.
+type RoutingRules struct {
+	Source, State           string
+	HasProfile, GlobalProxy bool
+	Rules                   []RoutingRule
+}
+
+// RoutingRule describes one switchable category or one list of literals.
+type RoutingRule struct {
+	Key, Action, Kind, Source, Unavailable string
+	LiteralCount                           int
 }
 
 // SetupPreview contains display data from a checked subscription.

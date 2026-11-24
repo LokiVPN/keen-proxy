@@ -1,0 +1,106 @@
+{{define "routing"}}{{template "page-start" .}}
+      <h1>KeenProxy</h1>
+      {{template "tabs" .}}
+      {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
+      {{if .Message}}<p class="note" role="alert">{{.Message}}</p>{{end}}
+      {{if .Routing.Unavailable}}
+      <p class="note">{{.Routing.Unavailable}}</p>
+      {{else}}
+      <p class="lead routing-intro">{{.Text.routing_intro}}</p>
+      {{if .Routing.CustomMode}}<p class="note">{{.Routing.CustomMode}}</p>{{end}}
+      <form class="routing-form" method="post" action="/routing" data-guard>
+        <input type="hidden" name="rev" value="{{.Routing.Revision}}">
+        <fieldset class="routing-fields"{{if .ViewOnly}} disabled{{end}}>
+          <fieldset class="routing-modes">
+            <legend class="sr">{{.Text.routing_mode}}</legend>
+            <label class="routing-radio">
+              <input type="radio" name="mode" value="provider" id="routing-mode-provider" required{{if eq .Routing.Mode "provider"}} checked{{end}}{{if not .Routing.CanProvider}} disabled{{end}}>
+              <span>
+                <span class="clip routing-radio-title" title="{{.Routing.ProviderMode}}">{{.Routing.ProviderMode}}</span>
+                <span class="muted small">{{if .Routing.CanProvider}}{{.Text.routing_provider_hint}}{{else if .Routing.CanAll}}{{.Text.routing_need_subscription}}{{else}}{{.Text.routing_need_main}}{{end}}</span>
+              </span>
+            </label>
+            <label class="routing-radio">
+              <input type="radio" name="mode" value="all" id="routing-mode-all" required{{if eq .Routing.Mode "all"}} checked{{end}}{{if not .Routing.CanAll}} disabled{{end}}>
+              <span>
+                <span class="routing-radio-title">{{.Text.overview_route_all}}</span>
+                <span class="muted small">{{if .Routing.CanAll}}{{.Text.routing_all_hint}}{{else}}{{.Text.routing_need_main}}{{end}}</span>
+              </span>
+            </label>
+            <label class="routing-radio">
+              <input type="radio" name="mode" value="own" id="routing-mode-own" required{{if eq .Routing.Mode "own"}} checked{{end}}>
+              <span>
+                <span class="routing-radio-title">{{.Text.overview_route_own}}</span>
+                <span class="muted small">{{.Text.routing_own_hint}}</span>
+              </span>
+            </label>
+          </fieldset>
+
+          <section class="routing-section routing-provider" aria-labelledby="routing-rules-title">
+            <div class="routing-section-head">
+              <h2 id="routing-rules-title" class="clip" title="{{.Routing.ProviderHeading}}">{{.Routing.ProviderHeading}}</h2>
+              {{if and .Routing.Unmatched .Routing.SubscriptionUpdated}}<span class="muted small">{{.Routing.SubscriptionUpdated}}</span>{{end}}
+            </div>
+            {{if .Routing.RuleState}}<p class="note">{{.Routing.RuleState}}</p>{{end}}
+            {{if or .Routing.RuleGroups .Routing.Unmatched}}
+            <table class="tbl routing-rules" aria-labelledby="routing-rules-title">
+              <colgroup><col><col class="routing-rule-control"></colgroup>
+              {{range .Routing.RuleGroups}}
+              <tbody>
+                <tr class="grp"><th colspan="2" scope="rowgroup">{{.Label}}</th></tr>
+                {{range .Rules}}
+                <tr>
+                  <td><span class="clip" title="{{.Label}}">{{.Label}}</span></td>
+                  <td class="routing-rule-setting">
+                    {{if .Reason}}<span class="muted small">{{.Reason}}</span>{{else}}
+                    <input type="hidden" name="rule" value="{{.Key}}">
+                    <label class="tg">
+                      <input type="checkbox" role="switch" name="enabled" value="{{.Key}}"{{if .Checked}} checked{{end}} aria-label="{{.Label}}">
+                      <span class="tg-track" aria-hidden="true"></span>
+                    </label>
+                    {{end}}
+                  </td>
+                </tr>
+                {{end}}
+              </tbody>
+              {{end}}
+              {{if .Routing.Unmatched}}
+              <tfoot><tr><td>{{.Text.routing_rest}}</td><td class="routing-rule-setting">{{.Routing.Unmatched}}</td></tr></tfoot>
+              {{end}}
+            </table>
+            {{end}}
+            {{if .Routing.RuleGroups}}<p class="hint">{{.Text.routing_switch_hint}}</p>{{end}}
+          </section>
+
+          <section class="routing-section" aria-labelledby="routing-own-title">
+            <h2 id="routing-own-title">{{.Text.routing_own_title}}</h2>
+            <p class="hint">{{.Text.routing_list_hint}}</p>
+            {{if .Routing.OtherGroups}}<p class="hint">{{.Text.routing_other_groups}}</p>{{end}}
+            <div class="routing-lists">
+              <div class="fld routing-vpn-list">
+                <label for="routing-own-vpn">{{.Text.routing_own_vpn}}</label>
+                <textarea id="routing-own-vpn" name="own-vpn" rows="4" spellcheck="false"{{if .Routing.VPN.InvalidLines}} aria-invalid="true" aria-describedby="routing-vpn-errors"{{end}}>
+{{.Routing.VPN.Value}}</textarea>
+                {{if .Routing.VPN.InvalidLines}}<ul id="routing-vpn-errors" class="routing-errors" role="alert">
+                  {{range .Routing.VPN.InvalidLines}}<li>{{printf $.Text.routing_invalid_entry .}}</li>{{end}}
+                </ul>{{end}}
+              </div>
+              <div class="fld routing-direct-list">
+                <label for="routing-own-direct">{{.Text.routing_own_direct}}</label>
+                <textarea id="routing-own-direct" name="own-direct" rows="4" spellcheck="false"{{if .Routing.Direct.InvalidLines}} aria-invalid="true" aria-describedby="routing-direct-errors"{{end}}>
+{{.Routing.Direct.Value}}</textarea>
+                {{if .Routing.Direct.InvalidLines}}<ul id="routing-direct-errors" class="routing-errors" role="alert">
+                  {{range .Routing.Direct.InvalidLines}}<li>{{printf $.Text.routing_invalid_entry .}}</li>{{end}}
+                </ul>{{end}}
+              </div>
+            </div>
+          </section>
+
+          <div class="actions">
+            <button class="btn" type="submit">{{.Text.overview_save}}</button>
+            {{if not .ViewOnly}}<a class="btn soft" href="/routing">{{.Text.setup_cancel}}</a>{{end}}
+          </div>
+        </fieldset>
+      </form>
+      {{end}}
+{{template "page-end" .}}{{end}}

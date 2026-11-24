@@ -2,6 +2,16 @@
 
 For diagrams of interception, DNS, and route selection, see [How traffic flows](network-flow.md).
 
+## Routing tab
+
+Choose how the home split policy handles traffic and select **Save** to apply the changes.
+
+- **By subscription rules** uses the provider's rules and its default for unmatched traffic. The table groups rules by their action. Site and address lists each have one switch for their literal entries. Unavailable rules show a reason.
+- **All traffic through VPN** uses the main connection for unmatched traffic. Add exceptions under **Always direct**.
+- **Only my sites** sends unmatched traffic directly. Enter sites for the main connection under **Always through VPN**.
+
+Enter one domain, IP address, or subnet per line. Domains include their subdomains. Your lists take priority over provider rules. A line error stops the save so you can fix the entry. Rules you switched off stay off when you return to the subscription mode. Additional configured groups keep their existing routes and ordering, and device policies continue to decide which devices use the routing settings.
+
 ## Policy building blocks
 
 | Item | Purpose |
@@ -15,7 +25,7 @@ For diagrams of interception, DNS, and route selection, see [How traffic flows](
 
 Country **Except** selectors describe traffic outside the listed countries. Explicit domain lists and country rules express different levels of policy; inspect the routing journal to confirm which rule actually won for a request.
 
-Connection and rule switches change the shared draft, not live traffic until **Apply**. A disabled group, domain/IP entry, country, or category selector is skipped while its saved value is retained. Later matching rules and the source policy still apply. If every geo selector is off, the group is inactive even with **Except** enabled.
+A disabled group, domain/IP entry, country, or category selector is skipped while its saved value is retained. Later matching rules and the source policy still apply. If every geo selector is off, the group is inactive even with **Except** enabled.
 
 ## Country rules
 

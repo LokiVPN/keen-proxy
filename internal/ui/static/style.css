@@ -456,6 +456,30 @@
 .tbl tfoot td { border-bottom: 0; color: var(--gray); }
 .dev-ip, .res-inline { display: none; }
 
+.kp .routing-intro { margin-top: 24px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.routing-fields, .routing-modes { min-width: 0; margin: 0; padding: 0; border: 0; }
+.routing-modes { display: grid; gap: 16px; margin-top: 20px; }
+.routing-radio { display: flex; align-items: flex-start; gap: 14px; cursor: pointer; }
+.routing-radio input { flex: none; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--primary); }
+.routing-radio > span { min-width: 0; }
+.routing-radio-title { display: block; font-weight: 500; }
+.routing-radio:has(input:disabled) { color: var(--disabled-text); cursor: not-allowed; }
+.routing-section { margin-top: 40px; }
+.routing-section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.routing-section-head h2 { max-width: 100%; }
+.routing-rules { table-layout: fixed; }
+.routing-rule-control { width: 40%; }
+.routing-rules .routing-rule-setting { text-align: right; }
+.routing-rules .tg { min-height: 22px; vertical-align: middle; }
+.routing-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.routing-form:has(#routing-mode-all:checked) .routing-vpn-list,
+.routing-form:has(#routing-mode-own:checked) .routing-direct-list,
+.routing-form:not(:has(#routing-mode-provider:checked)) .routing-provider { display: none; }
+.routing-form:has(#routing-mode-all:checked, #routing-mode-own:checked) .routing-lists { grid-template-columns: minmax(0, 1fr); max-width: 560px; }
+.routing-errors { margin: 4px 0 0; padding-left: 20px; color: var(--warn-t); }
+.fld textarea[aria-invalid="true"] { border-color: var(--warn-t); }
+
 .chart {
   display: grid;
   grid-template-columns: minmax(28px, auto) minmax(0, 1fr);
@@ -495,4 +519,6 @@
   .dev-ip, .res-inline { display: block; }
   .actions .btn { flex: 1 1 auto; }
   .overview-section { margin-top: 32px; }
+  .routing-section { margin-top: 32px; }
+  .routing-lists { grid-template-columns: minmax(0, 1fr); }
 }

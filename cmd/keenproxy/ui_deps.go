@@ -86,8 +86,9 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 		status.Connections[id] = connection
 	}
 	rules, settings, state := d.daemon.ProviderRules()
-	status.RulesState, status.RulesTotal = string(state), len(rules.Rules)
-	if settings != nil {
+	status.RulesState = string(state)
+	if settings != nil && (state == daemon.ProviderRulesReady || state == daemon.ProviderRulesPartial) {
+		status.RulesTotal = len(rules.Rules)
 		disabled := make(map[string]bool, len(settings.Disabled))
 		for _, key := range settings.Disabled {
 			disabled[key] = true
@@ -99,6 +100,26 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 		}
 	}
 	return status
+}
+
+func (d uiDeps) ProviderRules() ui.RoutingRules {
+	rules, settings, state := d.daemon.ProviderRules()
+	view := ui.RoutingRules{
+		State: string(state), HasProfile: rules.RouteOrder != "", GlobalProxy: rules.GlobalProxy,
+	}
+	if settings == nil {
+		return view
+	}
+	view.Source = settings.Source
+	view.Rules = make([]ui.RoutingRule, 0, len(rules.Rules))
+	for _, rule := range rules.Rules {
+		item := ui.RoutingRule{Key: rule.Key, Action: rule.Action, Kind: rule.Kind, Source: rule.Source, Unavailable: rule.Unavailable}
+		if rule.Source == "literals" {
+			item.LiteralCount = len(rule.Suffix) + len(rule.Full) + len(rule.Keyword) + len(rule.Regex) + len(rule.CIDR)
+		}
+		view.Rules = append(view.Rules, item)
+	}
+	return view
 }
 
 func (d uiDeps) Subscriptions() []ui.AppliedSubscription {
