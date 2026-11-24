@@ -47,7 +47,7 @@ func TestOverviewStates(t *testing.T) {
 			assertContains(t, banner, ">"+tc.status+"</span>", tc.detail)
 			assertContains(t, body, tc.renewal, "18 GB of 200 GB", `value="19327352832" max="214748364800"`,
 				"Last updated", "Next update", "Maintenance tonight", `href="/setup"`, "Routing by Example VPN",
-				"1 of 2 rules enabled", "Own site entries: 1", "2 of 3 devices use VPN routing")
+				"1 of 2 rules enabled", "Own site entries: 1", "KeenProxy handles 2 of 3 devices")
 			if tc.renewal == "Renew" {
 				assertContains(t, body, `href="https://provider.example/account"`)
 			}
@@ -108,6 +108,44 @@ func TestOverviewStatusUsesTheSelectedConnection(t *testing.T) {
 	f.subs[0].Unavailable = true
 	f.subs[0].Metadata.Usage.Expire = time.Now().Add(-time.Hour).Unix()
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Working</span>`, "Cabin · 35 ms", `>Expired</span>`)
+}
+
+func TestOverviewDirectAndOffPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, active, chip string
+		mode                       model.Mode
+	}{
+		{"full direct", model.TargetDirect, "", "Direct connection", model.ModeFull},
+		{"direct reserve", "backup", model.TargetDirect, "Direct connection", model.ModeFull},
+		{"off with a saved VPN", "backup", "", "Home VPN off", model.ModeOff},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOverviewFixture()
+			f.cfg.Networks[0].Mode, f.cfg.Networks[0].Target = tc.mode, tc.target
+			if tc.active != "" {
+				f.status.Connections[tc.target] = ConnectionStatus{Active: tc.active}
+			}
+			body := setupRequest(New(f, setupTestOptions(RoleView)), "/", nil).Body.String()
+			banner, _, _ := strings.Cut(body, `aria-label="KeenProxy sections"`)
+			assertContains(t, banner, ">"+tc.chip+"</span>")
+			assertContains(t, body, "KeenProxy handles 2 of 3 devices", "New devices connect directly by default.")
+			for _, claim := range []string{">Working</span>", "All traffic through VPN", "devices use VPN routing"} {
+				if strings.Contains(body, claim) {
+					t.Errorf("direct or off policy was presented as VPN routing: %q", claim)
+				}
+			}
+		})
+	}
+}
+
+func TestOverviewShowsFailedRefreshWithCachedNodes(t *testing.T) {
+	f := newOverviewFixture()
+	f.subs[0].State = subscription.StateHTTPError
+	body := setupRequest(New(f, setupTestOptions(RoleView)), "/", nil).Body.String()
+	assertContains(t, body, "Last update failed", "Last updated", "Next update")
+	if strings.Contains(body, ">Active</span>") {
+		t.Error("a cached catalog hid the most recent refresh failure")
+	}
 }
 
 func TestOverviewPauseRoundTrip(t *testing.T) {
@@ -317,7 +355,7 @@ func newOverviewFixture() *overviewFixture {
 	cfg.Clients = []model.Client{{MAC: "02:00:00:00:00:01", Mode: model.ModeFull, Target: "old"}}
 	return &overviewFixture{
 		setupFixture: setupFixture{cfg: cfg},
-		status: OverviewStatus{Ready: true, Devices: 3, VPNDevices: 2, RulesState: "ready", RulesActive: 1, RulesTotal: 2,
+		status: OverviewStatus{Ready: true, Devices: 3, ManagedDevices: 2, RulesState: "ready", RulesActive: 1, RulesTotal: 2,
 			Connections: map[string]ConnectionStatus{"old": {Checked: true}, "backup": {Checked: true, Available: true, LatencyMS: 35}},
 		},
 		subs: []AppliedSubscription{{

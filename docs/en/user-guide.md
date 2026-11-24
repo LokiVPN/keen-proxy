@@ -26,13 +26,15 @@ ends, the panel returns to a sign-in screen with a link to KeeneticOS.
 
 Open KeenProxy with a router management account. Paste the HTTPS subscription link from your LokiVPN account, then choose **Check**. KeenProxy sends its stable device ID to the provider. This can use a slot on your subscription. The check shows the supported servers, provider message, and any usage, expiry, or routing information the provider supplies. Routing details describe the provider profile. KeenProxy evaluates its rules when you enable the subscription.
 
-Choose **Enable** to save the subscription and set split routing for the home network detected on the configured LAN interface. The network follows the provider profile. If the provider supplies no routing profile, unmatched traffic goes through the subscription. The first setup needs a private IPv4 address on that interface.
+On a router without a saved network policy, choose **Enable** to save the subscription and set split routing for the home network detected on the configured LAN interface. The network follows the provider profile. If the provider supplies no routing profile, unmatched traffic goes through the subscription. The first setup needs a private IPv4 address on that interface.
+
+If you already have network policies, choose **Set up subscription** on **Overview**. Check the link and choose **Add subscription** to make its servers available in the main connection menu while keeping your current routing policies.
 
 On **Overview**, choose **Replace link** to reopen setup. Check the new link and confirm **Replace link** to update the saved subscription. The subscription keeps its ID and reserve, and your existing routing, devices, and paused state stay in place. View-only accounts can open the setup page with its controls disabled.
 
 ## 1. Read the overview
 
-**Overview** shows the main connection status, subscription usage and expiry when supplied by the provider, and the last and next scheduled updates. A warning appears when the subscription is due to expire within seven days. **Update now** queues a subscription refresh. The chart shows the last 30 minutes of tracked VPN traffic. The routing and device summaries link to their tabs.
+**Overview** shows the main connection status, subscription usage and expiry when supplied by the provider, and the last and next scheduled updates. A warning appears when the subscription is due to expire within seven days. **Update now** queues a subscription refresh. If an update fails, the overview reports the failure alongside the latest known expiry. The chart shows the last 30 minutes of tracked VPN traffic. The device count shows how many detected LAN devices are covered by KeenProxy's current routing plan. The routing and device summaries link to their tabs.
 
 Use **Enabled** to pause or resume VPN routing for all devices. While paused, all devices connect directly. Under **Main connection**, choose automatic failover, a balancing mode, a specific subscription node, or a manual connection. The selection updates the home network and **All traffic through VPN** routing when it uses the previous main connection.
 

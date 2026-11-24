@@ -89,6 +89,14 @@ func (e *Engine) Close() error {
 	return e.closeLocked()
 }
 
+// Running reports whether a core instance has successfully started and has
+// not been closed, including after a failed restart.
+func (e *Engine) Running() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.box != nil
+}
+
 // closeLocked releases instance resources while the engine mutex is held.
 func (e *Engine) closeLocked() error {
 	if e.box == nil {

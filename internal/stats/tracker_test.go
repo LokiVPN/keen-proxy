@@ -17,10 +17,31 @@ import (
 
 type fakeOut struct {
 	adapter.Outbound
-	tag string
+	tag, kind string
 }
 
 func (f fakeOut) Tag() string { return f.tag }
+func (f fakeOut) Type() string {
+	if f.kind != "" {
+		return f.kind
+	}
+	if f.tag == "direct" || f.tag == "block" {
+		return f.tag
+	}
+	return "vless"
+}
+
+type transportSelector struct {
+	adapter.OutboundGroup
+	tcp, udp adapter.Outbound
+}
+
+func (g transportSelector) Selected(network string) adapter.Outbound {
+	if network == "udp" {
+		return g.udp
+	}
+	return g.tcp
+}
 
 func TestTrackerCountsAndSamples(t *testing.T) {
 	tr := NewTracker()
@@ -103,6 +124,57 @@ func TestTunnelSeriesUsesOnlyVPNAndKeepsRetiredSamples(t *testing.T) {
 	got[0] = Point{}
 	if tr.TunnelSeries()[0] != want[1] {
 		t.Fatal("editing a series snapshot changed the tracker")
+	}
+}
+
+func TestTunnelSeriesExcludesCustomDirectAndUsesTheFlowTransport(t *testing.T) {
+	tr := NewTracker()
+	proxy := fakeOut{tag: "vpn", kind: "vless"}
+	direct := fakeOut{tag: "local-egress", kind: "direct"}
+	group := transportSelector{tcp: proxy, udp: direct}
+	for _, flow := range []struct {
+		out     adapter.Outbound
+		network string
+		upload  int64
+		chain   []adapter.Outbound
+	}{
+		{proxy, "tcp", 100, nil}, {direct, "tcp", 200, nil}, {group, "udp", 300, nil},
+		{group, "tcp", 400, []adapter.Outbound{group, direct}},
+	} {
+		tracked := tr.open(adapter.InboundContext{Domain: "example.test", Network: flow.network, OutboundChain: flow.chain}, flow.out)
+		read, _ := tracked.counters()
+		for _, count := range read {
+			count(flow.upload)
+		}
+		tr.close(tracked)
+	}
+	tr.sample(time.Now())
+	if got := tr.TunnelSeries()[0].Up; got != 100*8/SampleInterval.Seconds() {
+		t.Fatalf("VPN upload rate includes bytes from a direct egress: %g", got)
+	}
+}
+
+func TestTunnelSeriesKeepsUnsampledTrafficWhenCatalogRetires(t *testing.T) {
+	const tag = "subscription:sample:123456789abcdef0123456789abcdef0"
+	tr := NewTracker()
+	tr.RetainSubscriptionNodes([]string{tag})
+	tracked := tr.open(adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
+	read, write := tracked.counters()
+	for _, count := range read {
+		count(100)
+	}
+	for _, count := range write {
+		count(200)
+	}
+	tr.close(tracked)
+	tr.RetainSubscriptionNodes(nil)
+	if snapshot := tr.Snapshot(true); len(snapshot.Outbounds) != 0 {
+		t.Fatal("test left the retired outbound in the per-connection history")
+	}
+	tr.sample(time.Now())
+	got := tr.TunnelSeries()[0]
+	if got.Up != 100*8/SampleInterval.Seconds() || got.Down != 200*8/SampleInterval.Seconds() {
+		t.Fatalf("VPN series lost bytes from the retired outbound: %+v", got)
 	}
 }
 

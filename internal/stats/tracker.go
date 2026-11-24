@@ -4,6 +4,7 @@
 package stats
 
 import (
+	"cmp"
 	"context"
 	"net"
 	"slices"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/bufio"
 	N "github.com/sagernet/sing/common/network"
@@ -72,7 +74,10 @@ type conn struct {
 	out      *outbound
 	host     *hostStat
 	hostName string
+	tunnel   *byteCounters
 }
+
+type byteCounters struct{ down, up atomic.Int64 }
 
 // hostStat permits byte/request updates without holding the tracker lock.
 type hostStat struct {
@@ -102,6 +107,9 @@ type Tracker struct {
 	outs              map[string]*outbound
 	active            map[*conn]struct{}
 	subscriptionNodes map[string]struct{} // nil before the first applied catalog
+	tunnel            byteCounters        // independent of retireable outbound counters
+	lastTunnelDown    int64
+	lastTunnelUp      int64
 	tunnelSeries      []Point
 	sys               systemSampler
 }
@@ -161,14 +169,19 @@ func HostOf(m adapter.InboundContext) string {
 	return m.Destination.Addr.Unmap().String()
 }
 
-// Resolve unwraps fallback selectors to the outbound currently selected for traffic.
+// Resolve unwraps fallback selectors to the outbound currently selected for TCP traffic.
 func Resolve(out adapter.Outbound) adapter.Outbound {
+	return ResolveForNetwork(out, N.NetworkTCP)
+}
+
+// ResolveForNetwork follows the selector's choice for the flow's transport.
+func ResolveForNetwork(out adapter.Outbound, network string) adapter.Outbound {
 	for i := 0; i < 4 && out != nil; i++ {
 		g, ok := out.(adapter.OutboundGroup)
 		if !ok {
 			break
 		}
-		next := g.Selected("tcp")
+		next := g.Selected(network)
 		if next == nil {
 			break
 		}
@@ -177,12 +190,36 @@ func Resolve(out adapter.Outbound) adapter.Outbound {
 	return out
 }
 
+func tunnelOutbound(out adapter.Outbound) bool {
+	if out == nil {
+		return false
+	}
+	if _, group := out.(adapter.OutboundGroup); group {
+		return false // No concrete transport was resolved.
+	}
+	switch out.Type() {
+	case C.TypeDirect, C.TypeBlock, C.TypeDNS, model.SubscriptionBalanceOutboundType:
+		return false
+	default:
+		return true
+	}
+}
+
 // open resolves the active outbound, bounds retained hosts, and registers a new active connection.
 // It owns t.mu while updating shared host and connection maps.
 func (t *Tracker) open(m adapter.InboundContext, out adapter.Outbound) *conn {
-	tag := "direct"
-	if out = Resolve(out); out != nil {
+	if n := len(m.OutboundChain); n != 0 {
+		// The router already picked this flow's member. A group may make a
+		// different choice if asked again, even for the same transport.
+		out = m.OutboundChain[n-1]
+	}
+	tag := model.TargetDirect
+	if out = ResolveForNetwork(out, cmp.Or(m.Network, N.NetworkTCP)); out != nil {
 		tag = out.Tag()
+	}
+	var tunnel *byteCounters
+	if tunnelOutbound(out) {
+		tunnel = &t.tunnel
 	}
 	name := HostOf(m)
 	t.mu.Lock()
@@ -202,7 +239,7 @@ func (t *Tracker) open(m adapter.InboundContext, out adapter.Outbound) *conn {
 	}
 	h.requests.Add(1)
 	h.lastSeen.Store(time.Now().UnixMilli())
-	c := &conn{out: o, host: h, hostName: name}
+	c := &conn{out: o, host: h, hostName: name, tunnel: tunnel}
 	t.active[c] = struct{}{}
 	o.active++
 	return c
@@ -231,11 +268,20 @@ func (t *Tracker) close(c *conn) {
 
 // counters maps inbound reads to device upload and inbound writes to download.
 func (c *conn) counters() (read, write []N.CountFunc) {
-	read = []N.CountFunc{func(n int64) { c.out.up.Add(n); c.host.up.Add(n) }}
+	read = []N.CountFunc{func(n int64) {
+		c.out.up.Add(n)
+		c.host.up.Add(n)
+		if c.tunnel != nil {
+			c.tunnel.up.Add(n)
+		}
+	}}
 	write = []N.CountFunc{func(n int64) {
 		c.out.down.Add(n)
 		c.host.down.Add(n)
 		c.host.lastSeen.Store(time.Now().UnixMilli())
+		if c.tunnel != nil {
+			c.tunnel.down.Add(n)
+		}
 	}}
 	return read, write
 }
@@ -326,7 +372,13 @@ func (t *Tracker) sample(now time.Time) {
 		u[c.hostName] = struct{}{}
 	}
 	secs := SampleInterval.Seconds()
-	tunnel := Point{T: now.UnixMilli()}
+	tunnelDown, tunnelUp := t.tunnel.down.Load(), t.tunnel.up.Load()
+	tunnel := Point{
+		T:    now.UnixMilli(),
+		Down: float64(tunnelDown-t.lastTunnelDown) * 8 / secs,
+		Up:   float64(tunnelUp-t.lastTunnelUp) * 8 / secs,
+	}
+	t.lastTunnelDown, t.lastTunnelUp = tunnelDown, tunnelUp
 	for _, o := range t.outs {
 		down, up := o.down.Load(), o.up.Load()
 		p := Point{
@@ -337,10 +389,6 @@ func (t *Tracker) sample(now time.Time) {
 		}
 		o.lastDown, o.lastUp = down, up
 		o.series = appendSample(o.series, p)
-		if o.tag != model.TargetDirect && o.tag != model.TargetBlock {
-			tunnel.Down += p.Down
-			tunnel.Up += p.Up
-		}
 	}
 	t.tunnelSeries = appendSample(t.tunnelSeries, tunnel)
 }

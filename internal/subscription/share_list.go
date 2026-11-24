@@ -93,7 +93,7 @@ func parseNode(link string, sensitive displayRedactor) (Node, bool) {
 	if id == "" {
 		return Node{}, false
 	}
-	name := displayText(links.Name(link), 128, sensitive)
+	name := displayText(links.Name(link), nodeNameLimit, sensitive)
 	if name == "" {
 		protocol, _, _ := strings.Cut(link, "://")
 		name = strings.ToUpper(protocol) + " " + id[:8]
@@ -166,6 +166,12 @@ func collectMetadata(comments http.Header, line string) {
 	}
 }
 
+const (
+	nodeNameLimit = 128
+	titleLimit    = 256
+	announceLimit = 2048
+)
+
 func parseMetadata(headers, comments http.Header, sensitive displayRedactor) Metadata {
 	value := func(name string) string {
 		if supplied := headers.Values(name); len(supplied) > 0 {
@@ -174,8 +180,8 @@ func parseMetadata(headers, comments http.Header, sensitive displayRedactor) Met
 		return strings.TrimSpace(comments.Get(name))
 	}
 	metadata := Metadata{
-		Title:      providerText(value("profile-title"), 256, sensitive),
-		Announce:   providerText(value("announce"), 2048, sensitive),
+		Title:      providerText(value("profile-title"), titleLimit, sensitive),
+		Announce:   providerText(value("announce"), announceLimit, sensitive),
 		SupportURL: metadataURL(value("support-url"), sensitive),
 		ProfileURL: metadataURL(value("profile-web-page-url"), sensitive),
 		Usage:      parseUsage(value("subscription-userinfo")),
@@ -241,6 +247,8 @@ type displayRedactor struct {
 	paths      map[string][]string
 	requestURI string
 	hwid       string
+	// A legacy snapshot has no record of the final same-origin request path.
+	blockSameHostLinks bool
 }
 
 const redactedDisplay = "[redacted]"
@@ -248,6 +256,16 @@ const redactedDisplay = "[redacted]"
 // Runs may contain a bare path or an encoded scheme.
 var displayRun = regexp.MustCompile(`[^[:space:]\p{Z}\x{85}<>"]+`)
 var displayPercentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+
+func sourceDisplayRedactor(u *url.URL) displayRedactor {
+	var sensitive displayRedactor
+	sensitive.addURL(u)
+	// A bare root carries no request-specific text.
+	if target := u.RequestURI(); target != "/" {
+		sensitive.requestURI = displayURLComparison(decodeDisplayEscapes(target))
+	}
+	return sensitive
+}
 
 func (r *displayRedactor) addURL(u *url.URL) {
 	host := displayHost(u.Hostname())
@@ -331,7 +349,7 @@ func (r displayRedactor) blocksLink(u *url.URL, raw string) bool {
 	}
 	if paths, protected := r.paths[displayHost(u.Hostname())]; protected {
 		path := requestPath(u)
-		if slices.Contains(paths, path) || u.ForceQuery || u.RawQuery != "" || strings.Contains(raw, "#") {
+		if r.blockSameHostLinks || slices.Contains(paths, path) || u.ForceQuery || u.RawQuery != "" || strings.Contains(raw, "#") {
 			return true
 		}
 		// The account-page exception covers the link's host. Its path can

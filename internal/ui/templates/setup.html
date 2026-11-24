@@ -5,7 +5,7 @@
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .4c0 1.7-2.5 2-2.5 3.6M12 16h.01"/></svg>
         </a>
       </div>
-      <p class="lead">{{if .Setup.Replacing}}{{.Text.setup_replace_intro}}{{else}}{{.Text.setup_intro}}{{end}}</p>
+      <p class="lead">{{if .Setup.Replacing}}{{.Text.setup_replace_intro}}{{else if .Setup.KeepRouting}}{{.Text.setup_add_intro}}{{else}}{{.Text.setup_intro}}{{end}}</p>
       {{$checked := or .Setup.Result .Setup.Input}}
       {{$disabled := or .ViewOnly (not .Setup.Rev)}}
       <form method="post" action="/setup/check" class="setup-check{{if $checked}} setup-recheck{{end}}" novalidate>
@@ -38,10 +38,10 @@
             {{if .RouteName}}<strong class="clip">{{.RouteName}}</strong>{{end}}
             {{if .RouteHint}}<p>{{.RouteHint}}</p>{{end}}
             {{if .RulesState}}<p>{{.RulesState}}</p>{{end}}
-            {{if $.Setup.Replacing}}<p>{{$.Text.setup_mode_kept}}</p>{{end}}
+            {{if $.Setup.Replacing}}<p>{{$.Text.setup_mode_kept}}</p>{{else if $.Setup.KeepRouting}}<p>{{$.Text.setup_add_mode_kept}}</p>{{end}}
             {{if and .HasRouting $.Setup.EvaluateRules}}
             <p>{{if $.Setup.Replacing}}{{$.Text.setup_rules_on_replace}}{{else}}{{$.Text.setup_rules_on_enable}}{{end}}</p>
-            {{else if and (not .HasRouting) (not $.Setup.Replacing)}}
+            {{else if and (not .HasRouting) (not $.Setup.KeepRouting)}}
             <p>{{$.Text.setup_without_rules_fallback}}</p>
             {{end}}
             {{if .Actions}}
@@ -57,7 +57,7 @@
             {{end}}
           </dd>
           <dt>{{$.Text.setup_devices}}</dt>
-          <dd>{{if $.Setup.Replacing}}{{$.Text.setup_devices_kept}}{{else}}{{$.Text.setup_home_devices}}{{end}}</dd>
+          <dd>{{if $.Setup.KeepRouting}}{{$.Text.setup_devices_kept}}{{else}}{{$.Text.setup_home_devices}}{{end}}</dd>
         </dl>
         {{if .Announce}}
         <div class="note setup-announce">
@@ -68,8 +68,8 @@
         <form method="post" action="/setup/enable" class="actions">
           <input type="hidden" name="rev" value="{{$.Setup.Rev}}">
           <input type="hidden" name="preview" value="{{.Token}}">
-          <button class="btn" type="submit"{{if $disabled}} disabled{{end}}>{{if $.Setup.Replacing}}{{$.Text.setup_replace}}{{else}}{{$.Text.setup_enable}}{{end}}</button>
-          <a class="btn soft" href="{{if $.Setup.Replacing}}/{{else}}/setup{{end}}">{{$.Text.setup_cancel}}</a>
+          <button class="btn" type="submit"{{if $disabled}} disabled{{end}}>{{if $.Setup.Replacing}}{{$.Text.setup_replace}}{{else if $.Setup.KeepRouting}}{{$.Text.setup_add}}{{else}}{{$.Text.setup_enable}}{{end}}</button>
+          <a class="btn soft" href="{{if $.Setup.KeepRouting}}/{{else}}/setup{{end}}">{{$.Text.setup_cancel}}</a>
         </form>
         {{else}}
         <p class="lead setup-result-message">{{.Message}}</p>

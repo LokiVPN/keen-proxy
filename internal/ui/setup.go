@@ -16,6 +16,11 @@ const (
 	setupFormSize = 16 << 10
 )
 
+// setupInitialRouting identifies the only setup mode that creates a LAN policy.
+func setupInitialRouting(cfg *model.Config) bool {
+	return len(cfg.Subscriptions) == 0 && len(cfg.Networks) == 0
+}
+
 func (p pages) setupGet(w http.ResponseWriter, r *http.Request) {
 	if role := p.role(r); role != RoleView && role != RoleManage {
 		p.opts.AccessError(w, r, http.StatusForbidden)
@@ -57,7 +62,7 @@ func (p pages) setupCheck(w http.ResponseWriter, r *http.Request) {
 	case preview.PreviewID == 0:
 		page.Result, page.Error = nil, text["setup_check_again"]
 	default:
-		page.EvaluateRules = len(cfg.Subscriptions) == 0 || (cfg.ProviderRules != nil && cfg.ProviderRules.Source == source.ID)
+		page.EvaluateRules = setupInitialRouting(cfg) || (cfg.ProviderRules != nil && cfg.ProviderRules.Source == source.ID)
 		deadline := now.Add(setupDraftLifetime)
 		if !expiry.IsZero() && expiry.Before(deadline) {
 			deadline = expiry
@@ -88,13 +93,15 @@ func (p pages) setupEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	source := checked.Source
 	if len(cfg.Subscriptions) == 0 {
-		lan, err := p.deps.LANPrefix(cfg.LAN.Interface)
-		if err != nil || !lan.IsValid() {
-			p.renderSetup(w, r, http.StatusUnprocessableEntity, cfg, setupPage{Error: text["setup_no_lan"]})
-			return
+		if setupInitialRouting(cfg) {
+			lan, err := p.deps.LANPrefix(cfg.LAN.Interface)
+			if err != nil || !lan.IsValid() {
+				p.renderSetup(w, r, http.StatusUnprocessableEntity, cfg, setupPage{Error: text["setup_no_lan"]})
+				return
+			}
+			cfg.RouteHomeThroughSubscription(source.ID, lan)
 		}
 		cfg.Subscriptions = []subscription.Source{source}
-		cfg.RouteHomeThroughSubscription(source.ID, lan)
 	} else {
 		cfg.Subscriptions[0].URL = source.URL
 		cfg.Subscriptions[0].SendHWID = source.SendHWID

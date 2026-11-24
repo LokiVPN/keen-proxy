@@ -55,6 +55,31 @@ func NewFetcher(identityPath string, transport http.RoundTripper) *Fetcher {
 // such as the geo files a routing profile names.
 func (f *Fetcher) Transport() http.RoundTripper { return f.transport }
 
+// SanitizeSnapshotDisplay reapplies display bounds and source redaction to
+// restored metadata and names. Legacy links cannot use the same-origin
+// account exception because their original redirect paths are unavailable.
+// Restoring a snapshot never creates an installation identity.
+func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nodes []Node, linksChecked bool) {
+	u, origin, err := parseSource(source)
+	if err != nil {
+		return // Snapshots are loaded only for validated sources.
+	}
+	sensitive := sourceDisplayRedactor(u)
+	sensitive.blockSameHostLinks = !linksChecked
+	if source.SendHWID {
+		if secret, err := readIdentity(f.identityPath); err == nil {
+			sensitive.hwid = deriveOriginHWID(secret, origin)
+		}
+	}
+	metadata.Title = displayText(metadata.Title, titleLimit, sensitive)
+	metadata.Announce = displayText(metadata.Announce, announceLimit, sensitive)
+	metadata.SupportURL = metadataURL(metadata.SupportURL, sensitive)
+	metadata.ProfileURL = metadataURL(metadata.ProfileURL, sensitive)
+	for i := range nodes {
+		nodes[i].Name = displayText(nodes[i].Name, nodeNameLimit, sensitive)
+	}
+}
+
 func sameOriginRedirect(request *http.Request, previous []*http.Request) error {
 	origin := httpsOrigin(request.URL)
 	if len(previous) > maxRedirects || origin == "" || origin != httpsOrigin(previous[0].URL) {
@@ -88,12 +113,7 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 	}
 	req.Header.Set("User-Agent", "KeenProxy/1")
 	req.Header.Set("Accept", "text/plain, application/octet-stream")
-	var sensitive displayRedactor
-	sensitive.addURL(req.URL)
-	// A bare root carries no request-specific text.
-	if target := req.URL.RequestURI(); target != "/" {
-		sensitive.requestURI = displayURLComparison(decodeDisplayEscapes(target))
-	}
+	sensitive := sourceDisplayRedactor(req.URL)
 	if source.SendHWID {
 		hwid, err := originHWID(f.identityPath, origin)
 		if err != nil {

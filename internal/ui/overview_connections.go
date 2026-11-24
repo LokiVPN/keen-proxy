@@ -152,18 +152,18 @@ func connectionProtocol(conn model.Connection) string {
 type connectionSelection struct {
 	Detail, Health, Reserve string
 	Expiry                  time.Time
-	Subscription            bool
+	Subscription, Direct    bool
 }
 
 func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscription, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	if id, mode, managed := model.ParseManagedTarget(target); managed {
 		sub := appliedSubscriptionFor(subs, id)
-		return selectedSubscription(cfg, sub, mode, text)
+		return selectedSubscription(cfg, sub, mode, health, text)
 	}
 	return selectedManualConnection(cfg, target, health, text)
 }
 
-func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode string, text map[string]string) connectionSelection {
+func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	selection := connectionSelection{
 		Detail: sub.title(text), Expiry: setupExpiry(sub.Metadata.Usage), Subscription: true,
 	}
@@ -174,7 +174,7 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 				selection.Detail += " · " + fmt.Sprintf(text["overview_balancing_nodes"], *sub.BalanceEligible)
 			} else {
 				selection.Health = connectionUnavailable
-				selection.Reserve = subscriptionReserve(cfg, sub.ID, text)
+				selection.Reserve, selection.Direct = subscriptionReserve(cfg, sub.ID, health, text)
 			}
 		}
 		return selection
@@ -184,7 +184,7 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 		if sub.Unavailable {
 			selection.Health = connectionUnavailable
 			if sub.SwitchReason == "fallback" || len(sub.Nodes) == 0 {
-				selection.Reserve = subscriptionReserve(cfg, sub.ID, text)
+				selection.Reserve, selection.Direct = subscriptionReserve(cfg, sub.ID, health, text)
 			}
 			return selection
 		}
@@ -196,15 +196,19 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 		selection.Health = node.Health
 	} else if mode != "auto" {
 		selection.Health = connectionUnavailable
-		selection.Reserve = subscriptionReserve(cfg, sub.ID, text)
+		selection.Reserve, selection.Direct = subscriptionReserve(cfg, sub.ID, health, text)
 	}
 	return selection
 }
 
 func selectedManualConnection(cfg *model.Config, target string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	active := cmp.Or(health[target].Active, target)
-	if active == model.TargetDirect {
-		return connectionSelection{Detail: text["overview_direct"], Health: connectionAvailable}
+	if active == model.TargetDirect || health[active].Direct {
+		selection := connectionSelection{Detail: text["overview_direct"], Direct: true}
+		if active != target {
+			selection.Reserve = selection.Detail
+		}
+		return selection
 	}
 	for _, conn := range cfg.Connections {
 		if conn.ID != active || conn.Disabled {
@@ -223,20 +227,21 @@ func selectedManualConnection(cfg *model.Config, target string, health map[strin
 	return connectionSelection{Health: connectionUnavailable}
 }
 
-func subscriptionReserve(cfg *model.Config, id string, text map[string]string) string {
+func subscriptionReserve(cfg *model.Config, id string, health map[string]ConnectionStatus, text map[string]string) (string, bool) {
 	for _, source := range cfg.Subscriptions {
 		if source.ID != id {
 			continue
 		}
-		if source.Fallback == model.TargetDirect {
-			return text["overview_direct"]
+		active := cmp.Or(health[source.Fallback].Active, source.Fallback)
+		if active == model.TargetDirect || health[active].Direct {
+			return text["overview_direct"], true
 		}
 		for _, conn := range cfg.Connections {
 			if conn.ID == source.Fallback {
-				return cmp.Or(conn.Name, conn.ID)
+				return cmp.Or(conn.Name, conn.ID), false
 			}
 		}
 		break
 	}
-	return ""
+	return "", false
 }

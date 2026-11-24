@@ -25,6 +25,8 @@ type subscriptionSnapshot struct {
 	Skipped     int                   `json:"skipped,omitempty"`
 	LastSuccess time.Time             `json:"last_success"`
 	Selection   subscriptionSelection `json:"selection"`
+	// LinksChecked records a fetch that filtered metadata links against its redirect paths.
+	LinksChecked bool `json:"links_checked,omitempty"`
 	// Rules exists only for the source named by provider_rules.
 	Rules *rulesSnapshot `json:"rules,omitempty"`
 }
@@ -89,6 +91,7 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 		default:
 			nodes, skipped := supportedSubscriptionNodes(ctx, snapshot.Nodes)
 			if len(nodes) > 0 {
+				d.subscriptions.fetcher.SanitizeSnapshotDisplay(source, &snapshot.Metadata, nodes, snapshot.LinksChecked)
 				snapshot.Nodes, snapshot.Skipped = nodes, snapshot.Skipped+skipped
 				if snapshot.Rules != nil && snapshot.Rules.Built != nil {
 					snapshot.Rules.Built.MarkUnusableRules()

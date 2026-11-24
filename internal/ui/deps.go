@@ -38,7 +38,7 @@ type SetupPreview struct {
 // observations. Provider rules are exposed as counts and a state only.
 type OverviewStatus struct {
 	Ready                   bool
-	Devices, VPNDevices     int
+	Devices, ManagedDevices int
 	Connections             map[string]ConnectionStatus
 	RulesState              string
 	RulesActive, RulesTotal int
@@ -48,6 +48,7 @@ type OverviewStatus struct {
 type ConnectionStatus struct {
 	Active             string
 	Checked, Available bool
+	Direct             bool
 	LatencyMS          int64
 }
 

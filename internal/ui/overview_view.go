@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -33,6 +34,7 @@ type overviewSubscription struct {
 	Title, Expiry, Notice, AccountURL string
 	Status                            overviewChip
 	ExpiryReminder                    string
+	ShowRefreshFailure                bool
 	Traffic                           string
 	Used, Total                       int64
 	LastUpdated, NextUpdate           string
@@ -77,22 +79,24 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 		for _, group := range page.Choices {
 			page.CanSelect = page.CanSelect || slices.ContainsFunc(group.Options, func(option connectionOption) bool { return !option.Disabled })
 		}
-		page.NewDevices = text["overview_new_devices_direct"]
-		if network.Mode == model.ModeSplit || network.Mode == model.ModeFull {
-			page.NewDevices = text["overview_new_devices_vpn"]
-		}
 	}
 	page.setMissingTarget(text)
 	page.Devices = text["overview_no_devices"]
 	if status.Devices > 0 {
-		page.Devices = fmt.Sprintf(text["overview_device_count"], status.VPNDevices, status.Devices)
+		page.Devices = fmt.Sprintf(text["overview_device_count"], status.ManagedDevices, status.Devices)
 	}
 	selection := selectedConnection(cfg, page.Main, subs, status.Connections, text)
-	if selection.Detail != "" {
-		page.Current = fmt.Sprintf(text["overview_current_connection"], selection.Detail)
+	if network != nil {
+		page.NewDevices = text["overview_new_devices_policy"]
+		if network.Mode == model.ModeOff || (network.Mode == model.ModeFull && selection.Direct) {
+			page.NewDevices = text["overview_new_devices_direct"]
+		}
+		if current := cmp.Or(selection.Reserve, selection.Detail); status.Ready && !cfg.Paused && network.Mode != model.ModeOff && current != "" {
+			page.Current = fmt.Sprintf(text["overview_current_connection"], current)
+		}
 	}
 	page.Status, page.StatusDetail = overviewStatus(cfg.Paused, status, network, selection, now, text)
-	page.Routing, page.RoutingDetail = routingSummary(cfg, network, status, subs, text)
+	page.Routing, page.RoutingDetail = routingSummary(cfg, network, selection, status, subs, text)
 	return page
 }
 
@@ -120,8 +124,16 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_engine_down"]
 	case network == nil:
 		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_no_home"]
+	case network.Mode == model.ModeOff:
+		return overviewChip{text["overview_home_off"], ""}, text["overview_home_off_hint"]
 	case network.Target == "":
 		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_choose_connection"]
+	case selection.Direct:
+		detail := text["overview_direct_hint"]
+		if selection.Reserve != "" {
+			detail = text["overview_direct_reserve"]
+		}
+		return overviewChip{text["overview_direct"], ""}, detail
 	case selection.Health == connectionUnavailable:
 		message := text["overview_connection_down"]
 		if selection.Subscription {
@@ -134,7 +146,7 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 	}
 	detail := selection.Detail
 	if status.Devices > 0 {
-		detail = fmt.Sprintf(text["overview_device_count"], status.VPNDevices, status.Devices) + " · " + detail
+		detail = fmt.Sprintf(text["overview_device_count"], status.ManagedDevices, status.Devices) + " · " + detail
 	}
 	switch {
 	case expired(selection.Expiry, now):
@@ -162,6 +174,8 @@ func subscriptionView(sub AppliedSubscription, now time.Time, lang string) *over
 		Traffic: setupTraffic(metadata.Usage, lang),
 	}
 	expiry := setupExpiry(metadata.Usage)
+	failed := sub.State != "" && sub.State != "pending" && sub.State != subscription.StateReady
+	view.ShowRefreshFailure = failed
 	if !expiry.IsZero() {
 		view.Expiry = fmt.Sprintf(text["overview_until"], setupDate(expiry, text))
 	}
@@ -176,12 +190,13 @@ func subscriptionView(sub AppliedSubscription, now time.Time, lang string) *over
 		view.ExpiryReminder = fmt.Sprintf(text["overview_renew_before"], setupDate(expiry, text))
 	case sub.State == subscription.StateHWIDLimit:
 		view.Status = overviewChip{text["setup_limit"], "warn"}
+	case failed:
+		view.Status = overviewChip{text["overview_last_update_failed"], "warn"}
+		view.ShowRefreshFailure = false
 	case len(sub.Nodes) > 0:
 		view.Status = overviewChip{text["setup_active"], "ok"}
-	case sub.State == "" || sub.State == "pending" || sub.State == subscription.StateReady:
-		view.Status = overviewChip{text["overview_subscription_pending"], ""}
 	default:
-		view.Status = overviewChip{text["overview_subscription_unavailable"], "warn"}
+		view.Status = overviewChip{text["overview_subscription_pending"], ""}
 	}
 	if usage := metadata.Usage; usage != nil && usage.Total > 0 {
 		view.Total = usage.Total
@@ -204,12 +219,16 @@ func overviewTimestamp(at time.Time, text map[string]string) string {
 	return fmt.Sprintf(text["overview_date_time"], setupDate(at, text), at.Format("15:04"))
 }
 
-func routingSummary(cfg *model.Config, network *model.Network, status OverviewStatus, subs []AppliedSubscription, text map[string]string) (string, string) {
+func routingSummary(cfg *model.Config, network *model.Network, main connectionSelection, status OverviewStatus, subs []AppliedSubscription, text map[string]string) (string, string) {
 	if network == nil {
 		return text["overview_no_home"], ""
 	}
 	mode := text["overview_route_own"]
 	switch {
+	case network.Mode == model.ModeOff:
+		mode = text["overview_home_off"]
+	case network.Mode == model.ModeFull && main.Direct:
+		mode = text["overview_direct"]
 	case network.Mode == model.ModeFull:
 		mode = text["overview_route_all"]
 	case network.Default == model.DefaultProfile:
@@ -219,7 +238,15 @@ func routingSummary(cfg *model.Config, network *model.Network, status OverviewSt
 			mode = fmt.Sprintf(text["overview_route_provider"], sub.title(text))
 		}
 	case network.Default != "" && network.Default != model.TargetDirect:
-		mode = text["overview_route_all"]
+		defaultConnection := main
+		if network.Default != network.Target {
+			defaultConnection = selectedConnection(cfg, network.Default, subs, status.Connections, text)
+		}
+		if defaultConnection.Direct {
+			mode = text["overview_route_custom"]
+		} else {
+			mode = text["overview_route_all"]
+		}
 	case cfg.ProviderRules != nil:
 		mode = text["overview_route_custom"]
 	}

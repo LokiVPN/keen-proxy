@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -235,15 +236,12 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		state, exists := d.subscriptions.states[source.ID]
 		snapshot, latest := state.snapshot, state.attempt
 		status := SubscriptionStatus{
-			ID: source.ID, State: subscriptionPending, Metadata: subscriptionMetadata(snapshot.Metadata),
+			ID: source.ID, State: subscriptionPending, Metadata: statusMetadata(snapshot.Metadata, latest.result.Metadata),
 			Nodes: make([]SubscriptionNodeStatus, 0, len(snapshot.Nodes)), Skipped: snapshot.Skipped,
 			Unavailable: len(snapshot.Nodes) == 0, Fallback: source.Fallback,
 		}
 		if !latest.at.IsZero() {
 			status.State, status.Error, status.LastAttempt = latest.result.State, latest.result.Error, &latest.at
-			if latest.result.Metadata != (subscription.Metadata{}) {
-				status.Metadata = subscriptionMetadata(latest.result.Metadata)
-			}
 			if latest.result.Skipped != 0 {
 				status.Skipped = latest.result.Skipped
 			}
@@ -300,6 +298,24 @@ func subscriptionMetadata(metadata subscription.Metadata) subscription.Metadata 
 	if metadata.Usage != nil {
 		usage := *metadata.Usage
 		metadata.Usage = &usage
+	}
+	return metadata
+}
+
+// statusMetadata retains the last accepted facts whenever an unsuccessful
+// refresh omits them. A failure can supply an expiry, but it does not replace
+// the accepted byte counters and quota with a possibly partial report.
+func statusMetadata(saved, latest subscription.Metadata) subscription.Metadata {
+	metadata := subscriptionMetadata(subscription.Metadata{
+		Title:               cmp.Or(latest.Title, saved.Title),
+		Announce:            cmp.Or(latest.Announce, saved.Announce),
+		SupportURL:          cmp.Or(latest.SupportURL, saved.SupportURL),
+		ProfileURL:          cmp.Or(latest.ProfileURL, saved.ProfileURL),
+		UpdateIntervalHours: cmp.Or(latest.UpdateIntervalHours, saved.UpdateIntervalHours),
+		Usage:               cmp.Or(saved.Usage, latest.Usage),
+	})
+	if latest.Usage != nil && latest.Usage.Expire > 0 {
+		metadata.Usage.Expire = latest.Usage.Expire
 	}
 	return metadata
 }
@@ -792,6 +808,7 @@ func (s *appliedSubscription) accept(attempt subscriptionAttempt) {
 	}
 	s.snapshot.Nodes = result.Nodes
 	s.snapshot.Metadata = result.Metadata
+	s.snapshot.LinksChecked = true
 	s.snapshot.Skipped = result.Skipped
 	s.snapshot.LastSuccess = attempt.at
 	if attempt.rules != nil {

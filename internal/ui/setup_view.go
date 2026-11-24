@@ -14,7 +14,8 @@ import (
 // setupPage carries the link only for a retry in the failed check response.
 type setupPage struct {
 	Rev, Input, Error, Warning string
-	Replacing, EvaluateRules   bool
+	Replacing, KeepRouting     bool
+	EvaluateRules              bool
 	Result                     *setupResult
 }
 
@@ -38,9 +39,13 @@ func (p pages) renderSetup(w http.ResponseWriter, r *http.Request, status int, c
 	if cfg != nil {
 		page.Rev = Revision(cfg)
 		page.Replacing = len(cfg.Subscriptions) > 0
+		page.KeepRouting = !setupInitialRouting(cfg)
 	}
-	if page.Replacing {
+	switch {
+	case page.Replacing:
 		data.Title = data.Text["setup_replace"]
+	case page.KeepRouting:
+		data.Title = data.Text["setup_add"]
 	}
 	if page.Rev == "" && page.Error == "" {
 		page.Error = data.Text["setup_unavailable"]

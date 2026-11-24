@@ -296,6 +296,42 @@ func TestSetupEnableExistingPreservesConfiguration(t *testing.T) {
 	}
 }
 
+func TestOverviewAddsSubscriptionWithoutReplacingNetworks(t *testing.T) {
+	f := newOverviewFixture()
+	f.cfg.Subscriptions, f.cfg.ProviderRules, f.subs = nil, nil, nil
+	f.cfg.Networks[0].Target, f.cfg.Networks[0].Default = "backup", "backup"
+	f.cfg.Groups[0].Target = "backup"
+	f.setupFixture.preview = SetupPreview{State: subscription.StateReady, NodeCount: 1}
+	f.lanErr = errors.New("LAN discovery should be unnecessary")
+	want := f.Config()
+	want.Subscriptions = []subscription.Source{{ID: "main", URL: setupTestURL, SendHWID: true}}
+	h := New(f, setupTestOptions(RoleManage))
+	assertContains(t, setupRequest(h, "/", nil).Body.String(), `href="/setup">Set up subscription</a>`)
+	setup := setupRequest(h, "/setup", nil)
+	assertContains(t, setup.Body.String(), "Add subscription")
+	rev := formField(t, setup.Body.String(), "rev")
+	checked := setupRequest(h, "/setup/check", url.Values{"rev": {rev}, "url": {setupTestURL}})
+	assertContains(t, checked.Body.String(), "Add subscription", "Adding the subscription keeps your saved routing mode.")
+	if strings.Contains(checked.Body.String(), "The Home policy uses the subscription as its default.") {
+		t.Error("adding a subscription promised to change the default route")
+	}
+	post := setupRequest(h, "/setup/enable", url.Values{"rev": {rev}, "preview": {formField(t, checked.Body.String(), "preview")}})
+	if post.Code != http.StatusSeeOther || post.Header().Get("Location") != "/" || f.lanLookups != 0 || f.applies != 1 || !reflect.DeepEqual(f.Config(), want.Clone()) {
+		t.Fatalf("adding to existing policies returned HTTP %d with %d LAN lookups and %d applies", post.Code, f.lanLookups, f.applies)
+	}
+}
+
+func TestOverviewOpensForNetworkOnlyConfig(t *testing.T) {
+	f := &overviewFixture{setupFixture: setupFixture{cfg: &model.Config{
+		Networks: []model.Network{{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeFull, Target: model.TargetDirect}},
+	}}}
+	page := setupRequest(New(f, setupTestOptions(RoleManage)), "/", nil)
+	if page.Code != http.StatusOK {
+		t.Fatalf("network-only configuration returned HTTP %d with Location %q", page.Code, page.Header().Get("Location"))
+	}
+	assertContains(t, page.Body.String(), "No subscription configured.")
+}
+
 func TestSetupEnableWithNoLANOrPreview(t *testing.T) {
 	deps := &setupFixture{
 		cfg:     &model.Config{},

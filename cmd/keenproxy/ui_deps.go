@@ -66,7 +66,7 @@ func (d uiDeps) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config,
 func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 	routing := d.daemon.RoutingStatus()
 	status := ui.OverviewStatus{
-		Ready: routing.Ready, Devices: routing.Devices, VPNDevices: routing.VPNDevices,
+		Ready: routing.Ready, Devices: routing.Devices, ManagedDevices: routing.ManagedDevices,
 		Connections: make(map[string]ui.ConnectionStatus, len(routing.Health)),
 	}
 	for id, health := range routing.Health {
@@ -77,6 +77,11 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 	for id, failover := range routing.Failover {
 		connection := status.Connections[id]
 		connection.Active = failover.Active
+		status.Connections[id] = connection
+	}
+	for id := range routing.DirectTargets {
+		connection := status.Connections[id]
+		connection.Direct = true
 		status.Connections[id] = connection
 	}
 	rules, settings, state := d.daemon.ProviderRules()

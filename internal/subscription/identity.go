@@ -20,9 +20,13 @@ func originHWID(path, origin string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return deriveOriginHWID(secret, origin), nil
+}
+
+func deriveOriginHWID(secret []byte, origin string) string {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(origin))
-	return hex.EncodeToString(mac.Sum(nil)[:16]), nil
+	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 
 func installationSecret(path string) ([]byte, error) {

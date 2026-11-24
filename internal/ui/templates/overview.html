@@ -43,6 +43,7 @@
         </div>
         {{end}}
         {{if or .LastUpdated .NextUpdate}}<p class="hint overview-updates">{{.LastUpdated}}{{if and .LastUpdated .NextUpdate}} {{end}}{{.NextUpdate}}</p>{{end}}
+        {{if .ShowRefreshFailure}}<p class="hint">{{$.Text.overview_last_update_failed}}</p>{{end}}
         {{if .Notice}}
         <div class="note setup-announce">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8v.2"/></svg>

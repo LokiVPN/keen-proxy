@@ -17,7 +17,7 @@ func (p pages) home(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := p.deps.Config()
-	if cfg != nil && len(cfg.Subscriptions) == 0 && len(cfg.Connections) == 0 {
+	if cfg != nil && setupInitialRouting(cfg) && len(cfg.Connections) == 0 {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}

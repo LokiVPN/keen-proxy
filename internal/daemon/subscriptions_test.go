@@ -131,6 +131,7 @@ func requireSubscriptionSelection(t *testing.T, d *Daemon, tag string) context.C
 }
 
 func TestSubscriptionPreviewApplyRefreshAndRestart(t *testing.T) {
+	const account = "https://provider.example/account"
 	provider := new(subscriptionTestProvider)
 	provider.response.Store(&subscriptionTestResponse{body: subscriptionFirst + "\n" + subscriptionSecond, title: "Test provider"})
 	d, cfg := newSubscriptionTestDaemon(t, provider)
@@ -153,7 +154,8 @@ func TestSubscriptionPreviewApplyRefreshAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	runSubscriptionTestWorker(t, d)
-	provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond + "\n" + subscriptionFirst, title: "Updated notice"})
+	provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond + "\n" + subscriptionFirst, title: "Updated notice",
+		headers: http.Header{"Profile-Web-Page-Url": {account}}})
 	if !d.RefreshSubscription(source.ID) {
 		t.Fatal("applied subscription did not accept refresh")
 	}
@@ -186,7 +188,7 @@ func TestSubscriptionPreviewApplyRefreshAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := reopened.Subscriptions()
-	if len(got) != 1 || got[0].State != "ready" || got[0].ActiveNode != preview.Nodes[0].ID || got[0].Metadata.Title != "Updated notice" {
+	if len(got) != 1 || got[0].State != "ready" || got[0].ActiveNode != preview.Nodes[0].ID || got[0].Metadata.Title != "Updated notice" || got[0].Metadata.ProfileURL != account {
 		t.Fatalf("last usable snapshot and active selection were not restored: %+v", got)
 	}
 	requireSubscriptionSelection(t, reopened, first)
