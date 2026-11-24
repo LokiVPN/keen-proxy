@@ -92,7 +92,7 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 			page.NewDevices = text["overview_new_devices_direct"]
 		}
 		current := cmp.Or(selection.Reserve, selection.Detail)
-		if selection.Class == stats.TargetMixed {
+		if selection.Class == stats.TargetMixed && selection.Reserve == "" {
 			current = selection.Name
 		}
 		if status.Ready && !cfg.Paused && network.Mode != model.ModeOff && current != "" {
@@ -121,33 +121,7 @@ func (p *overviewPage) setMissingTarget(text map[string]string) {
 }
 
 func overviewStatus(paused bool, status OverviewStatus, network *model.Network, selection connectionSelection, now time.Time, text map[string]string) (overviewChip, string) {
-	switch {
-	case paused:
-		return overviewChip{text["overview_disabled"], ""}, text["overview_paused_hint"]
-	case !status.Ready:
-		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_engine_down"]
-	case network == nil:
-		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_no_home"]
-	case network.Mode == model.ModeOff:
-		return overviewChip{text["overview_home_off"], ""}, text["overview_home_off_hint"]
-	case network.Target == "":
-		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_choose_connection"]
-	case selection.Health == connectionUnavailable:
-		message := text["overview_connection_down"]
-		if selection.Subscription {
-			message = text["overview_subscription_down"]
-			if selection.Reserve != "" {
-				message += " " + fmt.Sprintf(text["overview_using_reserve"], selection.Reserve)
-			}
-		}
-		return overviewChip{text["overview_no_connection"], "warn"}, message
-	case selection.Class == stats.TargetDirect:
-		detail := text["overview_direct_hint"]
-		if selection.Reserve != "" {
-			detail = text["overview_direct_reserve"]
-		}
-		return overviewChip{text["overview_direct"], ""}, detail
-	}
+	outage := overviewChip{text["overview_no_connection"], "warn"}
 	detail := selection.Detail
 	if selection.Class == stats.TargetMixed {
 		detail = fmt.Sprintf(text["overview_follow_connection"], selection.Name)
@@ -155,7 +129,42 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 	if status.Devices > 0 {
 		detail = fmt.Sprintf(text["overview_device_count"], status.ManagedDevices, status.Devices) + " · " + detail
 	}
+	// The first matching status wins. For an active Home target, reachability
+	// follows the selected path before subscription state or static route class.
 	switch {
+	case paused:
+		return overviewChip{text["overview_disabled"], ""}, text["overview_paused_hint"]
+	case !status.Ready:
+		return outage, text["overview_engine_down"]
+	case network == nil:
+		return outage, text["overview_no_home"]
+	case network.Mode == model.ModeOff:
+		return overviewChip{text["overview_home_off"], ""}, text["overview_home_off_hint"]
+	case network.Target == "":
+		return outage, text["overview_choose_connection"]
+	case selection.Health == connectionUnavailable:
+		if selection.Reserve != "" {
+			return outage, text["overview_reserve_down"]
+		}
+		if selection.Subscription {
+			return outage, text["overview_subscription_down"]
+		}
+		return outage, text["overview_connection_down"]
+	case selection.SubscriptionUnavailable && selection.Reserve != "":
+		if selection.ReserveDirect {
+			return overviewChip{text["overview_direct"], ""}, text["overview_direct_reserve"]
+		}
+		return overviewChip{text["overview_reserve_connection"], ""}, fmt.Sprintf(text["overview_using_reserve"], selection.Reserve)
+	case selection.SubscriptionUnavailable:
+		return outage, text["overview_subscription_down"]
+	case selection.Blocked:
+		return outage, text["overview_connection_down"]
+	case selection.Class == stats.TargetDirect:
+		detail := text["overview_direct_hint"]
+		if selection.Reserve != "" {
+			detail = text["overview_direct_reserve"]
+		}
+		return overviewChip{text["overview_direct"], ""}, detail
 	case expired(selection.Expiry, now):
 		return overviewChip{text["overview_subscription_expired"], "warn"}, detail
 	case expiring(selection.Expiry, now):

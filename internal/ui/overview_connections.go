@@ -151,10 +151,12 @@ func connectionProtocol(conn model.Connection) string {
 }
 
 type connectionSelection struct {
-	Name, Detail, Health, Reserve string
-	Expiry                        time.Time
-	Class                         stats.TargetClass
-	Subscription                  bool
+	Name, Detail, Reserve                 string
+	Health                                string // reachability of the active path
+	Expiry                                time.Time
+	Class                                 stats.TargetClass
+	Subscription, SubscriptionUnavailable bool
+	ReserveDirect, Blocked                bool
 }
 
 func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscription, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
@@ -178,19 +180,16 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 				selection.Health = connectionAvailable
 				selection.Detail += " · " + fmt.Sprintf(text["overview_balancing_nodes"], *sub.BalanceEligible)
 			} else {
-				selection.Health = connectionUnavailable
-				selection.Reserve, selection.Class = subscriptionReserve(cfg, sub.ID, health, text)
+				selection.useSubscriptionReserve(cfg, sub.ID, health, text)
 			}
 		}
 		return selection
 	}
 	nodeID := mode
 	if mode == "auto" {
-		if sub.Unavailable {
-			selection.Health = connectionUnavailable
-			if sub.SwitchReason == "fallback" || len(sub.Nodes) == 0 {
-				selection.Reserve, selection.Class = subscriptionReserve(cfg, sub.ID, health, text)
-			}
+		selection.SubscriptionUnavailable = sub.Unavailable
+		if sub.Unavailable && (sub.SwitchReason == "fallback" || len(sub.Nodes) == 0) {
+			selection.useSubscriptionReserve(cfg, sub.ID, health, text)
 			return selection
 		}
 		nodeID = sub.ActiveNode
@@ -200,16 +199,19 @@ func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode strin
 		selection.Detail += " · " + nodeLabel(node, text)
 		selection.Health = node.Health
 	} else if mode != "auto" {
-		selection.Health = connectionUnavailable
-		selection.Reserve, selection.Class = subscriptionReserve(cfg, sub.ID, health, text)
+		selection.useSubscriptionReserve(cfg, sub.ID, health, text)
 	}
 	return selection
 }
 
 func selectedManualConnection(cfg *model.Config, target string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	active := cmp.Or(health[target].Active, target)
-	probe := health[active]
 	selection := connectionSelection{Class: connectionClass(target, health)}
+	if active == model.TargetBlock {
+		selection.Blocked = true
+		return selection
+	}
+	probe := health[active]
 	if probe.Checked {
 		selection.Health = connectionUnavailable
 		if probe.Available {
@@ -234,22 +236,32 @@ func selectedManualConnection(cfg *model.Config, target string, health map[strin
 		selection.Detail = cmp.Or(conn.Name, conn.ID) + " · " + connectionProbe(probe, text)
 		return selection
 	}
-	selection.Health = connectionUnavailable
+	selection.Blocked = true
 	return selection
 }
 
-func subscriptionReserve(cfg *model.Config, id string, health map[string]ConnectionStatus, text map[string]string) (string, stats.TargetClass) {
+func (s *connectionSelection) useSubscriptionReserve(cfg *model.Config, id string, health map[string]ConnectionStatus, text map[string]string) {
+	s.SubscriptionUnavailable = true
 	for _, source := range cfg.Subscriptions {
 		if source.ID != id {
 			continue
 		}
-		class := connectionClass(source.Fallback, health)
-		if class == stats.TargetDirect {
-			return text["overview_direct"], class
+		// A configured reserve can itself use a failover chain. Read the
+		// probe of the selected member, as for an ordinary manual target.
+		reserve := selectedManualConnection(cfg, source.Fallback, health, text)
+		s.Class = reserve.Class
+		if reserve.Blocked {
+			return
 		}
-		return connectionName(cfg, source.Fallback), class
+		s.Health = reserve.Health
+		s.ReserveDirect = reserve.Class == stats.TargetDirect || health[source.Fallback].Active == model.TargetDirect
+		if s.ReserveDirect {
+			s.Reserve = text["overview_direct"]
+		} else {
+			s.Reserve = connectionName(cfg, source.Fallback)
+		}
+		return
 	}
-	return "", stats.TargetUnknown
 }
 
 func connectionName(cfg *model.Config, target string) string {

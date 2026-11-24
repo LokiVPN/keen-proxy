@@ -58,6 +58,122 @@ func TestOverviewStates(t *testing.T) {
 	}
 }
 
+func TestOverviewStatusPrecedence(t *testing.T) {
+	emptyCatalog := func(f *overviewFixture, fallback string) {
+		f.cfg.Subscriptions[0].Fallback = fallback
+		f.subs[0].Unavailable = true
+		f.subs[0].Nodes, f.subs[0].ActiveNode = nil, ""
+		network := &f.cfg.Networks[0]
+		network.Mode, network.Default = model.ModeFull, ""
+		delete(f.status.Connections, network.Target)
+	}
+	rawTarget := func(f *overviewFixture, outbound map[string]any, class stats.TargetClass, available bool) {
+		conn := &f.cfg.Connections[0]
+		conn.Type, conn.Link, conn.Outbound = model.ConnSingBox, "", outbound
+		f.cfg.Networks[0].Target = conn.ID
+		f.status.Connections[conn.ID] = ConnectionStatus{Class: class, Checked: true, Available: available}
+	}
+	direct := map[string]any{"type": "direct"}
+	mixed := map[string]any{"type": "selector", "default": "backup", "outbounds": []string{model.TargetDirect, "backup"}}
+	for _, tc := range []struct {
+		name, chip, detail string
+		arrange            func(*overviewFixture)
+	}{
+		{"paused before engine and reserve", "Disabled", "All devices connect directly, without the VPN.", func(f *overviewFixture) {
+			emptyCatalog(f, model.TargetDirect)
+			f.cfg.Paused, f.status.Ready = true, false
+		}},
+		{"engine before failed probe", "No connection", "VPN routing is unavailable.", func(f *overviewFixture) {
+			f.cfg.Networks[0].Target, f.status.Ready = "old", false
+		}},
+		{"no home policy", "No connection", "No home network configured.", func(f *overviewFixture) {
+			f.cfg.Networks = nil
+		}},
+		{"home VPN off before failed probe", "Home VPN off", "Devices that follow the home policy connect directly.", func(f *overviewFixture) {
+			f.cfg.Networks[0].Mode, f.cfg.Networks[0].Target = model.ModeOff, "old"
+		}},
+		{"no main target", "No connection", "Choose a main connection.", func(f *overviewFixture) {
+			f.cfg.Networks[0].Target = ""
+		}},
+		{"checked direct target fails", "No connection", "The main connection is unavailable.", func(f *overviewFixture) {
+			rawTarget(f, direct, stats.TargetDirect, false)
+		}},
+		{"mixed selector fails", "No connection", "The main connection is unavailable.", func(f *overviewFixture) {
+			rawTarget(f, mixed, stats.TargetMixed, false)
+		}},
+		{"subscription node fails before switching to its reserve", "No connection", "No subscription node is available.", func(f *overviewFixture) {
+			f.cfg.Subscriptions[0].Fallback = model.TargetDirect
+			f.subs[0].Nodes[0].Health = connectionUnavailable
+		}},
+		{"active reserve member fails", "No connection", "The reserve connection is unavailable.", func(f *overviewFixture) {
+			emptyCatalog(f, "backup")
+			f.cfg.Connections[1].Fallback = "old"
+			f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN, Active: "old", Checked: true, Available: true}
+		}},
+		{"empty catalog uses unchecked direct reserve", "Direct connection", "The main connection is using its direct reserve.", func(f *overviewFixture) {
+			emptyCatalog(f, model.TargetDirect)
+		}},
+		{"auto switches to direct with catalog still present", "Direct connection", "The main connection is using its direct reserve.", func(f *overviewFixture) {
+			f.cfg.Subscriptions[0].Fallback = model.TargetDirect
+			f.subs[0].Unavailable, f.subs[0].SwitchReason, f.subs[0].ActiveNode = true, "fallback", ""
+			f.subs[0].Nodes[0].Health = connectionUnavailable
+			f.status.Connections[f.cfg.Networks[0].Target] = ConnectionStatus{Class: stats.TargetMixed}
+		}},
+		{"empty catalog uses named reserve", "Reserve connection", "Using reserve Cabin.", func(f *overviewFixture) {
+			emptyCatalog(f, "backup")
+		}},
+		{"unchecked reserve member stays in use after its primary fails", "Reserve connection", "Using reserve Cabin.", func(f *overviewFixture) {
+			emptyCatalog(f, "backup")
+			f.cfg.Connections[1].Fallback = "old"
+			f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN, Active: "old", Checked: true}
+			f.status.Connections["old"] = ConnectionStatus{Class: stats.TargetVPN}
+		}},
+		{"empty catalog with blocking fallback", "No connection", "No subscription node is available.", func(f *overviewFixture) {
+			emptyCatalog(f, model.TargetBlock)
+		}},
+		{"empty catalog with blocked reserve chain", "No connection", "No subscription node is available.", func(f *overviewFixture) {
+			emptyCatalog(f, "backup")
+			f.cfg.Connections[1].Disabled = true
+			f.status.Connections["backup"] = ConnectionStatus{Active: model.TargetBlock}
+		}},
+		{"manual failover is blocked", "No connection", "The main connection is unavailable.", func(f *overviewFixture) {
+			f.cfg.Networks[0].Target = "backup"
+			f.status.Connections["backup"] = ConnectionStatus{Active: model.TargetBlock}
+		}},
+		{"direct classification", "Direct connection", "The main connection for the home network routes directly.", func(f *overviewFixture) {
+			rawTarget(f, direct, stats.TargetDirect, true)
+		}},
+		{"expired subscription", "Subscription expired", "North \u00b7 42 ms", func(f *overviewFixture) {
+			f.subs[0].Metadata.Usage.Expire = time.Now().Add(-time.Hour).Unix()
+		}},
+		{"expiry warning on a working subscription", "Subscription expiring", "North \u00b7 42 ms", func(f *overviewFixture) {
+			f.subs[0].Metadata.Usage.Expire = time.Now().Add(time.Hour).Unix()
+		}},
+		{"mixed classification", "Connection routing", "Traffic follows connection Office", func(f *overviewFixture) {
+			rawTarget(f, mixed, stats.TargetMixed, true)
+		}},
+		{"VPN classification", "Working", "Cabin \u00b7 35 ms", func(f *overviewFixture) {
+			f.cfg.Networks[0].Target = "backup"
+		}},
+		{"awaiting first probe", "Checking connection", "Cabin \u00b7 Not checked", func(f *overviewFixture) {
+			f.cfg.Networks[0].Target = "backup"
+			f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOverviewFixture()
+			tc.arrange(f)
+			w := setupRequest(New(f, setupTestOptions(RoleView)), "/", nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET / returned HTTP %d", w.Code)
+			}
+			_, banner, _ := strings.Cut(w.Body.String(), `<div class="overview-status">`)
+			banner, _, _ = strings.Cut(banner, `</div>`)
+			assertContains(t, banner, ">"+tc.chip+"</span>", tc.detail+"</p>")
+		})
+	}
+}
+
 func TestOverviewTargets(t *testing.T) {
 	for _, tc := range []struct{ name, target, defaultTarget string }{
 		{"auto", model.ManagedTarget("sample", "auto"), model.DefaultProfile},
@@ -102,7 +218,7 @@ func TestOverviewStatusUsesTheSelectedConnection(t *testing.T) {
 	eligible := 0
 	f.subs[0].BalanceEligible = &eligible
 	h := New(f, setupTestOptions(RoleManage))
-	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>No connection</span>`, "Using reserve Cabin.")
+	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Reserve connection</span>`, "Using reserve Cabin.")
 	eligible = 2
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Working</span>`, "Available nodes: 2")
 	network.Target = "backup"
