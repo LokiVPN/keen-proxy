@@ -32,6 +32,9 @@ type Record struct {
 	Error       string    `json:"error,omitempty"`
 	Source      string    `json:"source"`
 	Limited     bool      `json:"limited,omitempty"`
+
+	spare               bool
+	retentionGeneration uint64
 }
 
 // Cache synchronizes a bounded set of DNS observations using an injected clock.
@@ -41,7 +44,8 @@ type Cache struct {
 	records map[string]Record
 	// retain identifies own-list names, which keep their history after expiry
 	// and have priority at capacity. A nil policy retains every name.
-	retain func(string) bool
+	retain              func(string) bool
+	retentionGeneration uint64
 	// generation changes whenever a name gains or loses an address, so
 	// readers can skip work while it stays the same.
 	generation uint64
@@ -61,14 +65,22 @@ func Normalize(name string) string {
 // SetRetentionPolicy installs the matcher for eviction and expiry and removes
 // empty records outside it. It runs the optional publish callback with the
 // same lock held so matcher publication and eviction cannot interleave.
-// retain and publish must avoid calling cache methods.
+// retain must give stable results until replaced. Both callbacks must avoid
+// calling cache methods.
 func (c *Cache) SetRetentionPolicy(retain func(name string) bool, publish func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.retain = retain
+	c.retentionGeneration++
 	for name, r := range c.records {
-		if len(r.Addresses) == 0 && c.spareLocked(name) {
+		if len(r.Addresses) != 0 {
+			continue
+		}
+		c.classifyLocked(&r)
+		if r.spare {
 			delete(c.records, name)
+		} else {
+			c.records[name] = r
 		}
 	}
 	if publish != nil {
@@ -76,9 +88,15 @@ func (c *Cache) SetRetentionPolicy(retain func(name string) bool, publish func()
 	}
 }
 
-// spareLocked identifies names outside the installed retention policy.
-func (c *Cache) spareLocked(name string) bool {
-	return c.retain != nil && !c.retain(name)
+// classifyLocked updates the cached priority for the installed policy and
+// reports whether the record's classification needs to be stored.
+func (c *Cache) classifyLocked(r *Record) bool {
+	if r.retentionGeneration == c.retentionGeneration {
+		return false
+	}
+	r.spare = c.retain != nil && !c.retain(r.Name)
+	r.retentionGeneration = c.retentionGeneration
+	return true
 }
 
 // put stores r; the caller holds mu. A new name at the limit first evicts
@@ -87,6 +105,12 @@ func (c *Cache) spareLocked(name string) bool {
 // spare record is dropped rather than evict another kind.
 func (c *Cache) put(r Record) {
 	old, exists := c.records[r.Name]
+	r.spare, r.retentionGeneration = old.spare, old.retentionGeneration
+	c.classifyLocked(&r)
+	if len(r.Addresses) == 0 && r.spare {
+		c.removeLocked(r.Name)
+		return
+	}
 	if !exists && len(c.records) >= maxNames {
 		var victim string
 		var oldest time.Time
@@ -97,12 +121,14 @@ func (c *Cache) put(r Record) {
 			if victimSpare && !earlier {
 				continue
 			}
-			spare := c.spareLocked(name)
-			if (spare && !victimSpare) || (spare == victimSpare && earlier) {
-				victim, oldest, victimSpare = name, v.AttemptedAt, spare
+			if c.classifyLocked(&v) {
+				c.records[name] = v
+			}
+			if (v.spare && !victimSpare) || (v.spare == victimSpare && earlier) {
+				victim, oldest, victimSpare = name, v.AttemptedAt, v.spare
 			}
 		}
-		if !victimSpare && c.spareLocked(r.Name) {
+		if !victimSpare && r.spare {
 			return
 		}
 		c.removeLocked(victim)
@@ -197,10 +223,6 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string) {
 	slices.SortFunc(r.Addresses, func(a, b Address) int { return strings.Compare(a.IP, b.IP) })
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(r.Addresses) == 0 && c.spareLocked(name) {
-		c.removeLocked(name)
-		return
-	}
 	if source == "observed" {
 		r.ObservedAt = now
 	} else {
@@ -215,10 +237,7 @@ func (c *Cache) SetError(name, message string) {
 	name = Normalize(name)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	r, exists := c.records[name]
-	if !exists && c.spareLocked(name) {
-		return
-	}
+	r := c.records[name]
 	r.Name = name
 	r.Error = message
 	r.AttemptedAt = c.now()
@@ -246,9 +265,12 @@ func (c *Cache) pruneLocked() {
 					live = append(live, a)
 				}
 			}
-			if len(live) == 0 && c.spareLocked(name) {
-				delete(c.records, name)
-				continue
+			if len(live) == 0 {
+				c.classifyLocked(&r)
+				if r.spare {
+					delete(c.records, name)
+					continue
+				}
 			}
 			r.Addresses = live
 			c.records[name] = r

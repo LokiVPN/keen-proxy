@@ -198,6 +198,49 @@ func TestSpareRecordsGiveWayWhenFull(t *testing.T) {
 	}
 }
 
+func TestFullCacheEvictionReusesRetentionClassification(t *testing.T) {
+	const newcomer = "www.new.provider.example"
+	var residentCalls, newcomerCalls int
+	retain := func(name string) bool {
+		if name == newcomer {
+			newcomerCalls++
+			return false
+		}
+		residentCalls++
+		return true
+	}
+	start := time.Unix(1000, 0)
+	c := New(func() time.Time { return start })
+	c.SetRetentionPolicy(retain, nil)
+	for i := range maxNames {
+		name := fmt.Sprintf("n%d.a.own.example", i)
+		c.Observe(name, answer(name+". 300 IN A 203.0.113.1"), "observed")
+	}
+	newAnswer := answer(newcomer + ". 300 IN A 203.0.113.2")
+	checkOverflow := func(phase string, wantResidents int) {
+		t.Helper()
+		before := c.Generation()
+		c.Observe(newcomer, newAnswer, "observed")
+		if residentCalls != wantResidents || newcomerCalls != 1 {
+			t.Errorf("%s: matcher called for %d resident names and %d incoming names, want %d and 1",
+				phase, residentCalls, newcomerCalls, wantResidents)
+		}
+		if c.Generation() != before {
+			t.Errorf("%s: the provider answer changed an all-own cache", phase)
+		}
+		residentCalls, newcomerCalls = 0, 0
+	}
+
+	residentCalls, newcomerCalls = 0, 0
+	checkOverflow("unchanged policy", 0)
+	c.Observe("n0.a.own.example", answer("n0.a.own.example. 300 IN A 203.0.113.3"), "observed")
+	checkOverflow("after updating an existing answer", 0)
+
+	c.SetRetentionPolicy(retain, nil)
+	checkOverflow("after installing a new policy", maxNames)
+	checkOverflow("after classifying under the new policy", 0)
+}
+
 // The generation changes only when a name gains or loses an unexpired
 // address, so a reader can skip work while it stays the same.
 func TestGenerationFollowsAddressChanges(t *testing.T) {
