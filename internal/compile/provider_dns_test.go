@@ -58,6 +58,13 @@ func TestDNSNamesObserveOwnAndProviderNames(t *testing.T) {
 	if own.Observed("direct.example") || !own.Observed("bank.example") {
 		t.Error("provider names observed while provider rules are off")
 	}
+	dormant := dnsNamesFor(t, testProviderRules(), func(c *model.Config) { c.ProviderRules.Off = true })
+	if dormant.Observed("direct.example") || dormant.ProviderBlocked("ads.example") || !dormant.Observed("bank.example") {
+		t.Error("dormant provider rules still affect DNS name observation or blocking")
+	}
+	if got := dormant.RuleSets(nil); len(got) != 1 || got[DomainTag(compileConfig(t).Groups[0])+".json"] == nil {
+		t.Error("wanted only the own DNS fallback set with provider rules off")
+	}
 }
 
 // ruleSetCIDRs returns the addresses of a DNS fallback rule-set file.

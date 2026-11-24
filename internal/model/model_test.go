@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -248,6 +249,7 @@ func TestProviderRulesValidation(t *testing.T) {
 	}
 	cases := map[string]struct{ rules, want string }{
 		"source and unknown keys": {`{source: lv, disabled: ["proxy:geosite:youtube", "gone:entry"]}`, ""},
+		"off with unknown source": {"{source: nope, off: true}", `provider_rules.source: unknown subscription "nope"`},
 		"longest key":             {"{source: lv, disabled: " + keys(1, 256) + "}", ""},
 		"most keys":               {"{source: lv, disabled: " + keys(1024, 0) + "}", ""},
 		"unknown source":          {"{source: nope}", `provider_rules.source: unknown subscription "nope"`},
@@ -284,6 +286,46 @@ func TestProviderRulesValidation(t *testing.T) {
 	}
 }
 
+func TestProviderRulesOffRoundTrip(t *testing.T) {
+	cfg, err := Parse([]byte(validYAML + `
+subscriptions:
+  - {id: lv, url: "https://provider.example/s"}
+provider_rules: {source: lv, off: true, disabled: ["proxy:geosite:youtube"]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"source":"lv","off":true,"disabled":["proxy:geosite:youtube"]}`
+	for _, c := range []*Config{cfg, cfg.Clone()} {
+		got, err := json.Marshal(c.ProviderRules)
+		if err != nil || string(got) != want {
+			t.Fatalf("JSON settings = %s, %v, want %s", got, err, want)
+		}
+	}
+	yaml, err := cfg.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Parse(yaml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := json.Marshal(loaded.ProviderRules); err != nil || string(got) != want {
+		t.Fatalf("settings after YAML save = %s, %v, want %s", got, err, want)
+	}
+	if loaded.ActiveProviderRules() != nil {
+		t.Fatal("saved off settings are active")
+	}
+	loaded.ProviderRules.Off = false
+	active := loaded.ActiveProviderRules()
+	if active == nil || active.Source != "lv" || !slices.Equal(active.Disabled, []string{"proxy:geosite:youtube"}) {
+		t.Fatalf("reactivated settings = %+v", active)
+	}
+	if got, err := json.Marshal(active); err != nil || strings.Contains(string(got), `"off"`) {
+		t.Fatalf("active settings = %s, %v", got, err)
+	}
+}
+
 // Provider proxy rules and the profile default go to the policy's target, so
 // a split policy that uses them without one would send that traffic direct
 // without saying so. Validation rejects such configurations instead.
@@ -296,6 +338,7 @@ subscriptions:
   - {id: lv, url: "https://provider.example/s"}
 `
 	const rules = "provider_rules: {source: lv}\n"
+	const off = "provider_rules: {source: lv, off: true}\n"
 	const network = "default profile needs a target"
 	const split = "split mode needs a target while provider_rules is set"
 	cases := []struct{ name, config, want string }{
@@ -306,6 +349,9 @@ subscriptions:
 		{"provider rules and a split network with a target", rules + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi}\n", ""},
 		{"provider rules and an off network without a target", rules + "networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: off}\n", ""},
 		{"a split network without a target and without provider rules", "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split}\n", ""},
+		{"off provider rules and a split network without a target", off + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split}\n", ""},
+		{"off provider rules still need a target for the profile default", off + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: profile}\n", network},
+		{"off provider rules and a static split device outside every network", off + "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 10.9.0.5, mode: split}\n", ""},
 		{"a static split device outside every network", rules + "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 10.9.0.5, mode: split}\n", split},
 		{"a static split device in an off network without a target", rules +
 			"networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: off}\nclients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 192.168.8.5, mode: split}\n", split},

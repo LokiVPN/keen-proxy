@@ -59,8 +59,7 @@ type Config struct {
 	Failover      Failover              `yaml:"failover" json:"failover"`
 	Connections   []Connection          `yaml:"connections" json:"connections"`
 	Subscriptions []subscription.Source `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
-	// ProviderRules turns on the routing rules a subscription's provider
-	// sends with it; nil keeps them off.
+	// ProviderRules holds the selected source and switches, including while off.
 	ProviderRules *ProviderRulesSettings `yaml:"provider_rules,omitempty" json:"provider_rules,omitempty"`
 	Groups        []Group                `yaml:"groups" json:"groups"`
 	Networks      []Network              `yaml:"networks" json:"networks"`
@@ -72,9 +71,18 @@ type Config struct {
 // kept in the private subscription snapshot, not in the configuration.
 type ProviderRulesSettings struct {
 	Source string `yaml:"source" json:"source"` // a configured subscription ID
+	Off    bool   `yaml:"off,omitempty" json:"off,omitempty"`
 	// Disabled holds rule keys. Keys the provider no longer sends stay valid,
 	// so a rule returning to the provider's lists stays off.
 	Disabled []string `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+}
+
+// ActiveProviderRules returns the settings that participate in routing.
+func (c *Config) ActiveProviderRules() *ProviderRulesSettings {
+	if c == nil || c.ProviderRules == nil || c.ProviderRules.Off {
+		return nil
+	}
+	return c.ProviderRules
 }
 
 // Bounds for provider_rules.disabled. Compile keeps provider rule keys
@@ -85,6 +93,7 @@ const (
 )
 
 func (c *Config) validateProviderRules(add func(string, ...any)) {
+	// Stored settings must be valid when the user turns the rules back on.
 	r := c.ProviderRules
 	if r == nil {
 		return
@@ -603,6 +612,7 @@ func (c *Config) Validate() error {
 	// Provider proxy rules and the profile default go to the policy target;
 	// without one they would go direct without saying so.
 	const splitNeedsTarget = "split mode needs a target while provider_rules is set"
+	providerRulesActive := c.ActiveProviderRules() != nil
 	var prefixes []netip.Prefix // of c.Networks, invalid ones as the zero prefix
 	for i, n := range c.Networks {
 		where := fmt.Sprintf("networks[%d] %q", i, n.Name)
@@ -625,7 +635,7 @@ func (c *Config) Validate() error {
 		if n.Default == DefaultProfile && n.Target == "" {
 			add("%s: default profile needs a target", where)
 		}
-		if n.Mode == ModeSplit && n.Target == "" && c.ProviderRules != nil {
+		if n.Mode == ModeSplit && n.Target == "" && providerRulesActive {
 			add("%s: %s", where, splitNeedsTarget)
 		}
 	}
@@ -654,7 +664,7 @@ func (c *Config) Validate() error {
 		// network holding its address, as routing does. A device known only
 		// by its MAC address gets that address at run time, so it cannot be
 		// checked here; the documentation asks for its own target.
-		if ip, err := netip.ParseAddr(cl.IP); err == nil && cl.Mode == ModeSplit && cl.Target == "" && c.ProviderRules != nil {
+		if ip, err := netip.ParseAddr(cl.IP); err == nil && cl.Mode == ModeSplit && cl.Target == "" && providerRulesActive {
 			if i := slices.IndexFunc(prefixes, func(p netip.Prefix) bool { return p.Contains(ip) }); i < 0 || c.Networks[i].Target == "" {
 				add("%s: %s; its address is in no network with one", where, splitNeedsTarget)
 			}

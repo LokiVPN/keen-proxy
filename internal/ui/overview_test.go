@@ -58,6 +58,17 @@ func TestOverviewStates(t *testing.T) {
 	}
 }
 
+func TestOverviewIgnoresDormantProviderRules(t *testing.T) {
+	f := newOverviewFixture()
+	f.cfg.ProviderRules.Off = true
+	h := New(f, setupTestOptions(RoleManage))
+	page := setupRequest(h, "/", nil)
+	assertContains(t, page.Body.String(), "Follow the subscription profile")
+	if strings.Contains(page.Body.String(), "Routing by Example VPN") || strings.Contains(page.Body.String(), "1 of 2 rules enabled") {
+		t.Error("overview presented dormant rules as active")
+	}
+}
+
 func TestOverviewStatusPrecedence(t *testing.T) {
 	emptyCatalog := func(f *overviewFixture, fallback string) {
 		f.cfg.Subscriptions[0].Fallback = fallback

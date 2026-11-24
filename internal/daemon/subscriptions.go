@@ -253,10 +253,10 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		if next := state.next; !status.Refreshing && !next.IsZero() {
 			status.NextRefresh = &next
 		}
-		if snapshot.Rules != nil {
-			status.RulesError = snapshot.Rules.Error
-		}
 		if source.ID == providerRulesSource(d.cfg) {
+			if snapshot.Rules != nil {
+				status.RulesError = snapshot.Rules.Error
+			}
 			status.RulesState = snapshot.Rules.state()
 			if status.RulesState == ProviderRulesFailed && status.RulesError == "" {
 				status.RulesError = "No provider rules are available"

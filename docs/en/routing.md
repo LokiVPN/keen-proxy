@@ -72,7 +72,7 @@ Periodic health checks measure HTTP requests, not ICMP ping. They are separate f
 
 In split mode, traffic that matches no group goes direct. A network can set `default` to send that traffic elsewhere: a connection ID or a managed subscription target tunnels it, `direct` (or empty) keeps it direct, and `profile` follows the [provider rules](#provider-rules): such traffic uses the policy's target, unless the applied provider profile says `GlobalProxy: false`, which keeps it direct. Without provider rules, `profile` uses the target too. `block` is rejected; add a block group instead. Devices in the network that split inherit its default. Groups always win over the default.
 
-Traffic never goes direct just because a target is missing. `profile` needs the network's `target`, and a network without one is rejected. While `provider_rules` is set, every split network needs a `target`, because provider proxy rules use it, and so does a split device unless its address is in a network that has one. Devices with a fixed `ip` are checked when the configuration is saved. A device known only by its MAC address gets its address at run time and cannot be checked, so give it its own `target` if it can be outside such a network.
+Traffic never goes direct just because a target is missing. `profile` needs the network's `target`, and a network without one is rejected. While provider rules are active, every split network needs a `target`, because provider proxy rules use it, and so does a split device unless its address is in a network that has one. Devices with a fixed `ip` are checked when the configuration is saved. A device known only by its MAC address gets its address at run time and cannot be checked, so give it its own `target` if it can be outside such a network.
 
 ```yaml
 networks:
@@ -88,6 +88,8 @@ provider_rules:
   source: provider
   disabled: ["block:geosite:category-ads"]
 ```
+
+Set `off: true` inside `provider_rules` to turn all provider rules off while keeping `source` and `disabled`. Remove the flag or set `off: false` to use the saved switches again. A `profile` default uses the policy's target while the rules are off.
 
 The provider sends the profile with each subscription fetch: in the `routing` response header, or, when the header is empty, as a body line `happ://routing/add/<base64 JSON>` or `happ://routing/onadd/<base64 JSON>`. A `routing-enable` header (or body comment) other than `true` or `1` withholds the rules, and `happ://routing/off` means the provider sends none. A profile that cannot be read is reported as a fixed error while the rules already in use stay. KeenProxy applies only the profile's own lists; it does not follow provider updates between subscription refreshes.
 

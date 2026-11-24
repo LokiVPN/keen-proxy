@@ -170,10 +170,10 @@ func keptRules(previous *rulesSnapshot, failure string) *rulesSnapshot {
 
 // providerRulesSource returns the subscription ID whose rules apply, or "".
 func providerRulesSource(cfg *model.Config) string {
-	if cfg == nil || cfg.ProviderRules == nil {
-		return ""
+	if settings := cfg.ActiveProviderRules(); settings != nil {
+		return settings.Source
 	}
-	return cfg.ProviderRules.Source
+	return ""
 }
 
 // syncProviderRules keeps rules only on the configured source, so turning them
@@ -195,7 +195,7 @@ func syncProviderRules(cfg *model.Config, s *appliedSubscription) {
 type ProviderRulesState string
 
 const (
-	// ProviderRulesOff: provider rules are not configured.
+	// ProviderRulesOff: provider rules are disabled or unconfigured.
 	ProviderRulesOff ProviderRulesState = "off"
 	// ProviderRulesPending: configured, but not evaluated yet.
 	ProviderRulesPending ProviderRulesState = "pending"
@@ -245,10 +245,11 @@ func (s *rulesSnapshot) state() ProviderRulesState {
 func (d *Daemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, ProviderRulesState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.cfg == nil || d.cfg.ProviderRules == nil {
+	active := d.cfg.ActiveProviderRules()
+	if active == nil {
 		return compile.ProviderRules{}, nil, ProviderRulesOff
 	}
-	settings := *d.cfg.ProviderRules
+	settings := *active
 	settings.Disabled = slices.Clone(settings.Disabled)
 	rules := d.subscriptions.states[settings.Source].snapshot.Rules
 	state := rules.state()

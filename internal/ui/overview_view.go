@@ -241,6 +241,7 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	if network == nil {
 		return text["overview_no_home"], ""
 	}
+	rules := cfg.ActiveProviderRules()
 	mode := text["overview_route_own"]
 	switch {
 	case network.Mode == model.ModeOff:
@@ -263,15 +264,15 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 		}
 	case network.Default == model.DefaultProfile:
 		mode = text["overview_route_profile"]
-		if cfg.ProviderRules != nil {
-			sub := appliedSubscriptionFor(subs, cfg.ProviderRules.Source)
+		if rules != nil {
+			sub := appliedSubscriptionFor(subs, rules.Source)
 			mode = fmt.Sprintf(text["overview_route_provider"], sub.title(text))
 		}
-	case cfg.ProviderRules != nil:
+	case rules != nil:
 		mode = text["overview_route_custom"]
 	}
 	var details []string
-	if cfg.ProviderRules != nil {
+	if rules != nil {
 		switch status.RulesState {
 		case "ready", "partial":
 			details = append(details, fmt.Sprintf(text["overview_rule_count"], status.RulesActive, status.RulesTotal))

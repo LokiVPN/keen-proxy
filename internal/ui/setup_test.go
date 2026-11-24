@@ -406,6 +406,7 @@ func TestSetupEnableTokenBelongsToManagerAndIsSingleUse(t *testing.T) {
 func TestSetupReplacementPreservesDisabledProviderRules(t *testing.T) {
 	cfg := &model.Config{
 		Subscriptions: []subscription.Source{{ID: "sample", URL: "https://provider.example/old-link"}},
+		ProviderRules: &model.ProviderRulesSettings{Source: "sample", Off: true, Disabled: []string{"proxy:geosite:video"}},
 		Networks: []model.Network{{
 			Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit,
 			Target: "subscription:sample:auto", Default: model.TargetDirect,

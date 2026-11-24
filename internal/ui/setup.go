@@ -62,7 +62,8 @@ func (p pages) setupCheck(w http.ResponseWriter, r *http.Request) {
 	case preview.PreviewID == 0:
 		page.Result, page.Error = nil, text["setup_check_again"]
 	default:
-		page.EvaluateRules = setupInitialRouting(cfg) || (cfg.ProviderRules != nil && cfg.ProviderRules.Source == source.ID)
+		rules := cfg.ActiveProviderRules()
+		page.EvaluateRules = setupInitialRouting(cfg) || (rules != nil && rules.Source == source.ID)
 		deadline := now.Add(setupDraftLifetime)
 		if !expiry.IsZero() && expiry.Before(deadline) {
 			deadline = expiry

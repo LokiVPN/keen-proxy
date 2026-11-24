@@ -430,6 +430,17 @@ func TestProfileDefaultFollowsTheProviderProfile(t *testing.T) {
 	}
 }
 
+func TestCompileWithProviderRulesSettingsOff(t *testing.T) {
+	rules := testProviderRules()
+	rules.GlobalProxy = false
+	_, want := compileProvider(t, func(c *model.Config) { c.ProviderRules = nil }, &rules)
+	cfg, got := compileProvider(t, func(c *model.Config) { c.ProviderRules.Off = true }, &rules)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("routing with dormant rules: %v, want %v",
+			chain(t, cfg, rules, got, "192.168.7.0/24"), chain(t, cfg, rules, want, "192.168.7.0/24"))
+	}
+}
+
 // Split clients get the same rules as split networks, through their own
 // target; off devices and a paused router get none.
 func TestSplitClientClassesReceiveProviderRules(t *testing.T) {

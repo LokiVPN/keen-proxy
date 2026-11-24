@@ -34,7 +34,7 @@ type Input struct {
 	// Subscriptions provides already validated node snapshots, keyed by source ID.
 	Subscriptions map[string][]subscription.Node
 	// ProviderRules holds the provider rules of subscriptions, keyed by source
-	// ID. Only those of Config.ProviderRules.Source apply. Compile only reads
+	// ID. Only the active rules source in Config applies. Compile only reads
 	// them: they share storage with the daemon's state.
 	ProviderRules map[string]ProviderRules
 }

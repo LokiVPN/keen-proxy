@@ -184,6 +184,23 @@ func TestProviderBlockRulesAnswerDNSLocally(t *testing.T) {
 			t.Errorf("%s blocks journaled for %v, want %v", source, hosts, want)
 		}
 	}
+
+	off := cfg.Clone()
+	off.ProviderRules.Off = true
+	if err := d.Apply(t.Context(), off); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveA(t, srv, lanDevice, "x.ads.example"); got != "198.51.100.7" {
+		t.Errorf("dormant provider block still answered %s", got)
+	}
+	if got := resolveA(t, srv, lanDevice, "www.manual.example"); got != "0.0.0.0" {
+		t.Errorf("own block answered %s after turning provider rules off", got)
+	}
+	d.observeDomain("new.direct.example.", dnsAnswer(t, "new.direct.example. 60 IN A 203.0.113.7"))
+	d.flushDomains()
+	if slices.Contains(observedNames(d), "new.direct.example") || len(dnsFilesWith(t, d, "203.0.113.7")) != 0 {
+		t.Error("addresses for a dormant provider rule still reached DNS fallback")
+	}
 }
 
 // The running DNS frontend and the observation follow provider rule changes

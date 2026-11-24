@@ -132,7 +132,7 @@ func configChanges(prev, cfg *model.Config) string {
 	if !reflect.DeepEqual(prev.System.MemoryLimitMiB, cfg.System.MemoryLimitMiB) {
 		parts = append(parts, memoryLimitChange(prev.System.MemoryLimitMiB, cfg.System.MemoryLimitMiB))
 	}
-	if change := providerRulesChange(prev.ProviderRules, cfg.ProviderRules); change != "" {
+	if change := providerRulesChange(prev.ActiveProviderRules(), cfg.ActiveProviderRules()); change != "" {
 		parts = append(parts, change)
 	}
 	if len(parts) == 0 {

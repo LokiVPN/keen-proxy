@@ -482,6 +482,7 @@ func TestProviderRulesStates(t *testing.T) {
 		withRules bool
 	}{
 		{"off", func(c *model.Config, _ *rulesProvider) { c.ProviderRules = nil }, ProviderRulesOff, "", false},
+		{"off with saved switches", func(c *model.Config, _ *rulesProvider) { c.ProviderRules.Off = true }, ProviderRulesOff, "", false},
 		{"ready", nil, ProviderRulesReady, "", true},
 		{"partial", func(_ *model.Config, p *rulesProvider) { delete(p.files, "/geoip.dat") },
 			ProviderRulesPartial, "geoip file could not be downloaded", true},
@@ -527,6 +528,9 @@ func TestProviderRulesStates(t *testing.T) {
 				t.Fatalf("state %s, settings %+v, %d rules, status state %q error %q",
 					state, settings, len(rules.Rules), status.RulesState, status.RulesError)
 			}
+			if state == ProviderRulesOff && (p.count("/geosite.dat") != 0 || p.count("/geoip.dat") != 0) {
+				t.Fatal("the daemon fetched geodata while provider rules were off")
+			}
 		})
 	}
 }
@@ -549,7 +553,8 @@ func TestAppliedChangesNamePauseAndProviderRules(t *testing.T) {
 		{func(c *model.Config) { c.ProviderRules = &model.ProviderRulesSettings{Source: "sample"} }, "provider rules on"},
 		{func(c *model.Config) { c.ProviderRules.Disabled = []string{"block:geosite:ads"} }, "switched-off provider rules: 0 → 1"},
 		{func(c *model.Config) { c.ProviderRules.Disabled = []string{"proxy:geosite:video"} }, "switched-off provider rules changed"},
-		{func(c *model.Config) { c.ProviderRules = nil }, "provider rules off"},
+		{func(c *model.Config) { c.ProviderRules.Off = true }, "provider rules off"},
+		{func(c *model.Config) { c.ProviderRules.Off = false }, "provider rules on"},
 	} {
 		cur = cur.Clone()
 		step.change(cur)
@@ -590,9 +595,9 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 	}
 	requireAppliedProviderRules(t, d)
 
-	// Turning them off drops the rules from the saved snapshot.
+	// Turning them off drops the rules from the saved snapshot and keeps the switches.
 	off := on.Clone()
-	off.ProviderRules = nil
+	off.ProviderRules.Off = true
 	if err := d.Apply(t.Context(), off); err != nil {
 		t.Fatal(err)
 	}
@@ -612,6 +617,26 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 			t.Fatalf("snapshot keeps rules that were turned off: %s", raw)
 		}
 	}
+	savedCfg, err := model.Load(d.opt.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := savedCfg.ProviderRules; r == nil || !r.Off || r.Source != settings.Source || !slices.Equal(r.Disabled, settings.Disabled) {
+		t.Fatalf("saved switches after turning rules off = %+v", r)
+	}
+
+	// Even a manual subscription refresh leaves the rules unevaluated.
+	reads := p.count("/geosite.dat")
+	refreshProviderRules(t, d, func(s SubscriptionStatus) bool { return s.State == subscription.StateReady })
+	if p.count("/geosite.dat") != reads || d.Subscriptions()[0].RulesState != "" {
+		t.Fatal("refresh evaluated rules while they were off")
+	}
+	savedCfg.ProviderRules.Off = false
+	if err := d.Apply(t.Context(), savedCfg); err != nil {
+		t.Fatal(err)
+	}
+	awaitSubscriptionStatus(t, d, func(s SubscriptionStatus) bool { return s.RulesState == ProviderRulesReady })
+	requireAppliedProviderRules(t, d)
 }
 
 func TestProviderRulesApplyBoundsStalledGeoDownloads(t *testing.T) {

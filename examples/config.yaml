@@ -31,6 +31,8 @@ connections:
 # node answers; traffic returns to a node after failover.up_after of success.
 # Apply the routing rules the provider sends with that subscription; keys in
 # disabled switch single rules off. Every split network then needs a target.
+# Add off: true inside provider_rules to turn all provider rules off and
+# keep the source and disabled keys.
 # provider_rules: {source: provider, disabled: ["block:geosite:category-ads"]}
 groups:
   - {name: International, target: fi, entries: ["youtube.com", "149.154.160.0/20"]}

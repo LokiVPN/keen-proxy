@@ -422,10 +422,11 @@ func providerDNSTag(key string) string { return "dns-" + shortHash([]byte(key)) 
 // providerProfile returns the provider rules that apply to c: those of the
 // configured source when the daemon supplied them, otherwise nil.
 func providerProfile(c *model.Config, all map[string]ProviderRules) *ProviderRules {
-	if c.ProviderRules == nil {
+	settings := c.ActiveProviderRules()
+	if settings == nil {
 		return nil
 	}
-	rules, ok := all[c.ProviderRules.Source]
+	rules, ok := all[settings.Source]
 	if !ok {
 		return nil
 	}
@@ -436,14 +437,15 @@ func providerProfile(c *model.Config, all map[string]ProviderRules) *ProviderRul
 // The compiler also checks entries of enabled rules with no usable data to
 // report how many entries were rejected.
 func enabledProviderRules(c *model.Config, p *ProviderRules) []ProviderRule {
-	if p == nil {
+	settings := c.ActiveProviderRules()
+	if p == nil || settings == nil {
 		return nil
 	}
 	var out []ProviderRule
 	for _, r := range p.Rules {
 		known := (r.Kind == providerSite || r.Kind == providerIP) &&
 			(r.Action == providerProxy || r.Action == providerDirect || r.Action == providerBlock)
-		if known && r.HasData() && !slices.Contains(c.ProviderRules.Disabled, r.Key) {
+		if known && r.HasData() && !slices.Contains(settings.Disabled, r.Key) {
 			out = append(out, r)
 		}
 	}
