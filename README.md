@@ -98,7 +98,7 @@ opkg update && opkg install curl ca-bundle ca-certificates
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
-The bootstrap reads `BUILD_INFO.txt` from the latest published LokiVPN release, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. The first start enables LAN DNS interception even with an empty routing policy. Stop any competing interceptor first.
+The bootstrap reads `BUILD_INFO.txt` from the latest published LokiVPN release, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. KeenProxy intercepts DNS only for devices that a network or device policy includes, so the starter configuration, which has none, intercepts nothing. Stop any competing interceptor before you include devices.
 
 After successful installation or command-line update, the bootstrap prints the panel URL when available. Run `keenproxy --url` to display it again; it does not start the service. Use `--config /path/to/config.yaml` for a non-default configuration. See [panel access](docs/en/user-guide.md#access-the-panel).
 
@@ -135,7 +135,7 @@ For offline or manual setup, `tools/install.sh` copies a supplied executable. It
 
 Review the installer before using it. Existing external TrustTunnel executables are left untouched, but KeenProxy no longer uses them. `--without-trusttunnel` remains accepted at the installer boundary for existing updater binaries; new commands do not need it. The obsolete `--trusttunnel-only` mode has been removed.
 
-Enabling interception changes live LAN traffic. Back up the router configuration, retain SSH access and a tested recovery path, and avoid running competing DNS/interception tools simultaneously. Even with no selected clients, the DNS frontend intercepts LAN port 53 when enabled. Inspect a candidate configuration before starting:
+Enabling interception changes live LAN traffic. Back up the router configuration, retain SSH access and a tested recovery path, and avoid running competing DNS/interception tools simultaneously. The DNS frontend intercepts port 53 only for devices that take part in a network or device policy; devices that are off, and every device while KeenProxy is paused, keep their usual DNS path. Inspect a candidate configuration before starting:
 
 ```sh
 ./bin/keenproxy -dry-run -config /path/to/config.yaml

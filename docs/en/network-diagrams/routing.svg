@@ -16,7 +16,7 @@
   <path d="M160 214V299H204" fill="none" stroke="#4d6c58" stroke-width="2" marker-end="url(#arrow)"/>
   <path d="M560 214V225H690V299H516" fill="none" stroke="#4d6c58" stroke-width="2" marker-end="url(#arrow)"/>
   <text x="560" y="242" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" fill="#19392a" stroke="#f2f7f2" stroke-width="5" stroke-linejoin="round" paint-order="stroke">Explicit rules → DNS IP hints</text>
-  <text x="560" y="261" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" fill="#19392a" stroke="#f2f7f2" stroke-width="5" stroke-linejoin="round" paint-order="stroke">→ country / category → Direct</text>
+  <text x="560" y="261" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" fill="#19392a" stroke="#f2f7f2" stroke-width="5" stroke-linejoin="round" paint-order="stroke">→ country / category → default</text>
   <rect x="205" y="274" width="310" height="50" rx="10" fill="#e3f2d5" stroke="#85a490"/>
   <text x="360.0" y="305" text-anchor="middle" font-family="system-ui, sans-serif" font-size="17" fill="#19392a" font-weight="700">Selected route</text>
   <path d="M360 324V351" fill="none" stroke="#4d6c58" stroke-width="2" marker-end="url(#arrow)"/>

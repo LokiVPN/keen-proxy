@@ -12,7 +12,7 @@ The optional NDM netfilter hook is specific to compatible Keenetic/Netcraze firm
 
 ### Native OpenWrt installation
 
-Keep SSH/LAN recovery access, back up the configuration, and stop competing DNS/traffic interceptors. The service starts LAN DNS interception on its first start. Ensure enough persistent overlay storage for the binary, a staged replacement, and a rollback copy; `/tmp` free space alone is not sufficient.
+Keep SSH/LAN recovery access, back up the configuration, and stop competing DNS/traffic interceptors. As soon as a network or device policy includes devices, the service intercepts their DNS. Ensure enough persistent overlay storage for the binary, a staged replacement, and a rollback copy; `/tmp` free space alone is not sufficient.
 
 Install `curl`, CA certificates, and compatible iptables tools using the package manager for your firmware (`opkg` or `apk`). Package names vary by release; common choices include `curl`, `ca-bundle`, and `iptables-nft`. REDIRECT needs NAT support; UDP TPROXY additionally needs matching TPROXY/mangle modules. Installing a package does not prove its compatibility with your firmware.
 
@@ -98,7 +98,7 @@ Install `curl` and the CA certificates in the Entware root shell if needed.
 opkg update && opkg install curl ca-bundle ca-certificates
 ```
 
-Stop competing traffic or DNS interception services before installation. KeenProxy begins intercepting LAN DNS when the daemon starts, including with the starter configuration. Run the bootstrap once a LokiVPN release is available. [Releases](https://github.com/LokiVPN/keen-proxy/releases)
+Stop competing traffic or DNS interception services before installation. KeenProxy intercepts DNS only for devices that a network or device policy includes; the starter configuration has none, so nothing is intercepted until you add one. Run the bootstrap once a LokiVPN release is available. [Releases](https://github.com/LokiVPN/keen-proxy/releases)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
