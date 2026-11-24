@@ -233,13 +233,27 @@ const (
 	RoleManage             // read and write access
 )
 
-type roleKey struct{}
+// account is a verified KeeneticOS identity or a trusted loopback role.
+type account struct {
+	role Role
+	user string
+}
 
-// RoleFrom returns the role decided by the access policy for this request;
-// a request that never passed it is denied.
+type accountKey struct{}
+
+func accountFrom(ctx context.Context) account {
+	caller, _ := ctx.Value(accountKey{}).(account)
+	return caller
+}
+
+// RoleFrom returns the authority granted by the policy for this request.
 func RoleFrom(ctx context.Context) Role {
-	role, _ := ctx.Value(roleKey{}).(Role)
-	return role
+	return accountFrom(ctx).role
+}
+
+// KeeneticUserFrom returns the verified KeeneticOS name, if available.
+func KeeneticUserFrom(ctx context.Context) string {
+	return accountFrom(ctx).user
 }
 
 // roleFromTags maps KeeneticOS account tags to a role. Administrators carry
@@ -258,34 +272,34 @@ func roleFromTags(tags []string) Role {
 }
 
 // verify requires the current OS identity and permissions on every request and
-// returns the account's role with status 200, or RoleDeny with the refusal
-// status. The role is fetched by name instead of loading all users.
-func (a *KeeneticAuth) verify(r *http.Request) (Role, int) {
+// returns the identity and its role, or a refusal status. The role is
+// fetched by name instead of loading all users.
+func (a *KeeneticAuth) verify(r *http.Request) (account, int) {
 	cookie, status := a.browserCookie(r)
 	if status != http.StatusOK {
-		return RoleDeny, status
+		return account{}, status
 	}
 	var identity struct {
 		User string `json:"user"`
 		Demo bool   `json:"demo-mode"`
 	}
 	if status := a.getJSON(r.Context(), "/rci/whoami", "", cookie, &identity); status != http.StatusOK {
-		return RoleDeny, status
+		return account{}, status
 	}
 	if identity.Demo || strings.TrimSpace(identity.User) == "" || len(identity.User) > 128 {
-		return RoleDeny, http.StatusForbidden
+		return account{}, http.StatusForbidden
 	}
 	var users map[string]struct {
 		Tag []string `json:"tag"`
 	}
 	if status := a.getJSON(r.Context(), "/rci/show/sc/user", identity.User, cookie, &users); status != http.StatusOK {
-		return RoleDeny, status
+		return account{}, status
 	}
 	role := roleFromTags(users[identity.User].Tag)
 	if len(users) != 1 || role == RoleDeny {
-		return RoleDeny, http.StatusForbidden
+		return account{user: identity.User}, http.StatusForbidden
 	}
-	return role, http.StatusOK
+	return account{role: role, user: identity.User}, http.StatusOK
 }
 
 func (a *KeeneticAuth) logout(r *http.Request) int {
@@ -309,8 +323,18 @@ func (a *KeeneticAuth) logout(r *http.Request) int {
 	}
 }
 
+// Origin is the validated local WebUI address.
+func (a *KeeneticAuth) Origin() string {
+	return "http://" + a.router.Host
+}
+
+// PanelURL is the direct panel URL accepted by the session policy.
+func (a *KeeneticAuth) PanelURL() string {
+	return "http://" + a.panelHosts[0]
+}
+
 func (a *KeeneticAuth) applicationsURL() string {
-	return "http://" + a.router.Host + "/apps"
+	return a.Origin() + "/apps"
 }
 
 // keeneticRefusal maps a refusal of the KeeneticOS check to the status and

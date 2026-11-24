@@ -1,0 +1,29 @@
+{{define "tabs"}}
+<nav class="tabs" aria-label="{{.Text.nav_label}}">
+  {{range .Tabs}}<a class="tab" href="{{.Path}}"{{if eq .Path $.ActiveTab}} aria-current="page"{{end}}>{{index $.Text .Key}}</a>
+  {{end}}
+</nav>
+{{end}}
+
+{{define "view-note"}}
+<div class="note view-note">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="10.5" width="13" height="9.5" rx="1.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
+  <div><strong>{{.Text.view_title}}</strong><p>{{.Text.view_hint}}</p></div>
+</div>
+{{end}}
+
+{{define "chart"}}
+<div class="chart" role="img" aria-label="{{.Label}}">
+  <div class="chart-y" aria-hidden="true"><span>{{.Top}}</span><span>{{.Mid}}</span><span>0</span></div>
+  <svg viewBox="0 0 668 122" preserveAspectRatio="none" aria-hidden="true">
+    <path class="grid" d="M0 0 H668 M0 61 H668 M0 122 H668" vector-effect="non-scaling-stroke"/>
+    {{if .RX}}
+    <path class="rx-a" d="{{.RXArea}}"/>
+    <path class="tx-a" d="{{.TXArea}}"/>
+    <path class="rx-l" d="{{.RX}}" vector-effect="non-scaling-stroke"/>
+    <path class="tx-l" d="{{.TX}}" vector-effect="non-scaling-stroke"/>
+    {{end}}
+  </svg>
+  <div class="chart-x" aria-hidden="true">{{range .Times}}<span>{{.}}</span>{{end}}</div>
+</div>
+{{end}}

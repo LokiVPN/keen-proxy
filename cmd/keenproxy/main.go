@@ -24,6 +24,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/ndmhook"
 	"github.com/ordo-systems/keen-proxy/internal/netfilter"
+	"github.com/ordo-systems/keen-proxy/internal/ui"
 	"github.com/ordo-systems/keen-proxy/internal/update"
 
 	// Routers often lack a CA bundle. The Mozilla roots are used only when the
@@ -215,9 +216,22 @@ func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *upd
 			"origin", source, "reason", err.Error())
 		keenetic, unavailable = nil, true
 	}
+	opts := ui.Options{
+		Role: pageRole,
+		User: func(r *http.Request) string { return api.KeeneticUserFrom(r.Context()) },
+	}
+	if keenetic != nil {
+		opts.KeeneticOrigin, opts.DirectURL = keenetic.Origin(), keenetic.PanelURL()
+	} else {
+		opts.DirectURL, _ = panelURL(cfg.API.Listen, cfg.LAN.Interface, interfaceAddrs)
+	}
+	management := &api.Server{
+		D: d, Log: log, Updates: updates, Keenetic: keenetic, Unavailable: unavailable,
+		Pages: ui.New(uiDeps{daemon: d}, opts), PageError: opts.AccessError,
+	}
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,
-		Handler:           (&api.Server{D: d, Log: log, Updates: updates, Keenetic: keenetic, Unavailable: unavailable}).Handler(),
+		Handler:           management.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ln, err := net.Listen("tcp", srv.Addr)

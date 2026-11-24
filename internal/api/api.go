@@ -12,7 +12,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -49,6 +51,10 @@ type Server struct {
 	Log      *slog.Logger
 	Updates  *update.Manager
 	Keenetic *KeeneticAuth
+	// Pages handles requests outside the control API; PageError renders
+	// access refusals for those requests with their original HTTP status.
+	Pages     http.Handler
+	PageError func(http.ResponseWriter, *http.Request, int)
 	// Unavailable refuses non-loopback requests with 503 when browser
 	// sign-in could not be configured at startup.
 	Unavailable bool
@@ -62,17 +68,15 @@ type route struct {
 	h       http.Handler
 }
 
-// publicRoutes are the only exact method and path pairs that skip
-// authorization: they decide for themselves what to reveal (the session
-// probe) or only drop a session. Stage 4 adds the sign-in page and a static
-// asset prefix here.
+// publicRoutes are the only exact method and path pairs that skip the
+// session check. The session probe decides what to reveal and logout only
+// drops a session.
 var publicRoutes = map[string]bool{
 	"GET /api/session": true,
 	"POST /api/logout": true,
 }
 
-// routes lists every endpoint and the two catch-alls; Handler registers
-// exactly this list.
+// routes lists the registered control endpoints.
 func (s *Server) routes() []route {
 	return append([]route{
 		{"POST /api/diagnostics/check", http.HandlerFunc(s.diagnosticCheck)},
@@ -95,21 +99,29 @@ func (s *Server) routes() []route {
 		{"GET /api/stats", http.HandlerFunc(s.stats)},
 		{"GET /api/stats/hosts", http.HandlerFunc(s.hosts)},
 		{"GET /api/journal/{kind}", http.HandlerFunc(s.journalPage)},
-	}, append(s.updateRoutes(),
-		route{"/api/", http.NotFoundHandler()},
-		route{"/", http.HandlerFunc(rebuildingUI)},
-	)...)
+	}, s.updateRoutes()...)
 }
 
-// Handler builds the routes. The peer-address guard runs first, then the
-// authorization middleware, so every path is protected unless it is listed
-// in publicRoutes.
+// Handler mounts the control API and pages behind the same access policy.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, rt := range s.routes() {
 		mux.Handle(rt.pattern, rt.h)
 	}
-	return s.lanOnly(s.authorize(mux))
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, "not found")
+	})
+	pages := s.Pages
+	if pages == nil {
+		pages = http.NotFoundHandler()
+	}
+	return s.lanOnly(s.authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPI(r.URL.Path) {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		pages.ServeHTTP(w, r)
+	})))
 }
 
 // lanOnly accepts private, loopback, and link-local peers based on RemoteAddr.
@@ -152,12 +164,11 @@ func isAPI(path string) bool {
 	return path == "/api" || strings.HasPrefix(path, "/api/")
 }
 
-// verdict is the access decision for one request: the role it grants, or the
-// refusal status and the reason shown to the client.
+// verdict carries the identity or refusal from the access policy.
 type verdict struct {
-	role   Role
-	status int    // http.StatusOK when granted
-	reason string // empty when granted
+	account account
+	status  int
+	reason  string
 }
 
 // browserOrigin refuses writes (methods other than GET, HEAD and OPTIONS)
@@ -165,36 +176,50 @@ type verdict struct {
 // Requests without those headers, such as curl and the test gates, pass.
 var browserOrigin = http.NewCrossOriginProtection()
 
-// authorize is the single place that decides access. A cross-origin write is
-// refused first, before any trust decision, so a page the admin visits can
-// drive neither an SSH tunnel to loopback nor a KeeneticOS session (ruling
-// R15). Every other request except publicRoutes gets a verdict; a granted one
-// carries its role in the context (see RoleFrom), a refused one gets the
-// refusal as JSON under /api and as short text elsewhere, where stage 4
-// renders the sign-in screens. Nothing it passes on or refuses may be cached.
+// publicStatic only exempts canonical asset reads. Validate the escaped path
+// before a mux can decode or clean it into a different route.
+func publicStatic(r *http.Request) bool {
+	p := r.URL.EscapedPath()
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		strings.HasPrefix(p, "/static/") && p == r.URL.Path && fs.ValidPath(p[1:])
+}
+
+// authorize checks cross-origin writes before granting local or session
+// access, including on the public routes (R15).
 func (s *Server) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		var v verdict
-		switch {
-		case browserOrigin.Check(r) != nil:
-			v = verdict{status: http.StatusForbidden, reason: "cross-origin request denied"}
-		case publicRoutes[r.Method+" "+r.URL.EscapedPath()]:
+		if browserOrigin.Check(r) != nil {
+			s.refuse(w, r, http.StatusForbidden, "cross-origin request denied")
+			return
+		}
+		if publicRoutes[r.Method+" "+r.URL.EscapedPath()] || publicStatic(r) {
 			next.ServeHTTP(w, r)
 			return
-		default:
-			v = s.decide(r)
+		}
+		v := s.decide(r)
+		if v.account != (account{}) {
+			r = r.WithContext(context.WithValue(r.Context(), accountKey{}, v.account))
 		}
 		if v.status != http.StatusOK {
-			if isAPI(r.URL.Path) {
-				writeError(w, v.status, v.reason)
-			} else {
-				http.Error(w, v.reason, v.status)
-			}
+			s.refuse(w, r, v.status, v.reason)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), roleKey{}, v.role)))
+		next.ServeHTTP(w, r)
 	})
+}
+
+// refuse keeps API errors JSON and delegates page errors to the HTML renderer.
+func (s *Server) refuse(w http.ResponseWriter, r *http.Request, status int, reason string) {
+	w.Header().Set("Cache-Control", "no-store")
+	switch {
+	case isAPI(r.URL.Path):
+		writeError(w, status, reason)
+	case s.PageError != nil:
+		s.PageError(w, r, status)
+	default:
+		http.Error(w, reason, status)
+	}
 }
 
 // decide applies the access policy: trusted loopback requests manage
@@ -204,7 +229,7 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 // are refused. Writes (methods other than GET and HEAD) need RoleManage.
 func (s *Server) decide(r *http.Request) verdict {
 	if isLoopback(r) {
-		return verdict{role: RoleManage, status: http.StatusOK}
+		return verdict{account: account{role: RoleManage}, status: http.StatusOK}
 	}
 	if s.Unavailable {
 		return verdict{status: http.StatusServiceUnavailable, reason: "web interface unavailable; use an SSH tunnel to 127.0.0.1"}
@@ -212,15 +237,15 @@ func (s *Server) decide(r *http.Request) verdict {
 	if s.Keenetic == nil || isAPI(r.URL.Path) {
 		return verdict{status: http.StatusForbidden, reason: "local access only"}
 	}
-	role, status := s.Keenetic.verify(r)
-	if status == http.StatusOK && role != RoleManage && r.Method != http.MethodGet && r.Method != http.MethodHead {
-		status = http.StatusForbidden
+	caller, status := s.Keenetic.verify(r)
+	if status == http.StatusOK && caller.role != RoleManage && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return verdict{status: http.StatusForbidden, reason: "KeeneticOS management access denied"}
 	}
 	if status != http.StatusOK {
 		status, reason := keeneticRefusal(status)
-		return verdict{status: status, reason: reason}
+		return verdict{account: caller, status: status, reason: reason}
 	}
-	return verdict{role: role, status: http.StatusOK}
+	return verdict{account: caller, status: http.StatusOK}
 }
 
 // session reports whether the caller has access and, in KeeneticOS mode,
@@ -251,7 +276,30 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if logoutNavigation(r) {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// logoutNavigation identifies a native HTML form submission (R42).
+func logoutNavigation(r *http.Request) bool {
+	if media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); media == "application/x-www-form-urlencoded" {
+		return true
+	}
+	for value := range strings.SplitSeq(r.Header.Get("Accept"), ",") {
+		media, params, _ := mime.ParseMediaType(value)
+		if media != "text/html" {
+			continue
+		}
+		q, found := params["q"]
+		weight, _ := strconv.ParseFloat(q, 64)
+		if !found || weight > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
@@ -382,12 +430,6 @@ func (s *Server) parseLink(w http.ResponseWriter, r *http.Request) {
 		"type": model.ConnLink, "name": links.Name(link), "protocol": o["type"],
 		"server": o["server"], "port": o["server_port"], "tls": o["tls"] != nil, "transport": o["transport"],
 	})
-}
-
-// rebuildingUI is a temporary placeholder for every non-API path; it goes away
-// when the server-rendered UI lands.
-func rebuildingUI(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "KeenProxy interface is being rebuilt", http.StatusServiceUnavailable)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

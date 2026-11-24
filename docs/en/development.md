@@ -247,8 +247,11 @@ Any `Authorization` header a client still sends is ignored. Every other
 client gets `403 local access only` on `/api`, with or without a KeeneticOS
 session (`503` while sign-in is unavailable); only `GET /api/session` and
 `POST /api/logout` answer browsers, so a signed-in read-only account never
-receives subscription URLs, keys or journal entries. One middleware
-authorizes every path, pages included; only those two routes skip it.
+receives subscription URLs, keys or journal entries. The session and logout
+endpoints and canonical `GET` and `HEAD` requests under `/static/` skip the
+session requirement. The LAN address and cross-origin write checks still apply.
+A successful same-origin sign-out form redirects to `/`. JSON callers receive
+`{"ok":true}`.
 
 Before it decides on trust, the middleware refuses cross-origin writes with
 `403 cross-origin request denied`: any method other than `GET`, `HEAD` and
@@ -270,11 +273,11 @@ them pass the client's own `Host` (nginx `proxy_set_header Host $host`).
 
 The panel token, the `-key` option, trusted networks and `POST /api/login` are
 removed; `api.token_file` and `api.no_token_from` are accepted and ignored. The
-Vue panel and demo mode are removed too. Until the server-rendered UI
-arrives, `GET /` and other non-`/api/` paths return
-`503 KeenProxy interface is being rebuilt` to trusted loopback clients and
-signed-in KeeneticOS accounts; other clients get the same refusal as the API
-(`401`, `403` or `503`) as short text. The journal stays internal (`GET /api/journal/{kind}` on loopback and
+Vue panel and demo mode are removed too. `GET /` serves the server-rendered
+panel shell to trusted loopback clients and signed-in KeeneticOS accounts.
+Page refusals show the sign-in screen, with `401`, `403` or `503` according
+to the reason. The control API returns JSON errors. The journal stays internal
+(`GET /api/journal/{kind}` on loopback and
 the support ZIP); the journal stream and export, presets, resource exchange,
 ad filter lists, GeoIP lookup, domain preview, YAML import/export and the DNS
 check endpoint are removed.

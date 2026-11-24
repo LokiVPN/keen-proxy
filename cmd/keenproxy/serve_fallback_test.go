@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -68,6 +69,33 @@ func TestFailedOriginKeepsLoopbackPanel(t *testing.T) {
 		}
 		if c := get(t, addr, "192.168.1.1:8086"); c != http.StatusServiceUnavailable {
 			t.Errorf("operator origin %t: foreign Host: %d, want 503", operator, c)
+		}
+		for _, access := range []struct {
+			host    string
+			status  int
+			heading string
+		}{
+			{addr, http.StatusOK, "<h1>KeenProxy</h1>"},
+			{"192.168.1.1:8086", http.StatusServiceUnavailable, "<h1>KeeneticOS session check unavailable</h1>"},
+		} {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = access.host
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != access.status || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") ||
+				!bytes.Contains(body, []byte(access.heading)) {
+				t.Errorf("GET / as %q: HTTP %d, %q, want %d and %q", access.host, resp.StatusCode, resp.Header.Get("Content-Type"), access.status, access.heading)
+			}
 		}
 		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "sign-in unavailable") {
 			t.Errorf("operator origin %t: log = %q", operator, logs.String())

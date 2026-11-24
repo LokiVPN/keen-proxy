@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -273,18 +274,21 @@ func TestJournalEndpoints(t *testing.T) {
 	}
 }
 
-func TestRootIsPlaceholderUntilUIExists(t *testing.T) {
+func TestPagesHandlerReceivesOnlyPagePaths(t *testing.T) {
 	s, _ := newServer()
+	s.Pages = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, r.URL.Path)
+	})
 	h := s.Handler()
-	w := do(t, h, "GET", "/", "", "", "127.0.0.1:1234")
-	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "KeenProxy interface is being rebuilt") {
-		t.Fatalf("root = %d %q", w.Code, w.Body.String())
+	for _, path := range []string{"/", "/connections"} {
+		if w := do(t, h, "GET", path, "", "", local); w.Code != http.StatusOK || w.Body.String() != path {
+			t.Errorf("GET %s: HTTP %d, body %q", path, w.Code, w.Body.String())
+		}
 	}
-	if w := do(t, h, "GET", "/connections", "", "", "127.0.0.1:1234"); w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("non-API path = %d", w.Code)
-	}
-	if w := do(t, h, "GET", "/api/unknown", "", "", "127.0.0.1:1234"); w.Code != http.StatusNotFound {
-		t.Fatalf("unknown api path = %d", w.Code)
+	for _, path := range []string{"/api/unknown", "/api%2Funknown"} {
+		if w := do(t, h, "GET", path, "", "", local); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, w.Code)
+		}
 	}
 }
 
@@ -409,8 +413,8 @@ func lanRequest(method, path string) *http.Request {
 }
 
 // A LAN peer without a session gets an exact refusal on every path: each
-// registered route with its own method, HEAD and OPTIONS, both catch-alls
-// and a page path. Only the public routes answer, with their own method.
+// registered API route with its own method, HEAD and OPTIONS and unregistered
+// API and page paths. Only the public routes answer, with their own method.
 func TestEveryRouteRejectsLANPeers(t *testing.T) {
 	plain, _ := newServer()
 	keenetic, _, _ := keeneticFixtureTags(t, []string{"http", "cli"})
@@ -482,30 +486,49 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 	}
 }
 
-// Pages are authorized like the API: a KeeneticOS session reaches them (the
-// placeholder for now), a view account may not write, and refusals are short
-// text instead of JSON.
+// Pages and refusals pass through the injected UI boundary only after the
+// central policy has decided the caller's access.
 func TestPagesFollowTheKeeneticSession(t *testing.T) {
-	const placeholder = "KeenProxy interface is being rebuilt"
 	for _, tc := range []struct {
-		name    string
-		tags    []string
-		method  string
-		session bool
-		host    string
-		want    int
-		body    string
+		name        string
+		tags        []string
+		method      string
+		session     bool
+		host        string
+		unavailable bool
+		want        int
+		role        Role
 	}{
-		{"no session", []string{"http", "cli"}, "GET", false, "", http.StatusUnauthorized, "KeeneticOS sign-in required"},
-		{"manage reads", []string{"http", "cli"}, "GET", true, "", http.StatusServiceUnavailable, placeholder},
-		{"manage writes", []string{"http", "cli"}, "POST", true, "", http.StatusServiceUnavailable, placeholder},
-		{"view reads", []string{"http", "readonly"}, "GET", true, "", http.StatusServiceUnavailable, placeholder},
-		{"view reads headers", []string{"http", "readonly"}, "HEAD", true, "", http.StatusServiceUnavailable, placeholder},
-		{"view cannot write", []string{"http", "readonly"}, "POST", true, "", http.StatusForbidden, "KeeneticOS management access denied"},
-		{"foreign host", []string{"http", "cli"}, "GET", true, "evil.example:8086", http.StatusForbidden, "KeeneticOS management access denied"},
+		{"no session", []string{"http", "cli"}, "GET", false, "", false, http.StatusUnauthorized, RoleDeny},
+		{"manage reads", []string{"http", "cli"}, "GET", true, "", false, http.StatusOK, RoleManage},
+		{"manage writes", []string{"http", "cli"}, "POST", true, "", false, http.StatusOK, RoleManage},
+		{"view reads", []string{"http", "readonly"}, "GET", true, "", false, http.StatusOK, RoleView},
+		{"view reads headers", []string{"http", "readonly"}, "HEAD", true, "", false, http.StatusOK, RoleView},
+		{"view cannot write", []string{"http", "readonly"}, "POST", true, "", false, http.StatusForbidden, RoleDeny},
+		{"foreign host", []string{"http", "cli"}, "GET", true, "wrong.example:8086", false, http.StatusForbidden, RoleDeny},
+		{"unavailable authority", []string{"http", "cli"}, "GET", true, "", true, http.StatusServiceUnavailable, RoleDeny},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, _, _ := keeneticFixtureTags(t, tc.tags)
+			s, d, mode := keeneticFixtureTags(t, tc.tags)
+			if tc.unavailable {
+				mode.Store(3)
+			}
+			var gotRole Role
+			var gotUser string
+			s.Pages = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotRole = RoleFrom(r.Context())
+				gotUser = KeeneticUserFrom(r.Context())
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				if r.Method == http.MethodPost {
+					d.applied = d.cfg
+				}
+				w.WriteHeader(http.StatusOK)
+			})
+			s.PageError = func(w http.ResponseWriter, _ *http.Request, status int) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(status)
+				fmt.Fprintf(w, "<h1>%s</h1>", http.StatusText(status))
+			}
 			r := keeneticRequest(tc.method, "/connections", "", tc.session)
 			if tc.method == "POST" {
 				r.Header.Set("Origin", keeneticPanel)
@@ -514,19 +537,45 @@ func TestPagesFollowTheKeeneticSession(t *testing.T) {
 				r.Host = tc.host
 			}
 			w := serve(s, r)
-			if w.Code != tc.want || strings.TrimSpace(w.Body.String()) != tc.body {
-				t.Fatalf("%d %q, want %d %q", w.Code, w.Body, tc.want, tc.body)
+			if w.Code != tc.want || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") || gotRole != tc.role {
+				t.Fatalf("HTTP %d, %q, role %v, want %d, HTML, role %v", w.Code, w.Header().Get("Content-Type"), gotRole, tc.want, tc.role)
 			}
-			if tc.want != http.StatusServiceUnavailable && !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
-				t.Errorf("page refusal Content-Type %q", w.Header().Get("Content-Type"))
+			if tc.role != RoleDeny && gotUser != "operator" {
+				t.Errorf("authorized account = %q, want operator", gotUser)
+			}
+			if tc.want != http.StatusOK && (d.applied != nil || !strings.Contains(w.Body.String(), "<h1>")) {
+				t.Error("refused page reached the write handler or lacked its HTML response")
 			}
 		})
 	}
-	s, _, mode := keeneticFixture(t)
-	mode.Store(3)
-	if w := serve(s, keeneticRequest("GET", "/", "", true)); w.Code != http.StatusServiceUnavailable ||
-		strings.TrimSpace(w.Body.String()) != "KeeneticOS session check unavailable" {
-		t.Fatalf("router unreachable: %d %q", w.Code, w.Body)
+}
+
+func TestOnlyCanonicalStaticReadsArePublic(t *testing.T) {
+	s, _, _ := keeneticFixture(t)
+	s.Pages = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	for _, tc := range []struct {
+		method, path, peer string
+		status             int
+	}{
+		{"GET", "/static/style.css", lan, http.StatusOK},
+		{"HEAD", "/static/fonts/roboto-latin-400-normal.woff2", lan, http.StatusOK},
+		{"GET", "/static/style.css", "203.0.113.12:5000", http.StatusForbidden},
+		{"GET", "/staticish/style.css", lan, http.StatusUnauthorized},
+		{"GET", "/static%2F..", lan, http.StatusUnauthorized},
+		{"GET", "/static%2Fstyle.css", lan, http.StatusUnauthorized},
+		{"GET", "/st%61tic/app.js", lan, http.StatusUnauthorized},
+		{"GET", "/static/%2e%2e/style.css", lan, http.StatusUnauthorized},
+		{"GET", "/static/../style.css", lan, http.StatusUnauthorized},
+		{"POST", "/static/style.css", lan, http.StatusUnauthorized},
+	} {
+		r := keeneticRequest(tc.method, tc.path, "", false)
+		r.RemoteAddr = tc.peer
+		r.Header.Set("Origin", keeneticPanel)
+		if w := serve(s, r); w.Code != tc.status {
+			t.Errorf("%s %s from %s = %d, want %d", r.Method, tc.path, tc.peer, w.Code, tc.status)
+		}
 	}
 }
 

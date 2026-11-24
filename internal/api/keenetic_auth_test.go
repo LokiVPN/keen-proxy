@@ -101,6 +101,9 @@ func keeneticRequest(method, path, body string, withSession bool) *http.Request 
 // router session closes the pages again.
 func TestKeeneticSessionOpensPagesNotTheControlAPI(t *testing.T) {
 	s, d, mode := keeneticFixture(t)
+	s.Pages = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("panel"))
+	})
 	call := func(r *http.Request, status int, body string) {
 		t.Helper()
 		if w := serve(s, r); w.Code != status || !strings.Contains(w.Body.String(), body) {
@@ -108,7 +111,7 @@ func TestKeeneticSessionOpensPagesNotTheControlAPI(t *testing.T) {
 		}
 	}
 	call(keeneticRequest("GET", "/", "", false), http.StatusUnauthorized, "KeeneticOS sign-in required")
-	call(keeneticRequest("GET", "/", "", true), http.StatusServiceUnavailable, "KeenProxy interface is being rebuilt")
+	call(keeneticRequest("GET", "/", "", true), http.StatusOK, "panel")
 	call(keeneticRequest("GET", "/api/status", "", true), http.StatusForbidden, "local access only")
 
 	view := serve(s, keeneticRequest("GET", "/api/session", "", true))
@@ -142,17 +145,38 @@ func TestKeeneticSessionOpensPagesNotTheControlAPI(t *testing.T) {
 }
 
 func TestKeeneticLogoutRevokesSession(t *testing.T) {
-	s, _, _ := keeneticFixture(t)
-	if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleManage {
-		t.Fatalf("signed-in page: role %v, %d %s", role, w.Code, w.Body)
-	}
-	logout := keeneticRequest("POST", "/api/logout", "", true)
-	logout.Header.Set("Origin", keeneticPanel)
-	if w := serve(s, logout); w.Code != http.StatusOK {
-		t.Fatalf("sign out: HTTP %d (%s)", w.Code, w.Body)
-	}
-	if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleDeny || w.Code != http.StatusUnauthorized {
-		t.Fatalf("the old session still opens pages: role %v, %d %s", role, w.Code, w.Body)
+	for _, tc := range []struct {
+		name, accept, contentType string
+		status                    int
+	}{
+		{"API response", "application/json", "", http.StatusOK},
+		{"HTML navigation", "text/html,application/xhtml+xml,*/*;q=0.8", "", http.StatusSeeOther},
+		{"HTML form", "", "application/x-www-form-urlencoded", http.StatusSeeOther},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := keeneticFixture(t)
+			if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleManage {
+				t.Fatalf("signed-in page: role %v, %d %s", role, w.Code, w.Body)
+			}
+			logout := keeneticRequest("POST", "/api/logout", "", true)
+			logout.Header.Set("Origin", keeneticPanel)
+			logout.Header.Set("Accept", tc.accept)
+			logout.Header.Set("Content-Type", tc.contentType)
+			w := serve(s, logout)
+			if w.Code != tc.status {
+				t.Fatalf("sign out: HTTP %d (%s), want %d", w.Code, w.Body, tc.status)
+			}
+			if tc.status == http.StatusSeeOther {
+				if location := w.Header().Get("Location"); location != "/" {
+					t.Fatalf("sign out redirect = %q, want /", location)
+				}
+			} else if strings.TrimSpace(w.Body.String()) != "{\"ok\":true}" {
+				t.Fatalf("sign out JSON = %q", w.Body)
+			}
+			if role, w := pageRole(s, keeneticRequest("GET", "/connections", "", true)); role != RoleDeny || w.Code != http.StatusUnauthorized {
+				t.Fatalf("the old session still opens pages: role %v, %d %s", role, w.Code, w.Body)
+			}
+		})
 	}
 }
 

@@ -1,7 +1,7 @@
 # User guide
 
-!!! note "Interface being replaced"
-    The browser interface is being replaced by a new server-rendered one, and this guide will be updated. Until then, the page at `/` shows a placeholder and the sections below describe the previous panel. Settings are managed through the [YAML file](getting-started.md#first-configuration) and the loopback [control API](development.md#control-api).
+!!! note "Server-rendered interface preview"
+    The panel at `/` shows a placeholder with the new navigation. A browser in the LAN can sign in through KeeneticOS and open KeenProxy under **Management → Applications**, where the card is installed, or return to the direct address shown on the sign-in screen. The sections below describe the previous panel. Configure KeenProxy through the [YAML file](getting-started.md#first-configuration) or the loopback [control API](development.md#control-api).
 
 The screenshots below are synthetic.
 
