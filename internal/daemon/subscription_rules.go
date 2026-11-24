@@ -204,7 +204,7 @@ const (
 	ProviderRulesWithheld ProviderRulesState = "withheld"
 	// ProviderRulesReady: every rule is available.
 	ProviderRulesReady ProviderRulesState = "ready"
-	// ProviderRulesPartial: some rules are unavailable; each says why.
+	// ProviderRulesPartial: there are both usable and unavailable rules.
 	ProviderRulesPartial ProviderRulesState = "partial"
 	// ProviderRulesFailed: evaluation failed and no rules are available;
 	// the status's rules_error says why.
@@ -221,7 +221,18 @@ func (s *rulesSnapshot) state() ProviderRulesState {
 		return ProviderRulesWithheld
 	case s.Built == nil:
 		return ProviderRulesFailed
-	case slices.ContainsFunc(s.Built.Rules, func(r compile.ProviderRule) bool { return r.Unavailable != "" }):
+	}
+	available := 0
+	for _, rule := range s.Built.Rules {
+		if rule.Unavailable == "" {
+			available++
+		}
+	}
+	total := len(s.Built.Rules)
+	switch {
+	case available == 0 && (total > 0 || s.Error != ""):
+		return ProviderRulesFailed
+	case available < total:
 		return ProviderRulesPartial
 	}
 	return ProviderRulesReady
@@ -240,10 +251,11 @@ func (d *Daemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSet
 	settings := *d.cfg.ProviderRules
 	settings.Disabled = slices.Clone(settings.Disabled)
 	rules := d.subscriptions.states[settings.Source].snapshot.Rules
-	if rules == nil || rules.Built == nil {
-		return compile.ProviderRules{}, &settings, rules.state()
+	state := rules.state()
+	if state != ProviderRulesReady && state != ProviderRulesPartial {
+		return compile.ProviderRules{}, &settings, state
 	}
-	return *rules.Built, &settings, rules.state()
+	return *rules.Built, &settings, state
 }
 
 // warnDroppedProviderEntries reports provider entries compile left out when

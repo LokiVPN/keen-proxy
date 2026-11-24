@@ -101,6 +101,10 @@ func (p *rulesProvider) count(path string) int {
 	return p.requests[path]
 }
 
+func routingHeader(profile string) string {
+	return "happ://routing/add/" + base64.StdEncoding.EncodeToString([]byte(profile))
+}
+
 // useProfile serves a profile whose geo files are the given paths of p.
 // Extra entries are appended to its direct sites.
 func (p *rulesProvider) useProfile(geosite, geoip string, extra ...string) {
@@ -109,7 +113,7 @@ func (p *rulesProvider) useProfile(geosite, geoip string, extra ...string) {
 		"DirectSites": %s, "DirectIp": ["geoip:private", "geoip:direct"],
 		"ProxySites": ["geosite:video"], "BlockSites": ["geosite:ads"]}`, p.URL+geosite, p.URL+geoip, direct)
 	p.update(func(p *rulesProvider) {
-		p.routing = "happ://routing/add/" + base64.StdEncoding.EncodeToString([]byte(profile))
+		p.routing = routingHeader(profile)
 	})
 }
 
@@ -320,10 +324,10 @@ func TestProviderRulesKeepLastGoodRulesOnFailures(t *testing.T) {
 		{"recovered", "", func() { p.useProfile("/geosite.dat", "/geoip.dat") }},
 	} {
 		tc.change()
-		refreshProviderRules(t, d, func(got SubscriptionStatus) bool { return got.RulesError == tc.reason })
+		status := refreshProviderRules(t, d, func(got SubscriptionStatus) bool { return got.RulesError == tc.reason })
 		// The last good rules are complete, so they stay ready.
-		if rules, _, state := d.ProviderRules(); state != ProviderRulesReady || !reflect.DeepEqual(rules, good) {
-			t.Fatalf("%s: last good rules were not kept: %+v", tc.name, rules)
+		if rules, _, state := d.ProviderRules(); state != ProviderRulesReady || status.RulesState != ProviderRulesReady || !reflect.DeepEqual(rules, good) {
+			t.Fatalf("%s: last good rules were not kept: state %s, status state %s, rules %+v", tc.name, state, status.RulesState, rules)
 		}
 	}
 	if p.count("/geosite.dat") != 1 || p.count("/geoip.dat") != 1 {
@@ -331,9 +335,8 @@ func TestProviderRulesKeepLastGoodRulesOnFailures(t *testing.T) {
 	}
 }
 
-// Geo file URLs come from the provider: downloads never connect to the
-// router itself, the LAN, link-local, unspecified or multicast addresses,
-// checked on the address dialed. The subscription itself is not affected.
+// Geo downloads refuse loopback, private, link-local, unspecified and multicast
+// addresses at dial time. The subscription fetch uses its own transport.
 func TestGeoDownloadsRefuseInternalDestinations(t *testing.T) {
 	d, cfg, p := newRulesTestDaemon(t)
 	d.subscriptions.geoDestination = publicDestination
@@ -472,19 +475,29 @@ func TestProviderRulesDroppedWhenProviderWithholdsThem(t *testing.T) {
 // partial rules come with the rules.
 func TestProviderRulesStates(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		change func(*model.Config, *rulesProvider)
-		want   ProviderRulesState
-		error  string
+		name      string
+		change    func(*model.Config, *rulesProvider)
+		want      ProviderRulesState
+		error     string
+		withRules bool
 	}{
-		{"off", func(c *model.Config, _ *rulesProvider) { c.ProviderRules = nil }, ProviderRulesOff, ""},
-		{"ready", nil, ProviderRulesReady, ""},
-		{"partial", func(_ *model.Config, p *rulesProvider) { delete(p.files, "/geoip.dat") }, ProviderRulesPartial, "geoip file could not be downloaded"},
-		{"no profile", func(_ *model.Config, p *rulesProvider) { p.routing = "" }, ProviderRulesWithheld, ""},
-		{"routing off", func(_ *model.Config, p *rulesProvider) { p.routing = "happ://routing/off" }, ProviderRulesWithheld, ""},
-		{"routing-enable", func(_ *model.Config, p *rulesProvider) { p.enable = "0" }, ProviderRulesWithheld, ""},
+		{"off", func(c *model.Config, _ *rulesProvider) { c.ProviderRules = nil }, ProviderRulesOff, "", false},
+		{"ready", nil, ProviderRulesReady, "", true},
+		{"partial", func(_ *model.Config, p *rulesProvider) { delete(p.files, "/geoip.dat") },
+			ProviderRulesPartial, "geoip file could not be downloaded", true},
+		{"all categories failed", func(_ *model.Config, p *rulesProvider) {
+			p.routing = routingHeader(fmt.Sprintf(`{"Geositeurl": %q, "Geoipurl": %q, "ProxySites": ["geosite:video"], "DirectIp": ["geoip:direct"]}`,
+				p.URL+"/missing-geosite.dat", p.URL+"/missing-geoip.dat"))
+		}, ProviderRulesFailed, "geosite file could not be downloaded; geoip file could not be downloaded", false},
+		{"only unavailable category", func(_ *model.Config, p *rulesProvider) {
+			p.routing = routingHeader(`{"ProxySites": ["geosite:video"]}`)
+		}, ProviderRulesFailed, "No provider rules are available", false},
+		{"empty profile", func(_ *model.Config, p *rulesProvider) { p.routing = routingHeader(`{}`) }, ProviderRulesReady, "", false},
+		{"no profile", func(_ *model.Config, p *rulesProvider) { p.routing = "" }, ProviderRulesWithheld, "", false},
+		{"routing off", func(_ *model.Config, p *rulesProvider) { p.routing = "happ://routing/off" }, ProviderRulesWithheld, "", false},
+		{"routing-enable", func(_ *model.Config, p *rulesProvider) { p.enable = "0" }, ProviderRulesWithheld, "", false},
 		{"malformed profile", func(_ *model.Config, p *rulesProvider) { p.routing = "happ://routing/add/!!!" }, ProviderRulesFailed,
-			"The provider routing profile could not be read"},
+			"The provider routing profile could not be read", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, cfg, p := newRulesTestDaemon(t)
@@ -496,13 +509,12 @@ func TestProviderRulesStates(t *testing.T) {
 			}
 			rules, settings, state := d.ProviderRules()
 			status := d.Subscriptions()[0]
-			withRules := state == ProviderRulesReady || state == ProviderRulesPartial
 			statusState := tc.want
 			if tc.want == ProviderRulesOff {
 				statusState = "" // only the configured source reports rules
 			}
 			if state != tc.want || status.RulesState != statusState || status.RulesError != tc.error ||
-				(settings == nil) != (state == ProviderRulesOff) || (len(rules.Rules) != 0) != withRules {
+				(settings == nil) != (state == ProviderRulesOff) || (len(rules.Rules) != 0) != tc.withRules {
 				t.Fatalf("state %s, settings %+v, %d rules, status state %q error %q",
 					state, settings, len(rules.Rules), status.RulesState, status.RulesError)
 			}

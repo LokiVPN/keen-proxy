@@ -200,6 +200,9 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		}
 		if source.ID == providerRulesSource(d.cfg) {
 			status.RulesState = snapshot.Rules.state()
+			if status.RulesState == ProviderRulesFailed && status.RulesError == "" {
+				status.RulesError = "No provider rules are available"
+			}
 		}
 		if !snapshot.Selection.At.IsZero() {
 			status.LastSwitch = &snapshot.Selection.At
