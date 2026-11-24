@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -200,6 +199,9 @@ func displayText(value string, limit int, sensitive displayRedactor) string {
 	}
 	value = strings.Map(func(char rune) rune {
 		if unicode.IsControl(char) && char != '\n' && char != '\t' {
+			if unicode.IsSpace(char) {
+				return ' '
+			}
 			return -1
 		}
 		return char
@@ -218,170 +220,116 @@ func displayText(value string, limit int, sensitive displayRedactor) string {
 }
 
 func metadataURL(value string, sensitive displayRedactor) string {
-	if len(value) > 2048 || sensitive.contains(value) {
+	if len(value) > 2048 {
 		return ""
 	}
 	u, err := url.Parse(value)
-	if err != nil || httpsOrigin(u) == "" {
+	if err != nil || httpsOrigin(u) == "" || sensitive.blocksLink(u, value) {
 		return ""
 	}
-	normalized := u.String()
-	if sensitive.contains(normalized) {
-		return ""
-	}
-	if decoded, err := url.PathUnescape(normalized); err == nil && sensitive.contains(decoded) {
-		return ""
-	}
-	return normalized
+	return u.String()
 }
 
-// displayRedactor recognizes the request values a provider could echo in panel
-// text without altering its private share links.
+// displayRedactor protects the hosts and paths reached by a subscription fetch
+// and the HWID sent with it. The private share links are kept separately.
 type displayRedactor struct {
-	literals []string
-	urls     []displayURL
-}
-
-// displayURL describes the HTTPS request identity. Fragments stay outside
-// the request, query key order is immaterial, and repeated values keep order.
-type displayURL struct {
-	origin string
-	path   string
-	query  url.Values
-}
-
-func parsedDisplayURL(u *url.URL) (displayURL, bool) {
-	origin := httpsOrigin(u)
-	if origin == "" {
-		return displayURL{}, false
-	}
-	query, err := url.ParseQuery(u.RawQuery)
-	if err != nil {
-		return displayURL{}, false
-	}
-	path := u.Path
-	if path == "" {
-		path = "/"
-	}
-	return displayURL{origin: origin, path: path, query: query}, true
-}
-
-func (u displayURL) equal(other displayURL) bool {
-	return u.origin == other.origin && u.path == other.path &&
-		maps.EqualFunc(u.query, other.query, slices.Equal[[]string])
+	paths map[string][]string
+	hwid  string
 }
 
 const redactedDisplay = "[redacted]"
 
-// The URL and its unescaped spelling share the same redaction set. Keep
-// matching case-sensitive outside percent escapes, including in credentials.
-func (r *displayRedactor) addURL(value string) {
-	r.add(value)
-	r.add(unescapeDisplay(value))
+var displayURLRun = regexp.MustCompile(`(?i)https?://[^[:space:]\p{Z}\x{85}<>"]+`)
+
+func (r *displayRedactor) addURL(u *url.URL) {
+	host := normalizedHost(u.Hostname(), strings.HasPrefix(u.Host, "["))
+	if r.paths == nil {
+		r.paths = make(map[string][]string)
+	}
+	r.paths[host] = append(r.paths[host], requestPath(u))
 }
 
-func (r *displayRedactor) add(value string) {
-	if value != "" && !slices.Contains(r.literals, value) {
-		r.literals = append(r.literals, value)
+func requestPath(u *url.URL) string {
+	if u.Path == "" {
+		return "/"
 	}
+	return u.Path
 }
 
 func (r displayRedactor) replace(value string) string {
-	if len(r.literals) == 0 {
-		return value
+	if len(r.paths) > 0 {
+		value = displayURLRun.ReplaceAllStringFunc(value, func(run string) string {
+			if _, protected := r.paths[displayURLHost(run)]; protected {
+				return redactedDisplay
+			}
+			return run
+		})
 	}
-	if r.containsURLAlias(value, true) {
-		return redactedDisplay
-	}
-	raw := r.replaceExact(value)
-	decoded := unescapeDisplay(value)
-	if decoded != value {
-		if r.containsURLAlias(decoded, false) {
+	if r.hwid != "" {
+		value = strings.ReplaceAll(value, r.hwid, redactedDisplay)
+		if strings.Contains(value, "%") && containsEscapedHWID(value, r.hwid) {
 			return redactedDisplay
 		}
-		if safe := r.replaceExact(decoded); safe != decoded && safe != unescapeDisplay(raw) {
-			// A different spelling matched. Hide that field without
-			// decoding or partially exposing its original text.
-			return redactedDisplay
-		}
-	}
-	return raw
-}
-
-func (r displayRedactor) replaceExact(value string) string {
-	for _, secret := range r.literals {
-		value = strings.ReplaceAll(value, secret, redactedDisplay)
 	}
 	return value
 }
 
-func (r displayRedactor) contains(value string) bool {
-	return r.replace(value) != value
-}
-
-var displayHTTPSURL = regexp.MustCompile(`(?i)https://[^\s\p{Z}<>"']+`)
-
-// containsURLAlias finds equivalent request URLs in prose as well as in a
-// metadata link. Exact spellings use the literal replacement above.
-func (r displayRedactor) containsURLAlias(text string, includeQuery bool) bool {
-	if len(r.urls) == 0 {
-		return false
+// displayURLHost reads only the authority, so an invalid path or query cannot
+// defeat redaction. Decode the host before IDNA lookup and disregard any port.
+func displayURLHost(run string) string {
+	_, authority, _ := strings.Cut(run, "://")
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
 	}
-	for {
-		match := displayHTTPSURL.FindStringIndex(text)
-		if match == nil {
-			return false
+	authority = authority[strings.LastIndexByte(authority, '@')+1:]
+	bracketed := strings.HasPrefix(authority, "[")
+	var host string
+	if bracketed {
+		var ok bool
+		host, _, ok = strings.Cut(authority[1:], "]")
+		if !ok {
+			return ""
 		}
-		value := text[match[0]:match[1]]
-		text = text[match[1]:]
-		// A sentence can end or close a parenthesis immediately after a URL.
-		bare := strings.TrimRight(value, ".,;:!?)]}")
-		if slices.Contains(r.literals, value) || slices.Contains(r.literals, bare) {
-			continue
-		}
-		if r.urlAlias(value, includeQuery) || (bare != value && r.urlAlias(bare, includeQuery)) {
-			return true
-		}
+	} else {
+		host, _, _ = strings.Cut(authority, ":")
 	}
-}
-
-func (r displayRedactor) urlAlias(value string, includeQuery bool) bool {
-	u, err := url.Parse(value)
+	host, err := url.PathUnescape(host)
 	if err != nil {
-		return false
+		return ""
 	}
-	identity, ok := parsedDisplayURL(u)
-	if !ok {
-		return false
-	}
-	if slices.ContainsFunc(r.urls, identity.equal) {
+	return normalizedHost(host, bracketed)
+}
+
+// blocksLink allows a link on a protected host only at a different path
+// without a query or fragment. Check decoded components for embedded secrets.
+func (r displayRedactor) blocksLink(u *url.URL, raw string) bool {
+	host := normalizedHost(u.Hostname(), strings.HasPrefix(u.Host, "["))
+	if paths := r.paths[host]; len(paths) > 0 &&
+		(slices.Contains(paths, requestPath(u)) || u.ForceQuery || u.RawQuery != "" || strings.Contains(raw, "#")) {
 		return true
 	}
-	if includeQuery {
-		// A metadata link can carry the request URL as a form value.
-		for _, values := range identity.query {
-			for _, param := range values {
-				if r.replaceExact(param) != param || r.containsURLAlias(param, false) {
-					return true
-				}
-			}
+	containsSecret := func(value string) bool { return r.replace(value) != value }
+	if (r.hwid != "" && strings.Contains(raw, r.hwid)) || containsSecret(u.Path) || containsSecret(u.Fragment) {
+		return true
+	}
+	for key, values := range u.Query() {
+		if containsSecret(key) || slices.ContainsFunc(values, containsSecret) {
+			return true
 		}
 	}
 	return false
 }
 
-var percentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+var hwidPercentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
 
-// Provider prose can also contain an unrelated percent sign. Decode valid
-// escapes for comparison even when url.PathUnescape rejects the entire text.
-func unescapeDisplay(value string) string {
-	if decoded, err := url.PathUnescape(value); err == nil {
-		return decoded
-	}
-	return percentEscape.ReplaceAllStringFunc(value, func(escape string) string {
+// A provider can percent-encode the device ID in prose containing other
+// percent signs. Decode valid escapes only for the HWID check.
+func containsEscapedHWID(value, hwid string) bool {
+	decoded := hwidPercentEscape.ReplaceAllStringFunc(value, func(escape string) string {
 		decoded, _ := url.PathUnescape(escape)
 		return decoded
 	})
+	return strings.Contains(decoded, hwid)
 }
 
 func parseUsage(value string) *Usage {

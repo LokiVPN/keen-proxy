@@ -282,7 +282,7 @@ func TestFetchRedactsEchoedSubscriptionURLAndHWID(t *testing.T) {
 		t.Fatalf("provider fetch returned %s with %d nodes", result.State, len(result.Nodes))
 	}
 	if result.Metadata.Title != "Provider [redacted] for [redacted]" ||
-		result.Metadata.Announce != "Check [redacted], then [redacted], [redacted] and [redacted]." ||
+		result.Metadata.Announce != "Check [redacted] then [redacted] [redacted] and [redacted]" ||
 		result.Metadata.SupportURL != "" || result.Metadata.ProfileURL != profileURL {
 		t.Fatal("provider metadata left an echoed value visible or lost benign content")
 	}
@@ -294,6 +294,52 @@ func TestFetchRedactsEchoedSubscriptionURLAndHWID(t *testing.T) {
 	limited := fetcher.Fetch(t.Context(), source)
 	if limited.State != "hwid_limit" || limited.Metadata.ProfileURL != "" || limited.Metadata.Announce != "Device [redacted] blocked" {
 		t.Fatal("metadata from a device-limit response exposed the sent HWID")
+	}
+}
+
+func TestFetchFiltersMetadataBySubscriptionHost(t *testing.T) {
+	const distinctLink = "https://help.example/list?token=fixture%2Bvalue"
+	for _, tc := range []struct {
+		name, link string
+		keep       bool
+	}{
+		{name: "other host", link: distinctLink, keep: true},
+		{name: "same host account", link: "/account", keep: true},
+		{name: "same host query", link: "/account?token=fixture%2Bvalue"},
+		{name: "same host fragment", link: "/account#fixture"},
+		{name: "empty query", link: "/account?"},
+		{name: "empty fragment", link: "/account#"},
+		{name: "subscription path", link: "/l%69st"},
+		{name: "redirect path", link: "/redirected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			link := func(origin string) string {
+				if strings.HasPrefix(tc.link, "/") {
+					return origin + tc.link
+				}
+				return tc.link
+			}
+			provider := tlsProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/list" {
+					http.Redirect(w, r, "/redirected?token=fixture%2Bredirect", http.StatusFound)
+					return
+				}
+				w.Header().Set("Profile-Web-Page-URL", link("https://"+r.Host))
+				fmt.Fprintln(w, vless)
+			})
+			source := sourceFor(provider.URL + "/list?token=fixture%20value")
+			result := subscription.NewFetcher("", provider.Client().Transport).Fetch(t.Context(), source)
+			if result.State != subscription.StateReady {
+				t.Fatalf("expected a ready subscription, got %s", result.State)
+			}
+			var want string
+			if tc.keep {
+				want = link(provider.URL)
+			}
+			if result.Metadata.ProfileURL != want {
+				t.Fatal("metadata URL did not follow the subscription host policy")
+			}
+		})
 	}
 }
 

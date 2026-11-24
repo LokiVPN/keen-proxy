@@ -477,6 +477,10 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 			current := state.snapshot.Rules
 			if !replaced && candidate.rules != nil && candidate.rules.Error != "" &&
 				current != candidate.rulesBase && current.complete() {
+				// A different profile's failure remains relevant to this check.
+				if !reflect.DeepEqual(current.Profile, candidate.result.Routing) {
+					current = keptRules(current, candidate.rules.Error)
+				}
 				candidate.rules = current
 			}
 			previousEpoch := state.probeEpoch

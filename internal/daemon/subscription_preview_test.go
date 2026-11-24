@@ -21,8 +21,9 @@ import (
 )
 
 func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
-	const sourceURL = "https://PROVIDER.example:443/l%69st?token=synthetic%20preview%2b%7esecret&tag=one&tag=two&blank"
-	const equivalentURL = "https://provider.example/list?blank=&tag=one&tag=two&token=synthetic+preview%2B~secret"
+	const sourceURL = "https://PROVIDER.example:443/l%69st?token=synthetic%20key%27tail&tag=one&tag=two&blank"
+	const equivalentURL = "https://provider.example/list?blank=&tag=one&tag=two&token=synthetic+key'tail"
+	const aliasedHostURL = "http://%70ROVIDER.example:8443/other?token=synthetic%20key%27tail"
 	const datURL = "https://provider.example/data/geosite.dat"
 	var calls int
 	var hwid string
@@ -48,8 +49,8 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 		}
 		headers := make(http.Header)
 		headers.Set("routing", "happ://routing/add/"+base64.StdEncoding.EncodeToString(raw))
-		headers.Set("profile-title", "Provider ("+equivalentURL+").")
-		headers.Set("announce", "100% ready "+equivalentURL+" "+hwid)
+		headers.Set("profile-title", "Provider "+equivalentURL+" for review")
+		headers.Set("announce", "100% ready "+equivalentURL+" "+aliasedHostURL+" "+hwid)
 		headers.Set("profile-web-page-url", equivalentURL)
 		headers.Set("support-url", "https://provider.example/help?subscription="+url.QueryEscape(equivalentURL))
 		node, _, _ := strings.Cut(subscriptionFirst, "#")
@@ -73,9 +74,11 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	if calls != 1 || len(d.Subscriptions()) != 0 || model.ConfigRevision(d.Config()) != rev {
 		t.Fatal("preview fetched geodata or changed the applied catalog")
 	}
-	if summary.Name != "[redacted]" || details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != "" ||
-		details.Status.Metadata.Title != "[redacted]" || details.Status.Nodes[0].Name != "[redacted]" {
-		t.Error("a query-equivalent source echo escaped display redaction")
+	if summary.Name != "<profile> [redacted]" || details.Status.Metadata.ProfileURL != "" || details.Status.Metadata.SupportURL != "" ||
+		details.Status.Metadata.Title != "Provider [redacted] for review" ||
+		details.Status.Metadata.Announce != "100% ready [redacted] [redacted] [redacted]" ||
+		details.Status.Nodes[0].Name != "Provider [redacted]" {
+		t.Error("a provider-host URL escaped redaction or surrounding text was lost")
 	}
 	if summary.GlobalProxy ||
 		summary.Direct.Sites.Count != 3 || !slices.Equal(summary.Direct.Sites.Categories, []string{"ru@news"}) ||
@@ -88,7 +91,7 @@ func TestSubscriptionPreviewDetailsProjectsPrivateRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{sourceURL, equivalentURL, hwid, datURL, "synthetic", "literal-direct.example", "198.51.100.0/24", subscriptionFirst} {
+	for _, secret := range []string{sourceURL, equivalentURL, aliasedHostURL, hwid, datURL, "synthetic", "literal-direct.example", "198.51.100.0/24", subscriptionFirst} {
 		if strings.Contains(string(projected), secret) {
 			t.Fatal("preview disclosed private provider data")
 		}
@@ -166,9 +169,23 @@ func TestApplySubscriptionPreviewRechecksAfterGeodata(t *testing.T) {
 }
 
 func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
+	const originalGeoip = "/geoip.dat"
+	for _, tc := range []struct {
+		name, checkedGeoip, wantError string
+	}{
+		{name: "same profile", checkedGeoip: originalGeoip},
+		{name: "changed profile", checkedGeoip: "/updated/geoip.dat", wantError: "geoip file could not be downloaded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkPreviewKeepsRulesCompletedDuringLookup(t, originalGeoip, tc.checkedGeoip, tc.wantError)
+		})
+	}
+}
+
+func checkPreviewKeepsRulesCompletedDuringLookup(t *testing.T, originalGeoip, checkedGeoip, wantError string) {
+	t.Helper()
 	d, cfg, provider := newRulesTestDaemon(t)
-	const heldPath = "/geoip.dat"
-	provider.update(func(p *rulesProvider) { delete(p.files, heldPath) })
+	provider.update(func(p *rulesProvider) { delete(p.files, originalGeoip) })
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -178,13 +195,16 @@ func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
 	draft := d.Config()
 	source := draft.Subscriptions[0]
 	rev := model.ConfigRevision(draft)
+	if checkedGeoip != originalGeoip {
+		provider.useProfile("/geosite.dat", checkedGeoip, "domain:checked.example")
+	}
 	preview := d.PreviewSubscriptionDetails(t.Context(), source)
 	if preview.PreviewID == 0 {
 		t.Fatal("same-link preview did not produce a confirmation")
 	}
-	lookupCount := provider.count(heldPath)
+	lookupCount := provider.count(checkedGeoip)
 	release := make(chan struct{})
-	provider.update(func(p *rulesProvider) { p.held[heldPath] = release })
+	provider.update(func(p *rulesProvider) { p.held[checkedGeoip] = release })
 	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -193,7 +213,7 @@ func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
 	}()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
-	for provider.count(heldPath) == lookupCount {
+	for provider.count(checkedGeoip) == lookupCount {
 		select {
 		case err := <-done:
 			t.Fatalf("confirmation returned before its geodata request: %v", err)
@@ -206,8 +226,8 @@ func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
 	// The first request is already waiting on release. Serve valid geodata
 	// to the worker's retry while keeping the confirmation lookup held.
 	provider.update(func(p *rulesProvider) {
-		delete(p.held, heldPath)
-		p.files[heldPath] = testGeoipData
+		delete(p.held, checkedGeoip)
+		p.files[originalGeoip] = testGeoipData
 	})
 	retry := claimSubscriptionRequest(d, rulesRetryFirst+time.Second)
 	if retry == nil || !retry.rulesOnly {
@@ -221,7 +241,7 @@ func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
 
 	// The held lookup now fails. Its confirmation still uses the same
 	// source, checked attempt, and config revision.
-	provider.update(func(p *rulesProvider) { delete(p.files, heldPath) })
+	provider.update(func(p *rulesProvider) { delete(p.files, checkedGeoip) })
 	close(release)
 	select {
 	case err := <-done:
@@ -232,8 +252,11 @@ func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
 		t.Fatal("confirmation did not return")
 	}
 	got, _, state := d.ProviderRules()
-	if state != ProviderRulesReady || !reflect.DeepEqual(got, complete) || d.Subscriptions()[0].RulesError != "" {
+	if state != ProviderRulesReady || !reflect.DeepEqual(got, complete) {
 		t.Errorf("confirmation replaced completed live rules with %s rules", state)
+	}
+	if got := d.Subscriptions()[0].RulesError; got != wantError {
+		t.Errorf("live rules diagnostic = %q, want %q", got, wantError)
 	}
 	raw, err := os.ReadFile(d.subscriptionSnapshotPath(d.Config()))
 	if err != nil {
@@ -244,10 +267,18 @@ func TestApplySubscriptionPreviewKeepsRulesCompletedDuringLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := saved[subscriptionFingerprint(source)]
-	if !snapshot.Rules.complete() || !reflect.DeepEqual(snapshot.Rules.Built, &complete) {
+	if !snapshot.Rules.complete() || !reflect.DeepEqual(snapshot.Rules.Built, &complete) ||
+		snapshot.Rules.Profile == nil || snapshot.Rules.Profile.GeoipURL != provider.URL+originalGeoip {
 		t.Error("confirmation did not persist the complete rules")
 	}
-	if provider.count("/sub") != 2 || provider.count(heldPath) != lookupCount+2 {
+	if snapshot.Rules.Error != wantError {
+		t.Errorf("saved rules diagnostic = %q, want %q", snapshot.Rules.Error, wantError)
+	}
+	wantLookups := lookupCount + 1
+	if originalGeoip == checkedGeoip {
+		wantLookups++
+	}
+	if provider.count("/sub") != 2 || provider.count(checkedGeoip) != wantLookups {
 		t.Error("confirmation did not reuse the checked subscription or added a geodata request")
 	}
 }

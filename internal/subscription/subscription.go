@@ -118,22 +118,12 @@ func parseSource(source Source) (*url.URL, string, error) {
 // httpsOrigin normalizes hostname spelling and the effective HTTPS port for the
 // redirect check and HWID derivation.
 func httpsOrigin(u *url.URL) string {
-	if u == nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || strings.HasSuffix(u.Host, ":") {
+	if u == nil || u.Scheme != "https" || u.User != nil || strings.HasSuffix(u.Host, ":") {
 		return ""
 	}
-	host := u.Hostname()
-	bracketed := strings.HasPrefix(u.Host, "[")
-	if address, err := netip.ParseAddr(host); err == nil {
-		if bracketed != address.Is6() || address.Zone() != "" {
-			return ""
-		}
-		host = address.String()
-	} else {
-		ascii, err := idna.Lookup.ToASCII(host)
-		if bracketed || err != nil || ascii == "" {
-			return ""
-		}
-		host = strings.ToLower(ascii)
+	host := normalizedHost(u.Hostname(), strings.HasPrefix(u.Host, "["))
+	if host == "" {
+		return ""
 	}
 	port := u.Port()
 	if port == "" {
@@ -144,4 +134,19 @@ func httpsOrigin(u *url.URL) string {
 		return ""
 	}
 	return "https://" + net.JoinHostPort(host, strconv.FormatUint(number, 10))
+}
+
+// normalizedHost canonicalizes a decoded hostname for origin and display checks.
+func normalizedHost(host string, bracketed bool) string {
+	if address, err := netip.ParseAddr(host); err == nil {
+		if bracketed != address.Is6() || address.Zone() != "" {
+			return ""
+		}
+		return address.String()
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if bracketed || err != nil {
+		return ""
+	}
+	return strings.ToLower(ascii)
 }

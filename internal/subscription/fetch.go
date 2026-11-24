@@ -8,9 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"runtime"
-	"slices"
 	"strings"
 	"time"
 )
@@ -91,23 +89,7 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 	req.Header.Set("User-Agent", "KeenProxy/1")
 	req.Header.Set("Accept", "text/plain, application/octet-stream")
 	var sensitive displayRedactor
-	sensitive.addURL(source.URL)
-	canonicalHost := strings.TrimPrefix(origin, "https://")
-	recordURL := func(u *url.URL) {
-		if identity, ok := parsedDisplayURL(u); ok {
-			sensitive.urls = append(sensitive.urls, identity)
-		}
-		sensitive.addURL(u.String())
-		// Fragments from a Location header are absent from the wire request.
-		normalized := *u
-		normalized.Fragment, normalized.RawFragment = "", ""
-		sensitive.addURL(normalized.String())
-		normalized.Host = canonicalHost
-		sensitive.addURL(normalized.String())
-		normalized.Host = strings.TrimSuffix(canonicalHost, ":443")
-		sensitive.addURL(normalized.String())
-	}
-	recordURL(req.URL)
+	sensitive.addURL(req.URL)
 	if source.SendHWID {
 		hwid, err := originHWID(f.identityPath, origin)
 		if err != nil {
@@ -115,13 +97,13 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 		}
 		req.Header.Set("X-HWID", hwid)
 		req.Header.Set("X-Device-OS", runtime.GOOS)
-		sensitive.add(hwid)
+		sensitive.hwid = hwid
 	}
 	client := http.Client{Transport: f.transport, CheckRedirect: func(request *http.Request, previous []*http.Request) error {
 		if err := sameOriginRedirect(request, previous); err != nil {
 			return err
 		}
-		recordURL(request.URL)
+		sensitive.addURL(request.URL)
 		return nil
 	}}
 	resp, err := client.Do(req)
@@ -135,8 +117,6 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 		return failure(StateNetworkError, "Could not download the subscription")
 	}
 	defer resp.Body.Close()
-	// An initial URL may be a prefix of a followed redirect URL.
-	slices.SortFunc(sensitive.literals, func(a, b string) int { return len(b) - len(a) })
 	return readResponse(ctx, resp, sensitive)
 }
 
