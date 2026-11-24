@@ -23,7 +23,11 @@ type chartData struct {
 	Mid, Top       float64
 	RX, TX         string
 	RXArea, TXArea string
+	Sample         *chartPoint
 }
+
+// chartPoint locates both traffic rates from a single sample in the SVG.
+type chartPoint struct{ X, RX, TX float64 }
 
 // Chart renders rates in Mbit/s over the 30 minutes ending at now, with labels
 // in now's timezone. Series comes in timestamp order from the traffic tracker.
@@ -31,9 +35,11 @@ func Chart(series []stats.Point, now time.Time, label string) template.HTML {
 	start := now.Add(-chartWindow)
 	first, end := start.UnixMilli(), now.UnixMilli()
 	peak := 0.0
+	var samples int
 	for _, point := range series {
 		if point.T >= first && point.T <= end {
 			peak = max(peak, megabits(point.Down), megabits(point.Up))
+			samples++
 		}
 	}
 	tick := max(1, math.Ceil(peak/2))
@@ -49,13 +55,19 @@ func Chart(series []stats.Point, now time.Time, label string) template.HTML {
 			continue
 		}
 		x := chartWidth * float64(point.T-first) / float64(end-first)
+		yRX := chartHeight * (1 - megabits(point.Down)/data.Top)
+		yTX := chartHeight * (1 - megabits(point.Up)/data.Top)
+		if samples == 1 {
+			data.Sample = &chartPoint{X: x, RX: yRX, TX: yTX}
+			break
+		}
 		segment := " L"
 		if rx.Len() == 0 {
 			firstX, segment = x, "M"
 		}
 		lastX = x
-		fmt.Fprintf(&rx, "%s%.1f %.1f", segment, x, chartHeight*(1-megabits(point.Down)/data.Top))
-		fmt.Fprintf(&tx, "%s%.1f %.1f", segment, x, chartHeight*(1-megabits(point.Up)/data.Top))
+		fmt.Fprintf(&rx, "%s%.1f %.1f", segment, x, yRX)
+		fmt.Fprintf(&tx, "%s%.1f %.1f", segment, x, yTX)
 	}
 	if rx.Len() != 0 {
 		data.RX, data.TX = rx.String(), tx.String()

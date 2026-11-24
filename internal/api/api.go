@@ -130,7 +130,7 @@ func (s *Server) lanOnly(next http.Handler) http.Handler {
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)
 		a, err := netip.ParseAddr(host)
 		if err != nil || !(a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast()) {
-			http.Error(w, "access restricted to local networks", http.StatusForbidden)
+			s.refuse(w, r, http.StatusForbidden, "access restricted to local networks")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -285,7 +285,9 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 
 // logoutNavigation identifies a native HTML form submission (R42).
 func logoutNavigation(r *http.Request) bool {
-	if media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); media == "application/x-www-form-urlencoded" {
+	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	switch media {
+	case "application/x-www-form-urlencoded", "multipart/form-data", "text/plain":
 		return true
 	}
 	for value := range strings.SplitSeq(r.Header.Get("Accept"), ",") {

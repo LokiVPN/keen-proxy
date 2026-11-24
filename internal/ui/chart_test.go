@@ -26,3 +26,17 @@ func TestChartRendersAxesAndTrafficPaths(t *testing.T) {
 		`class="rx-a"`, `class="tx-a"`, `class="rx-l"`, `class="tx-l"`,
 		"M0.0 91.5 L445.3 0.0 L668.0 97.6", "Traffic for &#34;VPN&#34; &lt;1&gt;")
 }
+
+func TestChartShowsOneSampleInWindow(t *testing.T) {
+	now := time.Date(2026, time.November, 24, 9, 42, 0, 0, time.UTC)
+	rendered := string(Chart([]stats.Point{
+		{T: now.Add(-31 * time.Minute).UnixMilli(), Down: 100e6},
+		{T: now.Add(-15 * time.Minute).UnixMilli(), Down: 12e6, Up: 6e6},
+	}, now, "VPN traffic"))
+	assertContains(t, rendered,
+		`<circle class="rx-point" cx="334" cy="0" r="3"/>`,
+		`<circle class="tx-point" cx="334" cy="61" r="3"/>`)
+	if strings.Contains(rendered, `class="rx-l"`) {
+		t.Error("a single sample produced an incoming rate line")
+	}
+}

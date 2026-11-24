@@ -17,7 +17,10 @@
   <div class="chart-y" aria-hidden="true"><span>{{.Top}}</span><span>{{.Mid}}</span><span>0</span></div>
   <svg viewBox="0 0 668 122" preserveAspectRatio="none" aria-hidden="true">
     <path class="grid" d="M0 0 H668 M0 61 H668 M0 122 H668" vector-effect="non-scaling-stroke"/>
-    {{if .RX}}
+    {{if .Sample}}
+    <circle class="rx-point" cx="{{.Sample.X}}" cy="{{.Sample.RX}}" r="3"/>
+    <circle class="tx-point" cx="{{.Sample.X}}" cy="{{.Sample.TX}}" r="3"/>
+    {{else if .RX}}
     <path class="rx-a" d="{{.RXArea}}"/>
     <path class="tx-a" d="{{.TXArea}}"/>
     <path class="rx-l" d="{{.RX}}" vector-effect="non-scaling-stroke"/>

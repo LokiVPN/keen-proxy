@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +15,63 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/ui"
 )
 
-type statusDaemon struct{ api.Daemon }
+type statusDaemon struct {
+	api.Daemon
+	onStatus func()
+}
 
-func (statusDaemon) Status(context.Context) daemon.Status { return daemon.Status{} }
+func (d statusDaemon) Status(context.Context) daemon.Status {
+	if d.onStatus != nil {
+		d.onStatus()
+	}
+	return daemon.Status{}
+}
+
+func TestNonLANPeerRefusedBeforeDispatch(t *testing.T) {
+	var pageCalls, statusCalls int
+	opts := ui.Options{}
+	management := &api.Server{
+		D: statusDaemon{onStatus: func() { statusCalls++ }},
+		Pages: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			pageCalls++
+		}),
+		PageError:   opts.AccessError,
+		Unavailable: true,
+	}
+	handler := management.Handler()
+	for _, tc := range []struct {
+		path, contentType, message string
+	}{
+		{"/", "text/html", "<h1>Access denied</h1>"},
+		{"/api/status", "application/json", `{"error":"access restricted to local networks"}`},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8086"+tc.path, nil)
+			r.RemoteAddr = "203.0.113.14:5000"
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden || !strings.HasPrefix(w.Header().Get("Content-Type"), tc.contentType) ||
+				!strings.Contains(w.Body.String(), tc.message) {
+				t.Errorf("HTTP %d, %q, %q; want 403, %s and %q", w.Code, w.Header().Get("Content-Type"), w.Body, tc.contentType, tc.message)
+			}
+			if cache := w.Header().Get("Cache-Control"); cache != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", cache)
+			}
+			if tc.path == "/" {
+				want := "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+				if csp := w.Header().Get("Content-Security-Policy"); csp != want {
+					t.Errorf("Content-Security-Policy = %q, want %q", csp, want)
+				}
+			}
+		})
+	}
+	if pageCalls != 0 || statusCalls != 0 {
+		t.Errorf("rejected peer reached route handlers: page calls %d, status calls %d", pageCalls, statusCalls)
+	}
+}
 
 // get requests the panel with a chosen Host; non-loopback peers cannot be
 // simulated over a real socket, so the loopback peer proves the 200 and the

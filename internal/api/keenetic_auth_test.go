@@ -151,7 +151,9 @@ func TestKeeneticLogoutRevokesSession(t *testing.T) {
 	}{
 		{"API response", "application/json", "", http.StatusOK},
 		{"HTML navigation", "text/html,application/xhtml+xml,*/*;q=0.8", "", http.StatusSeeOther},
-		{"HTML form", "", "application/x-www-form-urlencoded", http.StatusSeeOther},
+		{"URL-encoded form", "", "application/x-www-form-urlencoded", http.StatusSeeOther},
+		{"multipart form", "", "multipart/form-data; boundary=logout-fixture", http.StatusSeeOther},
+		{"plain-text form", "", "text/plain; charset=UTF-8", http.StatusSeeOther},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, _ := keeneticFixture(t)

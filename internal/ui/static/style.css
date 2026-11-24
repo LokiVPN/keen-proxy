@@ -370,6 +370,8 @@
 .chart .grid { fill: none; stroke: var(--line); stroke-width: 1; }
 .chart .rx-a { fill: var(--rx-fill); }
 .chart .tx-a { fill: var(--tx-fill); }
+.chart .rx-point { fill: var(--rx-line); }
+.chart .tx-point { fill: var(--tx-line); }
 .chart .rx-l, .chart .tx-l { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
 .chart .rx-l { stroke: var(--rx-line); }
 .chart .tx-l { stroke: var(--tx-line); }

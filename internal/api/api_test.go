@@ -585,7 +585,16 @@ func TestOnlyCanonicalStaticReadsArePublic(t *testing.T) {
 // without browser headers (curl, the integration and memory gates) still work.
 func TestCrossOriginWritesAreRefusedEvenFromLoopback(t *testing.T) {
 	s, d := newServer()
-	for _, rt := range s.routes() {
+	var pagePosts int
+	s.Pages = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/routing" {
+			pagePosts++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	for _, rt := range append(s.routes(), route{pattern: "POST /routing"}) {
 		method, _ := routeMethod(rt.pattern)
 		methods := []string{method}
 		if method == "" {
@@ -615,8 +624,14 @@ func TestCrossOriginWritesAreRefusedEvenFromLoopback(t *testing.T) {
 			}
 		}
 	}
-	if d.applied != nil {
-		t.Fatal("a cross-origin write applied settings")
+	if d.applied != nil || pagePosts != 0 {
+		t.Fatal("a cross-origin write applied settings or reached the page handler")
+	}
+	pagePost := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8086/routing", nil)
+	pagePost.RemoteAddr = local
+	pagePost.Header.Set("Origin", "http://127.0.0.1:8086")
+	if w := serve(s, pagePost); w.Code != http.StatusNoContent || pagePosts != 1 {
+		t.Fatalf("same-origin page POST: HTTP %d, handler calls %d", w.Code, pagePosts)
 	}
 	for _, headers := range []map[string]string{
 		nil,
