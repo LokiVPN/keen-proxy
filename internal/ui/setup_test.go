@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
@@ -435,6 +436,7 @@ func TestSetupEnableReportsAppliedButUnsaved(t *testing.T) {
 }
 
 type setupFixture struct {
+	Deps
 	cfg                         *model.Config
 	preview                     SetupPreview
 	source                      subscription.Source
@@ -446,6 +448,10 @@ type setupFixture struct {
 }
 
 func (f *setupFixture) Config() *model.Config { return f.cfg.Clone() }
+
+func (*setupFixture) OverviewStatus() OverviewStatus       { return OverviewStatus{} }
+func (*setupFixture) Subscriptions() []AppliedSubscription { return nil }
+func (*setupFixture) TrafficSeries() []stats.Point         { return nil }
 
 func (f *setupFixture) PreviewSubscription(_ context.Context, source subscription.Source) SetupPreview {
 	f.checks++

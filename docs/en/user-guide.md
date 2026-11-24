@@ -1,7 +1,7 @@
 # User guide
 
 !!! note "Server-rendered interface preview"
-    The panel opens [first-run setup](#first-run) until you configure a subscription. With a subscription in place, `/` shows the new navigation and a placeholder for the overview. Later sections describe the previous panel. Use the [YAML file](getting-started.md#first-configuration) or the loopback [control API](development.md#control-api) for the remaining settings.
+    The panel opens [first-run setup](#first-run) on a fresh configuration. After setup, `/` opens the overview. Sections from **Configure a connection** onward describe the previous panel. Edit the [YAML file](getting-started.md#first-configuration) or use the loopback [control API](development.md#control-api) for the remaining settings.
 
 The screenshots below are synthetic.
 
@@ -28,13 +28,15 @@ Open KeenProxy with a router management account. Paste the HTTPS subscription li
 
 Choose **Enable** to save the subscription and set split routing for the home network detected on the configured LAN interface. The network follows the provider profile. If the provider supplies no routing profile, unmatched traffic goes through the subscription. The first setup needs a private IPv4 address on that interface.
 
-Open `/setup` again and choose **Replace link** after a successful check to update the saved subscription link. The subscription keeps its ID and reserve, and your existing routing, devices, and paused state stay in place. View-only accounts can open the setup page with its controls disabled.
+On **Overview**, choose **Replace link** to reopen setup. Check the new link and confirm **Replace link** to update the saved subscription. The subscription keeps its ID and reserve, and your existing routing, devices, and paused state stay in place. View-only accounts can open the setup page with its controls disabled.
 
 ## 1. Read the overview
 
-Open **Overview** to see connection health, recent traffic, and the router's CPU and memory usage. The first resource row covers the whole router. The **KeenProxy** row shows its share of total router CPU time and its resident memory (RSS). This includes embedded sing-box. An external TrustTunnel client is measured by the router totals. When a new release is available, follow its notice to **Settings**. Traffic graphs describe observed activity and cannot establish whether traffic leaks.
+**Overview** shows the main connection status, subscription usage and expiry when supplied by the provider, and the last and next scheduled updates. A warning appears when the subscription is due to expire within seven days. **Update now** queues a subscription refresh. The chart shows the last 30 minutes of tracked VPN traffic. The routing and device summaries link to their tabs.
 
-![Overview with synthetic traffic and connection cards](../assets/screenshots/en-overview.png)
+Use **Enabled** to pause or resume VPN routing for all devices. While paused, all devices connect directly. Under **Main connection**, choose automatic failover, a balancing mode, a specific subscription node, or a manual connection. The selection updates the home network and **All traffic through VPN** routing when it uses the previous main connection.
+
+Changes apply as soon as you use the switch or select a connection. With JavaScript disabled, use **Save** next to the control. View-only accounts can read the overview with its configuration controls disabled.
 
 ## 2. Configure a connection
 

@@ -47,6 +47,8 @@ type SubscriptionStatus struct {
 	Error           string                     `json:"error,omitempty"`
 	LastAttempt     *time.Time                 `json:"last_attempt,omitempty"`
 	LastSuccess     *time.Time                 `json:"last_success,omitempty"`
+	NextRefresh     *time.Time                 `json:"next_refresh,omitempty"`
+	Refreshing      bool                       `json:"refreshing,omitempty"`
 	ActiveNode      string                     `json:"active_node,omitempty"`
 	LastSwitch      *time.Time                 `json:"last_switch,omitempty"`
 	SwitchReason    string                     `json:"switch_reason,omitempty"`
@@ -230,7 +232,7 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		return out
 	}
 	for _, source := range d.cfg.Subscriptions {
-		state := d.subscriptions.states[source.ID]
+		state, exists := d.subscriptions.states[source.ID]
 		snapshot, latest := state.snapshot, state.attempt
 		status := SubscriptionStatus{
 			ID: source.ID, State: subscriptionPending, Metadata: subscriptionMetadata(snapshot.Metadata),
@@ -248,6 +250,10 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		}
 		if !snapshot.LastSuccess.IsZero() {
 			status.LastSuccess = &snapshot.LastSuccess
+		}
+		status.Refreshing = exists && (state.next.IsZero() || state.request != nil && !state.request.rulesOnly)
+		if next := state.next; !status.Refreshing && !next.IsZero() {
+			status.NextRefresh = &next
 		}
 		if snapshot.Rules != nil {
 			status.RulesError = snapshot.Rules.Error
@@ -314,6 +320,24 @@ func subscriptionNodeHealth(h *health) string {
 func (d *Daemon) RefreshSubscription(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.refreshSubscriptionLocked(id)
+}
+
+// RefreshSubscriptionIfCurrent queues a browser request against the exact
+// configuration it displayed, including the subscription link for the ID.
+func (d *Daemon) RefreshSubscriptionIfCurrent(id, revision string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if revision == "" || d.cfg == nil || model.ConfigRevision(d.cfg.Clone()) != revision {
+		return model.ErrConfigChanged
+	}
+	if !d.refreshSubscriptionLocked(id) {
+		return errors.New("subscription is not applied")
+	}
+	return nil
+}
+
+func (d *Daemon) refreshSubscriptionLocked(id string) bool {
 	state, exists := d.subscriptions.states[id]
 	if !exists || d.closed {
 		return false

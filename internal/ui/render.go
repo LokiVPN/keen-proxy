@@ -33,6 +33,8 @@ type pageData struct {
 	SignedIn, ViewOnly      bool
 	Status                  int
 	Setup                   *setupPage
+	Overview                *overviewPage
+	Traffic                 trafficView
 }
 
 func (opts Options) pageData(r *http.Request) pageData {

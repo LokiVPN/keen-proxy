@@ -32,6 +32,7 @@
   });
   document.addEventListener("reset", clearDirty);
   document.addEventListener("submit", clearDirty);
+  document.documentElement.classList.add("js");
 
   async function refresh(fragment) {
     if (pending.has(fragment)) return;

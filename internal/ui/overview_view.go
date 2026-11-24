@@ -1,0 +1,272 @@
+package ui
+
+import (
+	"fmt"
+	"html/template"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
+)
+
+const expiryWarning = 7 * 24 * time.Hour
+
+type overviewPage struct {
+	Rev                          string
+	Paused, CanSelect            bool
+	Status                       overviewChip
+	StatusDetail                 string
+	Subscription                 *overviewSubscription
+	Main, MissingTarget, Current string
+	Choices                      []connectionGroup
+	Routing, RoutingDetail       string
+	Devices, NewDevices          string
+}
+
+type overviewChip struct{ Label, Class string }
+
+type overviewSubscription struct {
+	Title, Expiry, Notice, AccountURL string
+	Status                            overviewChip
+	ExpiryReminder                    string
+	Traffic                           string
+	Used, Total                       int64
+	LastUpdated, NextUpdate           string
+}
+
+type trafficView struct {
+	Incoming, Outgoing string
+	Chart              template.HTML
+}
+
+func (p pages) renderOverview(w http.ResponseWriter, r *http.Request, code int, cfg *model.Config, messageKey string) {
+	if cfg == nil {
+		if code == http.StatusOK {
+			code, messageKey = http.StatusServiceUnavailable, "setup_unavailable"
+		}
+		p.renderPage(w, r, code, "KeenProxy", messageKey)
+		return
+	}
+	data := p.opts.pageData(r)
+	data.Title, data.ActiveTab, data.SignedIn = "KeenProxy", "/", true
+	data.ViewOnly = p.role(r) == RoleView
+	data.Flash, data.Message = takeFlash(w, r, data.Text), data.Text[messageKey]
+	status, subscriptions := p.deps.OverviewStatus(), p.deps.Subscriptions()
+	series := p.deps.TrafficSeries()
+	now := time.Now()
+	data.Overview = makeOverview(cfg, status, subscriptions, now, data.Lang)
+	data.Traffic = overviewTraffic(series, now, data.Lang)
+	render(w, r, code, "overview", data)
+}
+
+func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscription, now time.Time, lang string) *overviewPage {
+	text := translations[lang]
+	page := &overviewPage{
+		Rev: Revision(cfg), Paused: cfg.Paused, Choices: connectionOptions(cfg, subs, status.Connections, text),
+	}
+	if len(cfg.Subscriptions) > 0 {
+		page.Subscription = subscriptionView(appliedSubscriptionFor(subs, cfg.Subscriptions[0].ID), now, lang)
+	}
+	network := homeNetwork(cfg)
+	if network != nil {
+		page.Main = network.Target
+		for _, group := range page.Choices {
+			page.CanSelect = page.CanSelect || slices.ContainsFunc(group.Options, func(option connectionOption) bool { return !option.Disabled })
+		}
+		page.NewDevices = text["overview_new_devices_direct"]
+		if network.Mode == model.ModeSplit || network.Mode == model.ModeFull {
+			page.NewDevices = text["overview_new_devices_vpn"]
+		}
+	}
+	page.setMissingTarget(text)
+	page.Devices = text["overview_no_devices"]
+	if status.Devices > 0 {
+		page.Devices = fmt.Sprintf(text["overview_device_count"], status.VPNDevices, status.Devices)
+	}
+	selection := selectedConnection(cfg, page.Main, subs, status.Connections, text)
+	if selection.Detail != "" {
+		page.Current = fmt.Sprintf(text["overview_current_connection"], selection.Detail)
+	}
+	page.Status, page.StatusDetail = overviewStatus(cfg.Paused, status, network, selection, now, text)
+	page.Routing, page.RoutingDetail = routingSummary(cfg, network, status, subs, text)
+	return page
+}
+
+func (p *overviewPage) setMissingTarget(text map[string]string) {
+	for _, group := range p.Choices {
+		if slices.ContainsFunc(group.Options, func(option connectionOption) bool { return option.Target == p.Main }) {
+			return
+		}
+	}
+	switch p.Main {
+	case "":
+		p.MissingTarget = text["overview_choose_connection"]
+	case model.TargetDirect:
+		p.MissingTarget = text["overview_direct"]
+	default:
+		p.MissingTarget = text["overview_missing_connection"]
+	}
+}
+
+func overviewStatus(paused bool, status OverviewStatus, network *model.Network, selection connectionSelection, now time.Time, text map[string]string) (overviewChip, string) {
+	switch {
+	case paused:
+		return overviewChip{text["overview_disabled"], ""}, text["overview_paused_hint"]
+	case !status.Ready:
+		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_engine_down"]
+	case network == nil:
+		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_no_home"]
+	case network.Target == "":
+		return overviewChip{text["overview_no_connection"], "warn"}, text["overview_choose_connection"]
+	case selection.Health == connectionUnavailable:
+		message := text["overview_connection_down"]
+		if selection.Subscription {
+			message = text["overview_subscription_down"]
+			if selection.Reserve != "" {
+				message += " " + fmt.Sprintf(text["overview_using_reserve"], selection.Reserve)
+			}
+		}
+		return overviewChip{text["overview_no_connection"], "warn"}, message
+	}
+	detail := selection.Detail
+	if status.Devices > 0 {
+		detail = fmt.Sprintf(text["overview_device_count"], status.VPNDevices, status.Devices) + " · " + detail
+	}
+	switch {
+	case expired(selection.Expiry, now):
+		return overviewChip{text["overview_subscription_expired"], "warn"}, detail
+	case expiring(selection.Expiry, now):
+		return overviewChip{text["overview_subscription_expiring"], "caut"}, detail
+	case selection.Health == connectionAvailable:
+		return overviewChip{text["overview_working"], "ok"}, detail
+	default:
+		return overviewChip{text["overview_checking"], ""}, detail
+	}
+}
+
+func expired(expiry, now time.Time) bool { return !expiry.IsZero() && !expiry.After(now) }
+
+func expiring(expiry, now time.Time) bool {
+	return expiry.After(now) && !expiry.After(now.Add(expiryWarning))
+}
+
+func subscriptionView(sub AppliedSubscription, now time.Time, lang string) *overviewSubscription {
+	text := translations[lang]
+	metadata := sub.Metadata
+	view := &overviewSubscription{
+		Title: sub.title(text), Notice: metadata.Announce, AccountURL: metadata.ProfileURL,
+		Traffic: setupTraffic(metadata.Usage, lang),
+	}
+	expiry := setupExpiry(metadata.Usage)
+	if !expiry.IsZero() {
+		view.Expiry = fmt.Sprintf(text["overview_until"], setupDate(expiry, text))
+	}
+	switch {
+	case expired(expiry, now):
+		view.Status = overviewChip{text["setup_expired"], "warn"}
+		view.Expiry = setupDate(expiry, text)
+		view.ExpiryReminder = text["overview_renew_expired"]
+	case expiring(expiry, now):
+		view.Status = overviewChip{text["overview_expiring"], "caut"}
+		view.Expiry = setupRemaining(expiry, now, lang)
+		view.ExpiryReminder = fmt.Sprintf(text["overview_renew_before"], setupDate(expiry, text))
+	case sub.State == subscription.StateHWIDLimit:
+		view.Status = overviewChip{text["setup_limit"], "warn"}
+	case len(sub.Nodes) > 0:
+		view.Status = overviewChip{text["setup_active"], "ok"}
+	case sub.State == "" || sub.State == "pending" || sub.State == subscription.StateReady:
+		view.Status = overviewChip{text["overview_subscription_pending"], ""}
+	default:
+		view.Status = overviewChip{text["overview_subscription_unavailable"], "warn"}
+	}
+	if usage := metadata.Usage; usage != nil && usage.Total > 0 {
+		view.Total = usage.Total
+		uploaded := min(max(0, usage.Upload), view.Total)
+		view.Used = uploaded + min(max(0, usage.Download), view.Total-uploaded)
+	}
+	if !sub.LastSuccess.IsZero() {
+		view.LastUpdated = fmt.Sprintf(text["overview_last_update"], overviewTimestamp(sub.LastSuccess, text))
+	}
+	if sub.Refreshing {
+		view.NextUpdate = text["overview_refreshing"]
+	} else if !sub.NextRefresh.IsZero() {
+		view.NextUpdate = fmt.Sprintf(text["overview_next_update"], overviewTimestamp(sub.NextRefresh, text))
+	}
+	return view
+}
+
+func overviewTimestamp(at time.Time, text map[string]string) string {
+	at = at.Local()
+	return fmt.Sprintf(text["overview_date_time"], setupDate(at, text), at.Format("15:04"))
+}
+
+func routingSummary(cfg *model.Config, network *model.Network, status OverviewStatus, subs []AppliedSubscription, text map[string]string) (string, string) {
+	if network == nil {
+		return text["overview_no_home"], ""
+	}
+	mode := text["overview_route_own"]
+	switch {
+	case network.Mode == model.ModeFull:
+		mode = text["overview_route_all"]
+	case network.Default == model.DefaultProfile:
+		mode = text["overview_route_profile"]
+		if cfg.ProviderRules != nil {
+			sub := appliedSubscriptionFor(subs, cfg.ProviderRules.Source)
+			mode = fmt.Sprintf(text["overview_route_provider"], sub.title(text))
+		}
+	case network.Default != "" && network.Default != model.TargetDirect:
+		mode = text["overview_route_all"]
+	case cfg.ProviderRules != nil:
+		mode = text["overview_route_custom"]
+	}
+	var details []string
+	if cfg.ProviderRules != nil {
+		switch status.RulesState {
+		case "ready", "partial":
+			details = append(details, fmt.Sprintf(text["overview_rule_count"], status.RulesActive, status.RulesTotal))
+		case "pending":
+			details = append(details, text["setup_rules_pending"])
+		case "withheld":
+			details = append(details, text["setup_rules_withheld"])
+		case "failed":
+			details = append(details, text["overview_rules_failed"])
+		}
+	}
+	count := 0
+	for _, group := range cfg.Groups {
+		if group.Name == "own-vpn" || group.Name == "own-direct" {
+			count += len(group.Entries)
+		}
+	}
+	details = append(details, fmt.Sprintf(text["overview_own_count"], count))
+	return mode, strings.Join(details, " · ")
+}
+
+func overviewTraffic(series []stats.Point, now time.Time, lang string) trafficView {
+	text := translations[lang]
+	traffic := trafficView{Chart: Chart(series, now, text["overview_chart_label"])}
+	for i := len(series) - 1; i >= 0; i-- {
+		point := series[i]
+		if point.T < now.Add(-chartWindow).UnixMilli() {
+			break
+		}
+		if point.T <= now.UnixMilli() {
+			traffic.Incoming = fmt.Sprintf(text["overview_incoming"], trafficRate(point.Down, lang))
+			traffic.Outgoing = fmt.Sprintf(text["overview_outgoing"], trafficRate(point.Up, lang))
+			break
+		}
+	}
+	return traffic
+}
+
+func trafficRate(rate float64, lang string) string {
+	value := fmt.Sprintf("%.1f", megabits(rate))
+	if lang == "ru" {
+		return strings.Replace(value, ".", ",", 1)
+	}
+	return value
+}

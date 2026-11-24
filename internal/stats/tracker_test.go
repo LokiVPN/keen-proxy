@@ -69,6 +69,43 @@ func TestTrackerCountsAndSamples(t *testing.T) {
 	}
 }
 
+func TestTunnelSeriesUsesOnlyVPNAndKeepsRetiredSamples(t *testing.T) {
+	const node = "subscription:sample:123456789abcdef0123456789abcdef0"
+	tr := NewTracker()
+	tr.RetainSubscriptionNodes([]string{node})
+	for i, tag := range []string{"manual", node, "direct", "block"} {
+		flow := tr.open(adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
+		read, write := flow.counters()
+		for _, count := range read {
+			count(int64(100 * (i + 1)))
+		}
+		for _, count := range write {
+			count(int64(200 * (i + 1)))
+		}
+		tr.close(flow)
+	}
+	now := time.Now()
+	tr.sample(now)
+	tr.RetainSubscriptionNodes(nil)
+	tr.sample(now.Add(SampleInterval))
+	want := []Point{{T: now.UnixMilli(), Down: 600 * 8 / SampleInterval.Seconds(), Up: 300 * 8 / SampleInterval.Seconds()},
+		{T: now.Add(SampleInterval).UnixMilli()}}
+	if got := tr.TunnelSeries(); !slices.Equal(got, want) {
+		t.Fatalf("aggregate series = %+v, want %+v", got, want)
+	}
+	for i := 2; i <= seriesLen; i++ {
+		tr.sample(now.Add(time.Duration(i) * SampleInterval))
+	}
+	got := tr.TunnelSeries()
+	if len(got) != seriesLen || got[0].T != want[1].T {
+		t.Fatalf("aggregate history has the wrong window: %d samples", len(got))
+	}
+	got[0] = Point{}
+	if tr.TunnelSeries()[0] != want[1] {
+		t.Fatal("editing a series snapshot changed the tracker")
+	}
+}
+
 func TestEvictsOldHosts(t *testing.T) {
 	tr := NewTracker()
 	for i := 0; i < MaxHosts+10; i++ {

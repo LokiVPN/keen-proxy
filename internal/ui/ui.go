@@ -42,6 +42,10 @@ func New(deps Deps, opts Options) http.Handler {
 	p := pages{deps: deps, opts: opts, setupDrafts: &setupDrafts{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.home)
+	mux.HandleFunc("POST /overview/pause", p.overviewPause)
+	mux.HandleFunc("POST /overview/connection", p.overviewConnection)
+	mux.HandleFunc("POST /overview/refresh", p.overviewRefresh)
+	mux.HandleFunc("GET /fragments/traffic", p.trafficFragment)
 	mux.HandleFunc("GET /setup", p.setupGet)
 	mux.HandleFunc("POST /setup/check", p.setupCheck)
 	mux.HandleFunc("POST /setup/enable", p.setupEnable)
@@ -55,17 +59,13 @@ func New(deps Deps, opts Options) http.Handler {
 	})
 }
 
-func (p pages) home(w http.ResponseWriter, r *http.Request) {
-	if role := p.role(r); role == RoleView || role == RoleManage {
-		if cfg := p.deps.Config(); cfg != nil && len(cfg.Subscriptions) == 0 {
-			http.Redirect(w, r, "/setup", http.StatusSeeOther)
+func (p pages) notFound(w http.ResponseWriter, r *http.Request) {
+	for _, tab := range tabs[1:] {
+		if r.URL.Path == tab.Path {
+			p.renderPage(w, r, http.StatusOK, localized(r)[tab.Key], "section_pending")
 			return
 		}
 	}
-	p.renderPage(w, r, http.StatusOK, "KeenProxy", "home_pending")
-}
-
-func (p pages) notFound(w http.ResponseWriter, r *http.Request) {
 	p.renderPage(w, r, http.StatusNotFound, localized(r)["not_found_title"], "not_found_body")
 }
 

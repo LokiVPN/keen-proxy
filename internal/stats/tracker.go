@@ -6,6 +6,7 @@ package stats
 import (
 	"context"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -101,6 +102,7 @@ type Tracker struct {
 	outs              map[string]*outbound
 	active            map[*conn]struct{}
 	subscriptionNodes map[string]struct{} // nil before the first applied catalog
+	tunnelSeries      []Point
 	sys               systemSampler
 }
 
@@ -324,20 +326,36 @@ func (t *Tracker) sample(now time.Time) {
 		u[c.hostName] = struct{}{}
 	}
 	secs := SampleInterval.Seconds()
+	tunnel := Point{T: now.UnixMilli()}
 	for _, o := range t.outs {
 		down, up := o.down.Load(), o.up.Load()
 		p := Point{
-			T:      now.UnixMilli(),
+			T:      tunnel.T,
 			Unique: len(unique[o]),
 			Down:   float64(down-o.lastDown) * 8 / secs,
 			Up:     float64(up-o.lastUp) * 8 / secs,
 		}
 		o.lastDown, o.lastUp = down, up
-		o.series = append(o.series, p)
-		if len(o.series) > seriesLen {
-			o.series = o.series[len(o.series)-seriesLen:]
+		o.series = appendSample(o.series, p)
+		if o.tag != model.TargetDirect && o.tag != model.TargetBlock {
+			tunnel.Down += p.Down
+			tunnel.Up += p.Up
 		}
 	}
+	t.tunnelSeries = appendSample(t.tunnelSeries, tunnel)
+}
+
+func appendSample(series []Point, p Point) []Point {
+	series = append(series, p)
+	return series[max(0, len(series)-seriesLen):]
+}
+
+// TunnelSeries snapshots aggregate VPN rates without copying per-outbound
+// history or ranking hosts. Samples survive subscription catalog rotation.
+func (t *Tracker) TunnelSeries() []Point {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.tunnelSeries)
 }
 
 // Snapshot returns current panel statistics, optionally including history.

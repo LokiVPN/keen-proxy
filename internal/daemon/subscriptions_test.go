@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,36 @@ import (
 
 const subscriptionFirst = "vless://11111111-2222-3333-4444-555555555555@127.0.0.1:12340?encryption=none#First"
 const subscriptionSecond = "vless://11111111-2222-3333-4444-555555555555@127.0.0.1:12341?encryption=none#Second"
+
+func TestPageSubscriptionRefreshRequiresCurrentConfig(t *testing.T) {
+	const id = "sample"
+	now := time.Now()
+	next := now.Add(time.Hour)
+	d := &Daemon{
+		cfg: &model.Config{Subscriptions: []subscription.Source{{ID: id, URL: "https://provider.example/saved"}}},
+		subscriptions: subscriptionRuntime{
+			states: map[string]appliedSubscription{id: {next: next}},
+			wake:   make(chan struct{}, 1),
+		},
+	}
+	if got := d.Subscriptions()[0]; got.NextRefresh == nil || !got.NextRefresh.Equal(next) || got.Refreshing {
+		t.Fatalf("status did not report the scheduled refresh: %+v", got)
+	}
+	rev := model.ConfigRevision(d.Config())
+	d.cfg.Subscriptions[0].URL = "https://provider.example/replaced"
+	if err := d.RefreshSubscriptionIfCurrent(id, rev); !errors.Is(err, model.ErrConfigChanged) {
+		t.Fatalf("stale refresh returned %v", err)
+	}
+	if got := d.Subscriptions()[0]; got.NextRefresh == nil || !got.NextRefresh.Equal(next) || len(d.subscriptions.wake) != 0 {
+		t.Fatalf("stale form changed the refresh schedule: %+v", got)
+	}
+	if err := d.RefreshSubscriptionIfCurrent(id, model.ConfigRevision(d.Config())); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Subscriptions()[0]; got.NextRefresh != nil || !got.Refreshing || len(d.subscriptions.wake) != 1 {
+		t.Fatalf("current form did not queue a refresh: %+v", got)
+	}
+}
 
 type subscriptionTestResponse struct {
 	body, title string
