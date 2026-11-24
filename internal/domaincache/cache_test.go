@@ -3,6 +3,7 @@ package domaincache
 import (
 	"fmt"
 	"github.com/miekg/dns"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -99,5 +100,33 @@ func TestServiceRefreshDoesNotCountAsObservation(t *testing.T) {
 	r := c.Snapshot(nil)[0]
 	if !r.ObservedAt.Equal(observed) || !r.CheckedAt.Equal(now) {
 		t.Fatal(r)
+	}
+}
+
+// DropExpired removes only the records without an unexpired address that the
+// caller selects; live records stay whatever the caller says.
+func TestDropExpired(t *testing.T) {
+	now := time.Unix(1000, 0)
+	c := New(func() time.Time { return now })
+	c.Observe("live.example", answer("live.example. 60 IN A 203.0.113.1"), "observed")
+	c.Observe("expired.example", answer("expired.example. 5 IN A 203.0.113.2"), "observed")
+	c.Observe("kept.example", answer("kept.example. 5 IN A 203.0.113.3"), "observed")
+	c.SetError("failed.example", "timeout")
+	now = now.Add(10 * time.Second)
+	var asked []string
+	c.DropExpired(func(name string) bool {
+		asked = append(asked, name)
+		return name != "kept.example"
+	})
+	slices.Sort(asked)
+	if !slices.Equal(asked, []string{"expired.example", "failed.example", "kept.example"}) {
+		t.Errorf("asked about %v", asked)
+	}
+	var names []string
+	for _, r := range c.Snapshot(nil) {
+		names = append(names, r.Name)
+	}
+	if !slices.Equal(names, []string{"kept.example", "live.example"}) {
+		t.Errorf("records left: %v", names)
 	}
 }

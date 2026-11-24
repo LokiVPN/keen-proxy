@@ -113,6 +113,10 @@ type Daemon struct {
 	journals    journal.Set
 	// live publishes the current configuration to route logging without d.mu.
 	live atomic.Pointer[model.Config]
+	// dnsNames publishes the DNS names of the applied configuration and
+	// provider rules to the DNS frontend's goroutines, which must not take
+	// d.mu. Only dnsNamesLocked stores it.
+	dnsNames atomic.Pointer[dnsNamesState]
 	// coreRestarted records whether the latest applyLocked restarted the engine.
 	coreRestarted bool
 	// memoryBaseline is the process limit captured before configuration is applied.
@@ -840,6 +844,10 @@ func (d *Daemon) startDNS() error {
 	cfg.BlockReason = func(name string) string {
 		if canary && strings.EqualFold(strings.TrimSuffix(name, "."), "use-application-dns.net") {
 			return "firefox-canary"
+		}
+		// Provider rules change without a DNS restart: read the published names.
+		if names := d.publishedDNSNames(); names != nil && names.ProviderBlocked(name) {
+			return "provider"
 		}
 		return ""
 	}

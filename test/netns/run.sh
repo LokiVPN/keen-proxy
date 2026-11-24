@@ -36,7 +36,8 @@ ip -n wan route add 192.168.77.11/32 via 198.51.100.1
 
 # --- Synthetic internet: controlled DNS and HTTP targets
 ip netns exec wan dnsmasq -k --no-resolv --no-hosts --listen-address=198.51.100.2,198.51.100.3 --bind-interfaces \
-	--local-ttl=5 --address=/fallback.test/198.51.100.5 --address=/example.test/198.51.100.2 --address=/ads.test/198.51.100.2 --log-queries --log-facility=/tmp/dnsmasq.log &
+	--local-ttl=5 --address=/fallback.test/198.51.100.5 --address=/example.test/198.51.100.2 --address=/ads.test/198.51.100.2 \
+	--address=/provads.test/198.51.100.3 --address=/provdirect.test/198.51.100.4 --log-queries --log-facility=/tmp/dnsmasq.log &
 ip netns exec wan python3 -u -m http.server 80 --bind 198.51.100.3 >/tmp/http.log 2>&1 &
 ip netns exec wan python3 -u -m http.server 80 --bind 198.51.100.4 >/tmp/steam.log 2>&1 &
 ip netns exec wan python3 -u -m http.server 80 --bind 198.51.100.5 >/tmp/fallback-http.log 2>&1 &
@@ -76,6 +77,15 @@ ok "client HTTP fails without keenProxy"
 /work/mkgeo /tmp/geo.mmdb 198.51.100.0/24=RU 198.51.100.4/32=FI 203.0.113.0/24=FI
 SS="ss://$(printf 'aes-128-gcm:test-pass' | base64 | tr -d '=\n')@198.51.100.2:8388"
 SS_MAIN="ss://$(printf 'aes-128-gcm:test-pass' | base64 | tr -d '=\n')@198.51.100.2:8389"
+# An HTTPS subscription provider with a Happ routing profile. KeenProxy trusts
+# its self-signed certificate through SSL_CERT_FILE.
+echo 'vless://11111111-2222-3333-4444-555555555555@198.51.100.2:8443?type=tcp&encryption=none#Provider' >/tmp/provider-nodes.txt
+cat >/tmp/provider-profile.json <<'JSON'
+{"Name": "Netns", "GlobalProxy": "false", "DirectSites": ["domain:provdirect.test"], "BlockSites": ["domain:provads.test"]}
+JSON
+ip netns exec wan /work/provider 198.51.100.2:8444 /tmp/provider-ca.pem /tmp/provider-nodes.txt /tmp/provider-profile.json >/tmp/provider.log 2>&1 &
+for i in $(seq 1 50); do [ -s /tmp/provider-ca.pem ] && break; sleep 0.1; done
+[ -s /tmp/provider-ca.pem ] || { cat /tmp/provider.log; fail "subscription provider did not start"; }
 cat >/tmp/config.yaml <<YAML
 lan: {interface: br0}
 dns: {listen: "0.0.0.0:5354", upstreams: ["udp://198.51.100.2:53"], fallback: "127.0.0.1:53", bypass_sources: ["192.168.77.11"]}
@@ -96,7 +106,7 @@ networks:
   - {name: LAN, cidr: 192.168.77.0/24, mode: split}
 YAML
 
-$KEENPROXY -config /tmp/config.yaml -rule-sets /tmp/rule-sets -watch 1s \
+SSL_CERT_FILE=/tmp/provider-ca.pem $KEENPROXY -config /tmp/config.yaml -rule-sets /tmp/rule-sets -watch 1s \
 	-iptables /usr/sbin/iptables -iptables-restore /usr/sbin/iptables-restore >/tmp/keenproxy.log 2>&1 &
 KPID=$!
 for i in $(seq 1 50); do
@@ -441,6 +451,68 @@ activation_cleanup
 ACTIVATION_TMP=""
 trap - 0 1 2 15
 ok "activation: disabled primary and intermediate bypassed; all-off network/client references block; explicit direct and re-enable restore"
+
+# --- Provider rules in DNS: a block rule answers locally unless an own list
+# holds the name, and a domain rule learns addresses only from device answers.
+api_get config >/tmp/provider-baseline.json
+provider_apply() { # JSON list of switched-off provider rule keys
+	python3 - "$1" >/tmp/provider-config.json <<'PY'
+import json, sys
+c = json.load(open("/tmp/provider-baseline.json"))
+c["subscriptions"] = [{"id": "prov", "url": "https://198.51.100.2:8444/sub"}]
+c["provider_rules"] = {"source": "prov", "disabled": json.loads(sys.argv[1])}
+c["groups"].append({"name": "Provider exception", "target": "direct", "entries": ["keep.provads.test"]})
+print(json.dumps(c))
+PY
+	curl -fsS -m 30 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+		--data-binary @/tmp/provider-config.json http://127.0.0.1:8086/api/config >/dev/null ||
+		{ tail -20 /tmp/keenproxy.log; cat /tmp/provider.log; fail "provider rules apply"; }
+}
+dig_a() { ip netns exec client dig +short +time=2 +tries=1 @8.8.8.8 "$1" A; }
+provider_apply '[]'
+grep -q 'GET /sub' /tmp/provider.log || fail "the subscription was not fetched over HTTPS"
+a=$(dig_a x.provads.test)
+[ "$a" = "0.0.0.0" ] || fail "provider block rule: '$a'"
+a=$(dig_a www.keep.provads.test)
+[ "$a" = "198.51.100.3" ] || fail "an own list must win over a provider block rule: '$a'"
+a=$(dig_a x.ads.test)
+[ "$a" = "0.0.0.0" ] || fail "block group next to provider rules: '$a'"
+api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x["host"]=="x.provads.test." and x.get("source")=="provider" for x in json.load(sys.stdin)["entries"])' ||
+	fail "the provider DNS block is not journaled"
+ok "provider block rule answers DNS locally; an own list and a block group keep their rules"
+
+# Without a name, .4 takes the country tunnel (FI → ss). A device answer for
+# provdirect.test sends it directly until the answer's 5-second TTL ends.
+a=$(dig_a provdirect.test)
+[ "$a" = "198.51.100.4" ] || fail "provider domain: '$a'"
+provider_route() { # outbound expected for a request to .4 without a name
+	ip netns exec client curl -s -m 3 --http1.0 -H 'Host:' http://198.51.100.4/ >/dev/null || return 1
+	api_get 'journal/routes?limit=50' | python3 -c '
+import json, sys
+e = [x for x in json.load(sys.stdin)["entries"] if x.get("ip") == "198.51.100.4" and x.get("host") == "198.51.100.4"]
+assert e and e[0]["outbound"] == sys.argv[1], e[:1]
+assert sys.argv[1] != "direct" or "dns-" in e[0].get("rule_raw", ""), e[:1]
+' "$1" 2>/dev/null
+}
+for i in $(seq 1 30); do provider_route direct && break; sleep 0.2; done
+provider_route direct || { tail -20 /tmp/keenproxy.log; fail "provider DNS fallback did not route the observed address"; }
+sleep 7
+for i in $(seq 1 15); do provider_route ss && break; sleep 0.2; done
+provider_route ss || fail "an expired provider answer still routes"
+# KeenProxy resolves an observed own subdomain again after its 30-second retry
+# minimum, but never an observed provider name.
+queries() { grep -c "query\[A\] $1 from 198.51.100.1" /tmp/dnsmasq.log || true; }
+for i in $(seq 1 200); do [ "$(queries www.keep.provads.test)" -ge 2 ] && break; sleep 0.2; done
+[ "$(queries www.keep.provads.test)" -ge 2 ] || fail "the observed own subdomain was not kept warm"
+[ "$(queries provdirect.test)" = "1" ] || fail "KeenProxy resolved the provider name itself: $(queries provdirect.test) queries"
+ok "provider DNS fallback: a device answer routed the address until its TTL; the provider name was never resolved by KeenProxy"
+
+provider_apply '["block:literals:site"]'
+a=$(dig_a y.provads.test)
+[ "$a" = "198.51.100.3" ] || fail "a switched-off provider block rule still answers locally: '$a'"
+curl -fsS -m 15 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+	--data-binary @/tmp/provider-baseline.json http://127.0.0.1:8086/api/config >/dev/null || fail "provider rules restore"
+ok "switching the provider block rule off releases its names on Apply"
 
 # --- Shutdown removes all interception owned by KeenProxy
 kill -TERM $KPID

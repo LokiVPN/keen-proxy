@@ -4,10 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/ordo-systems/keen-proxy/internal/model"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
+
+	"github.com/ordo-systems/keen-proxy/internal/lists"
+	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
 // DomainTag is stable when unrelated groups move and changes with group content.
@@ -69,58 +72,154 @@ func (m *DomainMatcher) Match(name string) bool {
 	}
 }
 
-// MatchesDomain checks whether a name belongs to an enabled routing group.
-func MatchesDomain(c *model.Config, name string) bool { return NewDomainMatcher(c).Match(name) }
+// DNSNames holds the domain names of one configuration and its applied
+// provider rules for DNS: which device answers the DNS fallback keeps, which
+// names provider block rules answer locally, and which fallback set an answer
+// fills. The daemon builds it once per change of either and shares it
+// read-only with the DNS frontend's goroutines.
+type DNSNames struct {
+	sets  []dnsSet
+	index lists.DomainIndex // list positions are positions in sets
+}
 
-// DNSRuleSets builds deterministic IPv4 fallback sets for enabled entry groups
-// and for the applied provider domain rules (providers as in Input). The
-// caller must supply only fresh cache addresses; empty sets match nothing.
-// The result names every dns-* file the configuration uses.
-func DNSRuleSets(c *model.Config, providers map[string]ProviderRules, records map[string][]string) map[string][]byte {
-	out := map[string][]byte{}
-	for _, g := range c.Groups {
-		if g.Disabled {
-			continue
+// dnsSet is one DNS fallback rule set: an enabled group that is not a country
+// or category group, or an enabled provider domain rule with suffix or exact
+// names.
+type dnsSet struct {
+	tag  string
+	kind dnsSetKind
+}
+
+type dnsSetKind uint8
+
+const (
+	setOwn           dnsSetKind = iota // a group that routes traffic: an own list
+	setOwnBlock                        // a block group, which DNS blocks on its own
+	setProvider                        // a provider proxy or direct rule
+	setProviderBlock                   // a provider block rule
+)
+
+// NewDNSNames indexes the DNS fallback sets of c: its enabled entry groups,
+// then the enabled domain rules of the provider rules that apply to c
+// (providers as in Input) that have suffix or exact names. Keyword and regex
+// entries need a readable name and take no part in DNS.
+func NewDNSNames(c *model.Config, providers map[string]ProviderRules) *DNSNames {
+	sets, names := dnsSets(c, providers)
+	return &DNSNames{sets: sets, index: lists.NewDomainIndex(names)}
+}
+
+// dnsSets lists the DNS fallback sets of c, groups first, with the names that
+// fill each. Groups with equal content share one set.
+func dnsSets(c *model.Config, providers map[string]ProviderRules) ([]dnsSet, []lists.DomainList) {
+	var sets []dnsSet
+	var names []lists.DomainList
+	seen := map[string]bool{}
+	add := func(tag string, kind dnsSetKind, list lists.DomainList) {
+		if !seen[tag] {
+			seen[tag] = true
+			sets = append(sets, dnsSet{tag: tag, kind: kind})
+			names = append(names, list)
 		}
-		if g.IsGeo() {
-			continue
-		}
-		seen := map[string]bool{}
-		cidrs := []string{}
-		for raw := range g.ActiveEntries() {
-			e, err := model.ParseEntry(raw)
-			if err != nil || e.Kind != model.EntryDomain {
-				continue
-			}
-			for name, ips := range records {
-				if name != e.Domain && !strings.HasSuffix(name, "."+e.Domain) {
-					continue
-				}
-				for _, ip := range ips {
-					a, err := netip.ParseAddr(ip)
-					if err != nil || !a.Is4() {
-						continue
-					}
-					p := netip.PrefixFrom(a, 32).String()
-					if !seen[p] {
-						seen[p] = true
-						cidrs = append(cidrs, p)
-					}
-				}
-			}
-		}
-		sort.Strings(cidrs)
-		if len(cidrs) == 0 {
-			cidrs = []string{noSource}
-		}
-		out[DomainTag(g)+".json"], _ = json.Marshal(obj{"version": 3, "rules": []obj{{"ip_cidr": cidrs}}})
 	}
-	// Provider sets are declared empty; observed answers do not fill them yet.
-	empty, _ := json.Marshal(obj{"version": 3, "rules": []obj{{"ip_cidr": []string{noSource}}}})
-	for _, r := range enabledProviderRules(c, providerProfile(c, providers)) {
-		if providerDNSNames(r) {
-			out[providerDNSTag(r.Key)+".json"] = empty
+	for _, g := range c.Groups {
+		if g.Disabled || g.IsGeo() {
+			continue
 		}
+		var suffix []string
+		for raw := range g.ActiveEntries() {
+			if e, err := model.ParseEntry(raw); err == nil && e.Kind == model.EntryDomain {
+				suffix = append(suffix, e.Domain)
+			}
+		}
+		kind := setOwn
+		if g.Target == model.TargetBlock {
+			kind = setOwnBlock
+		}
+		add(DomainTag(g), kind, lists.DomainList{Suffix: suffix})
+	}
+	for _, r := range enabledProviderRules(c, providerProfile(c, providers)) {
+		if !providerDNSNames(r) {
+			continue
+		}
+		kind := setProvider
+		if r.Action == providerBlock {
+			kind = setProviderBlock
+		}
+		add(providerDNSTag(r.Key), kind, lists.DomainList{Suffix: r.Suffix, Exact: r.Full})
+	}
+	return sets, names
+}
+
+// Observed reports whether a device answer for name fills a DNS fallback set.
+func (n *DNSNames) Observed(name string) bool { return n.index.Match(name) }
+
+// InGroups reports whether an enabled group lists name. The daemon keeps such
+// names fresh itself; provider names last only as long as device answers.
+func (n *DNSNames) InGroups(name string) bool {
+	found := false
+	n.index.Each(name, func(set int) bool {
+		kind := n.sets[set].kind
+		found = kind == setOwn || kind == setOwnBlock
+		return !found
+	})
+	return found
+}
+
+// ProviderBlocked reports whether an enabled provider block rule lists name as
+// a suffix or exact name while no own list that routes traffic holds it: own
+// lists win over provider rules. Block groups are blocked on their own and
+// exempt nothing.
+func (n *DNSNames) ProviderBlocked(name string) bool {
+	blocked, own := false, false
+	n.index.Each(name, func(set int) bool {
+		switch n.sets[set].kind {
+		case setProviderBlock:
+			blocked = true
+		case setOwn:
+			own = true
+		}
+		return !own
+	})
+	return blocked && !own
+}
+
+// RuleSets returns the DNS fallback rule-set files: for each set the IPv4
+// addresses that records, fresh answers by name, hold for its names, or a
+// placeholder that matches nothing. The result names every dns-* file the
+// configuration uses.
+func (n *DNSNames) RuleSets(records map[string][]string) map[string][]byte {
+	cidrs := make([][]string, len(n.sets))
+	var addrs []string
+	for name, ips := range records {
+		addrs = addrs[:0]
+		for _, ip := range ips {
+			if a, err := netip.ParseAddr(ip); err == nil && a.Is4() {
+				addrs = append(addrs, netip.PrefixFrom(a, 32).String())
+			}
+		}
+		if len(addrs) == 0 {
+			continue
+		}
+		n.index.Each(name, func(set int) bool {
+			cidrs[set] = append(cidrs[set], addrs...)
+			return true
+		})
+	}
+	out := make(map[string][]byte, len(n.sets))
+	for i, s := range n.sets {
+		out[s.tag+".json"] = addressRuleSet(cidrs[i])
 	}
 	return out
+}
+
+// addressRuleSet encodes addresses as a sorted rule-set file; no addresses
+// give a placeholder that matches nothing.
+func addressRuleSet(cidrs []string) []byte {
+	slices.Sort(cidrs)
+	cidrs = slices.Compact(cidrs)
+	if len(cidrs) == 0 {
+		cidrs = []string{noSource}
+	}
+	raw, _ := json.Marshal(obj{"version": 3, "rules": []obj{{"ip_cidr": cidrs}}})
+	return raw
 }

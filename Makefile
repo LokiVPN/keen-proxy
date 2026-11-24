@@ -105,9 +105,11 @@ integration:
 	CGO_ENABLED=0 GOOS=linux $(GO) build -tags $(TAGS) -o dist/keenproxy-test ./cmd/keenproxy
 	CGO_ENABLED=0 GOOS=linux $(GO) build -tags $(TAGS) -o dist/sbserver-test ./test/netns/sbserver
 	CGO_ENABLED=0 GOOS=linux $(GO) build -o dist/mkgeo-test ./test/netns/mkgeo
+	CGO_ENABLED=0 GOOS=linux $(GO) build -o dist/provider-test ./test/netns/provider
 	docker run --rm --privileged -v $(CURDIR)/dist/keenproxy-test:/work/keenproxy:ro \
 		-v $(CURDIR)/dist/sbserver-test:/work/sbserver:ro \
 		-v $(CURDIR)/dist/mkgeo-test:/work/mkgeo:ro \
+		-v $(CURDIR)/dist/provider-test:/work/provider:ro \
 		-v $(CURDIR)/tools:/work/tools:ro \
 		-v $(CURDIR)/test/install:/work/test/install:ro \
 		-v $(CURDIR)/test/netns:/work/test/netns:ro debian:bookworm-slim sh -c '\

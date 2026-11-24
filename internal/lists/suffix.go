@@ -2,6 +2,7 @@ package lists
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"io"
 	"net/netip"
@@ -12,8 +13,8 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
-// Compact sorted suffix lists for large external domain sets: Parse reads
-// plain, hosts and basic Adblock DNS formats; matches does the suffix lookup.
+// Compact sorted suffix lists for large domain sets: Parse reads plain, hosts
+// and basic Adblock DNS formats; DomainIndex does the suffix lookup.
 
 // MaxBytes bounds the downloaded text accepted by Parse.
 const MaxBytes = 8 << 20
@@ -106,16 +107,89 @@ func Parse(r io.Reader) (Parsed, error) {
 	}
 	return p, nil
 }
-func matches(domains []string, name string) bool {
-	for {
-		name = strings.TrimSuffix(strings.ToLower(name), ".")
-		if _, ok := slices.BinarySearch(domains, name); ok {
-			return true
-		}
-		i := strings.IndexByte(name, '.')
-		if i < 0 {
-			return false
-		}
-		name = name[i+1:]
+
+// DomainList is one list of a DomainIndex. Suffix names match themselves and
+// their subdomains on label boundaries, Exact names only themselves.
+type DomainList struct{ Suffix, Exact []string }
+
+// DomainIndex maps domain names to the lists that hold them. It is a single
+// sorted slice with one entry per name and list, so its memory follows the
+// lists, and a lookup costs one binary search per label-delimited suffix of
+// the name without allocating. It is immutable and safe for concurrent use.
+type DomainIndex struct{ entries []domainEntry }
+
+// domainEntry is one name of the list at position list.
+type domainEntry struct {
+	name  string
+	list  int32
+	exact bool
+}
+
+// NewDomainIndex indexes lists by their position. Names compare in lowercase
+// without a trailing dot; empty names are skipped.
+func NewDomainIndex(lists []DomainList) DomainIndex {
+	n := 0
+	for _, l := range lists {
+		n += len(l.Suffix) + len(l.Exact)
 	}
+	entries := make([]domainEntry, 0, n)
+	add := func(list int, names []string, exact bool) {
+		for _, name := range names {
+			if name = normalizeName(name); name != "" {
+				entries = append(entries, domainEntry{name: name, list: int32(list), exact: exact})
+			}
+		}
+	}
+	for i, l := range lists {
+		add(i, l.Suffix, false)
+		add(i, l.Exact, true)
+	}
+	slices.SortFunc(entries, compareEntries)
+	return DomainIndex{entries: slices.Compact(entries)}
+}
+
+// Each calls yield with the position of every list that holds name, possibly
+// more than once, until yield returns false. name may use any letter case and
+// end with a dot.
+func (x DomainIndex) Each(name string, yield func(list int) bool) {
+	name = normalizeName(name)
+	for suffix := name; ; {
+		i, _ := slices.BinarySearchFunc(x.entries, suffix, compareName)
+		for ; i < len(x.entries) && x.entries[i].name == suffix; i++ {
+			if e := x.entries[i]; (!e.exact || len(suffix) == len(name)) && !yield(int(e.list)) {
+				return
+			}
+		}
+		dot := strings.IndexByte(suffix, '.')
+		if dot < 0 {
+			return
+		}
+		suffix = suffix[dot+1:]
+	}
+}
+
+// Match reports whether any list holds name.
+func (x DomainIndex) Match(name string) bool {
+	found := false
+	x.Each(name, func(int) bool {
+		found = true
+		return false
+	})
+	return found
+}
+
+func normalizeName(name string) string { return strings.ToLower(strings.TrimSuffix(name, ".")) }
+
+func compareName(e domainEntry, name string) int { return strings.Compare(e.name, name) }
+
+// compareEntries orders entries by name, then list and kind, so the entries of
+// a name are contiguous and duplicates adjacent.
+func compareEntries(a, b domainEntry) int {
+	kind := func(e domainEntry) int {
+		if e.exact {
+			return 1
+		}
+		return 0
+	}
+	return cmp.Or(strings.Compare(a.name, b.name), cmp.Compare(a.list, b.list), cmp.Compare(kind(a), kind(b)))
 }

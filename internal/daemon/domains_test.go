@@ -19,6 +19,7 @@ func TestDomainsObserveAndReconcile(t *testing.T) {
 	cfg := &model.Config{Groups: []model.Group{{Name: "test", Target: "direct", Entries: []string{"example.com"}}}}
 	d.live.Store(cfg)
 	d.cfg = cfg
+	d.flushDomains() // publishes the DNS names of the applied configuration, as Apply does
 	m := new(dns.Msg)
 	rr, _ := dns.NewRR("www.example.com. 60 IN A 203.0.113.9")
 	m.Answer = []dns.RR{rr}

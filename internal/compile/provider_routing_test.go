@@ -354,7 +354,7 @@ func TestProviderRuleSets(t *testing.T) {
 	if _, ok := out.RuleSets[providerDNSTag("proxy:geosite:words")+".json"]; ok {
 		t.Error("a keyword-only rule got a DNS fallback set")
 	}
-	dns := DNSRuleSets(compileConfig(t), map[string]ProviderRules{"prov": rules}, nil)
+	dns := NewDNSNames(compileConfig(t), map[string]ProviderRules{"prov": rules}).RuleSets(nil)
 	for name, raw := range out.RuleSets {
 		if strings.HasPrefix(name, "dns-") && string(dns[name]) != string(raw) {
 			t.Errorf("the daemon would not keep %s", name)

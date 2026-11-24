@@ -19,29 +19,63 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
-// observeDomain retains device DNS answers only for currently configured domains.
+// observeDomain keeps device DNS answers for names that fill a DNS fallback
+// set of the applied configuration: own lists and enabled provider domain
+// rules. Provider names are learned only this way, never resolved by the
+// daemon (see refreshDomainNames). It runs on DNS goroutines without d.mu.
 func (d *Daemon) observeDomain(name string, m *dns.Msg) {
-	cfg := d.live.Load()
 	name = domaincache.Normalize(name)
-	if cfg != nil && compile.MatchesDomain(cfg, name) {
+	if names := d.publishedDNSNames(); names != nil && names.Observed(name) {
 		d.domains.Observe(name, m, "observed")
 	}
 }
 
-// domainRecords filters fresh cache records against the current configuration.
+// domainRecords filters fresh cache records against the published DNS names.
 func (d *Daemon) domainRecords() []domaincache.Record {
-	cfg := d.live.Load()
 	out := []domaincache.Record{}
-	if cfg == nil {
+	names := d.publishedDNSNames()
+	if names == nil {
 		return out
 	}
-	matcher := compile.NewDomainMatcher(cfg)
 	for _, r := range d.domains.Snapshot(nil) {
-		if matcher.Match(r.Name) {
+		if names.Observed(r.Name) {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// dnsNamesState is the DNS names published to DNS goroutines with the
+// configuration and provider rules they were built from.
+type dnsNamesState struct {
+	cfg   *model.Config
+	rules *compile.ProviderRules
+	names *compile.DNSNames
+}
+
+// dnsNamesLocked returns the DNS names of the applied configuration and
+// provider rules, building and publishing them only when either changed.
+// Both are replaced on change and never modified, so pointers identify them.
+func (d *Daemon) dnsNamesLocked() *compile.DNSNames {
+	var rules *compile.ProviderRules
+	if applied := d.subscriptions.states[providerRulesSource(d.cfg)].snapshot.Rules; applied != nil {
+		rules = applied.Built
+	}
+	if s := d.dnsNames.Load(); s != nil && s.cfg == d.cfg && s.rules == rules {
+		return s.names
+	}
+	names := compile.NewDNSNames(d.cfg, d.providerRulesLocked())
+	d.dnsNames.Store(&dnsNamesState{cfg: d.cfg, rules: rules, names: names})
+	return names
+}
+
+// publishedDNSNames returns the DNS names for readers without d.mu, or nil
+// before the first compilation.
+func (d *Daemon) publishedDNSNames() *compile.DNSNames {
+	if s := d.dnsNames.Load(); s != nil {
+		return s.names
+	}
+	return nil
 }
 
 func recordsMap(records []domaincache.Record) map[string][]string {
@@ -61,6 +95,10 @@ func (d *Daemon) flushDomains() {
 	if d.cfg == nil {
 		return
 	}
+	// Nothing refreshes provider names: drop their expired records so they do
+	// not fill the cache that every flush reads.
+	names := d.dnsNamesLocked()
+	d.domains.DropExpired(func(name string) bool { return !names.InGroups(name) })
 	d.writeDNSLocked()
 	if d.domainError == "" {
 		d.cleanDNSFilesLocked()
@@ -69,7 +107,7 @@ func (d *Daemon) flushDomains() {
 
 // writeDNSLocked writes changed DNS fallback sets and records write progress while d.mu is held.
 func (d *Daemon) writeDNSLocked() {
-	sets := compile.DNSRuleSets(d.cfg, d.providerRulesLocked(), recordsMap(d.domainRecords()))
+	sets := d.dnsNamesLocked().RuleSets(recordsMap(d.domainRecords()))
 	fingerprint, _ := json.Marshal(sets)
 	if bytes.Equal(fingerprint, d.domainFingerprint) && d.domainError == "" {
 		return
@@ -240,8 +278,10 @@ func containsName(names []string, name string) bool {
 	return false
 }
 
-// refreshDomainNames keeps configured roots and recently observed subdomains warm;
-// service refreshes do not count as device use.
+// refreshDomainNames keeps the configured roots of own lists and their recently
+// observed subdomains warm; service refreshes do not count as device use.
+// Provider names are never resolved here: they fill DNS fallback sets only
+// from answers devices received.
 func refreshDomainNames(cfg *model.Config, records []domaincache.Record, now time.Time) []string {
 	names := compile.DomainNames(cfg)
 	matcher := compile.NewDomainMatcher(cfg)
@@ -340,7 +380,7 @@ func dnsRouteNote(cfg *model.Config, records []domaincache.Record, raw, ip strin
 
 // Called after Apply/rollback is finished, never while the old engine still uses its files.
 func (d *Daemon) cleanDNSFilesLocked() {
-	keep := compile.DNSRuleSets(d.cfg, d.providerRulesLocked(), nil)
+	keep := d.dnsNamesLocked().RuleSets(nil)
 	entries, err := os.ReadDir(d.opt.RuleSetDir)
 	if err != nil {
 		return

@@ -4,6 +4,7 @@ package domaincache
 
 import (
 	"github.com/miekg/dns"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -155,6 +156,20 @@ func (c *Cache) pruneLocked() {
 
 // Prune removes expired addresses while retaining name and attempt history.
 func (c *Cache) Prune() { c.mu.Lock(); defer c.mu.Unlock(); c.pruneLocked() }
+
+// DropExpired removes the records without an unexpired address for which drop
+// returns true, such as names nobody refreshes, which would otherwise stay
+// until evicted. drop runs under the cache lock and must not use the cache.
+func (c *Cache) DropExpired(drop func(name string) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	for name, r := range c.records {
+		if !slices.ContainsFunc(r.Addresses, func(a Address) bool { return a.ExpiresAt.After(now) }) && drop(name) {
+			delete(c.records, name)
+		}
+	}
+}
 
 // Snapshot returns detached, sorted records with expired addresses removed; no names means all.
 func (c *Cache) Snapshot(names []string) []Record {

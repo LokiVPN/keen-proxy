@@ -171,9 +171,9 @@ func Compile(in Input) (Output, error) {
 		return Output{}, err
 	}
 	maps.Copy(sets, provider.files)
-	for name, raw := range DNSRuleSets(c, in.ProviderRules, nil) {
-		sets[name] = raw
-	}
+	// The daemon fills the DNS fallback sets with observed answers.
+	dns, _ := dnsSets(c, in.ProviderRules)
+	maps.Copy(sets, (&DNSNames{sets: dns}).RuleSets(nil))
 	return Output{
 		SingBox:                sb,
 		RuleSets:               sets,

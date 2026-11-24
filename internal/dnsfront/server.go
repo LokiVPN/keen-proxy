@@ -33,13 +33,16 @@ type Config struct {
 	DirectFallback   bool
 	Route            string
 	OnRoute          func(string)
-	BlockReason      func(string) string
 	OnBlock          func(name, client, source string)
 	Observe          func(name string, response *dns.Msg)
 	Listen           string
 	Upstreams        []model.Upstream
 	Fallback         string // System resolver host:port over UDP.
 	Timeout          time.Duration
+	// BlockReason names why a domain gets a local block response, or returns
+	// "". It runs once per query; "firefox-canary" answers NXDOMAIN, and a
+	// Blocked domain is reported as "manual".
+	BlockReason func(string) string
 	// Blocked reports whether a domain should receive a local block response.
 	Blocked func(name string) bool
 	// DropAAAA returns empty AAAA answers when IPv6 tunneling is unsupported.
@@ -154,14 +157,14 @@ func (s *Server) Resolve(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 	q := req.Question[0]
 	reason := ""
-	if s.cfg.BlockReason != nil && s.cfg.BlockReason(q.Name) == "firefox-canary" {
+	if s.cfg.BlockReason != nil {
+		reason = s.cfg.BlockReason(q.Name)
+	}
+	if reason == "firefox-canary" {
 		return reply(req, dns.RcodeNameError)
 	}
 	if s.cfg.Blocked(q.Name) {
 		reason = "manual"
-	}
-	if reason == "" && s.cfg.BlockReason != nil {
-		reason = s.cfg.BlockReason(q.Name)
 	}
 	if reason != "" {
 		if s.cfg.OnBlock != nil {
