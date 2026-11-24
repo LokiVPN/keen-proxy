@@ -43,6 +43,9 @@ type Cache struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	records map[string]Record
+	// classifySpare decides whose history follows the address TTL. A record's
+	// eviction priority may come from a DNS callback holding an older matcher.
+	classifySpare func(string) bool
 	// generation changes whenever a name gains or loses an address, so
 	// readers can skip work while it stays the same.
 	generation uint64
@@ -59,17 +62,28 @@ func Normalize(name string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 }
 
-// Reclassify updates eviction priority and expiry retention in one pass.
-// isSpare runs under the cache lock and must not use the cache.
+// Reclassify updates eviction priority in one pass and installs the policy
+// for later expiry decisions. isSpare runs under the cache lock and must
+// avoid calling cache methods.
 func (c *Cache) Reclassify(isSpare func(name string) bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.classifySpare = isSpare
 	for name, r := range c.records {
 		if spare := isSpare(name); spare != r.Spare {
 			r.Spare = spare
 			c.records[name] = r
 		}
 	}
+}
+
+// spareHistoryLocked uses the current policy when deciding to discard name
+// history, regardless of the priority a DNS callback stored with the answer.
+func (c *Cache) spareHistoryLocked(r Record) bool {
+	if c.classifySpare != nil {
+		return c.classifySpare(r.Name)
+	}
+	return r.Spare
 }
 
 // put stores r; the caller holds mu. A new name at the limit first evicts
@@ -182,7 +196,7 @@ func (c *Cache) Observe(name string, m *dns.Msg, source string, spare bool) {
 	slices.SortFunc(r.Addresses, func(a, b Address) int { return strings.Compare(a.IP, b.IP) })
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if spare && len(r.Addresses) == 0 {
+	if len(r.Addresses) == 0 && c.spareHistoryLocked(r) {
 		c.removeLocked(name)
 		return
 	}
@@ -234,7 +248,7 @@ func (c *Cache) pruneLocked() {
 					live = append(live, a)
 				}
 			}
-			if len(live) == 0 && r.Spare {
+			if len(live) == 0 && c.spareHistoryLocked(r) {
 				delete(c.records, name)
 				continue
 			}

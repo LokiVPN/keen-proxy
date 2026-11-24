@@ -593,6 +593,8 @@ func (d *Daemon) activateSubscriptionStateLocked(id string, state appliedSubscri
 				d.audit("system", "Subscription rollback failed", id, "error", "previous subscription runtime could not be restored")
 			}
 		}
+	} else if coreChanged {
+		d.commitDomainCacheLocked()
 	}
 	return before, err
 }

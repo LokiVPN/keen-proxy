@@ -26,7 +26,8 @@ import (
 // rules. Provider names are learned only this way, never resolved by the
 // daemon (see refreshDomainNames), so their records are spare: they give way
 // to own-list records in a full cache and leave once their answers expire.
-// It runs on DNS goroutines without d.mu.
+// It runs on DNS goroutines without d.mu. A callback holding an older
+// matcher can store an old priority, which the next answer or commit corrects.
 func (d *Daemon) observeDomain(name string, m *dns.Msg) {
 	name = domaincache.Normalize(name)
 	if names := d.publishedDNSNames(); names != nil && names.Observed(name) {
@@ -41,7 +42,7 @@ func holdsAddress(ip string) func(domaincache.Record) bool {
 	}
 }
 
-// dnsNamesState is the DNS names published to DNS goroutines with the
+// dnsNamesState is the DNS names published during compilation, with the
 // configuration and provider rules they were built from.
 type dnsNamesState struct {
 	cfg   *model.Config
@@ -49,7 +50,7 @@ type dnsNamesState struct {
 	names *compile.DNSNames
 }
 
-// dnsNamesLocked returns the DNS names of the applied configuration and
+// dnsNamesLocked returns the DNS names of the configuration being compiled and
 // provider rules, building and publishing them only when either changed.
 // Both are replaced on change and never modified, so pointers identify them.
 func (d *Daemon) dnsNamesLocked() *compile.DNSNames {
@@ -62,10 +63,25 @@ func (d *Daemon) dnsNamesLocked() *compile.DNSNames {
 	}
 	names := compile.NewDNSNames(d.cfg, d.providerRulesLocked())
 	d.dnsNames.Store(&dnsNamesState{cfg: d.cfg, rules: rules, names: names})
-	// A DNS callback that already read the previous names can still store an
-	// old priority. A subsequent valid answer or republish corrects it.
-	d.domains.Reclassify(func(name string) bool { return !names.InGroups(name) })
 	return names
+}
+
+// commitDomainCacheLocked updates the cache priority after activation.
+// During the next Apply, expiry keeps history for both the last accepted
+// own lists and any own lists published while preparing rule sets.
+func (d *Daemon) commitDomainCacheLocked() {
+	names := d.publishedDNSNames()
+	if names == nil || d.cacheDNSNames == names {
+		return
+	}
+	d.domains.Reclassify(func(name string) bool {
+		if names.InGroups(name) {
+			return false
+		}
+		published := d.publishedDNSNames()
+		return published == names || published == nil || !published.InGroups(name)
+	})
+	d.cacheDNSNames = names
 }
 
 // publishedDNSNames returns the DNS names for readers without d.mu, or nil
@@ -104,7 +120,9 @@ func (d *Daemon) flushDomains() {
 	if d.cfg == nil {
 		return
 	}
-	d.writeDNSLocked()
+	names := d.dnsNamesLocked()
+	d.commitDomainCacheLocked()
+	d.writeDNSLocked(names)
 	if d.domainError == "" && d.dnsFiles.cleaned != d.dnsFiles.names {
 		d.cleanDNSFilesLocked()
 	}
@@ -113,8 +131,8 @@ func (d *Daemon) flushDomains() {
 // writeDNSLocked writes the DNS fallback sets of the published names from
 // the cache's answers while d.mu is held. Nothing is built while neither
 // changed since the last complete write, and only changed files are written.
-func (d *Daemon) writeDNSLocked() {
-	names, f := d.dnsNamesLocked(), &d.dnsFiles
+func (d *Daemon) writeDNSLocked(names *compile.DNSNames) {
+	f := &d.dnsFiles
 	if d.domainError == "" && f.names == names && f.answers == d.domains.Generation() {
 		return
 	}

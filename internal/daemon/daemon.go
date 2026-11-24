@@ -113,10 +113,11 @@ type Daemon struct {
 	journals    journal.Set
 	// live publishes the current configuration to route logging without d.mu.
 	live atomic.Pointer[model.Config]
-	// dnsNames publishes the DNS names of the applied configuration and
-	// provider rules to the DNS frontend's goroutines, which must not take
-	// d.mu. Only dnsNamesLocked stores it.
+	// dnsNames publishes the matcher built during compilation to the DNS
+	// frontend's goroutines, which read it without d.mu.
 	dnsNames atomic.Pointer[dnsNamesState]
+	// cacheDNSNames identifies the last DNS names accepted for cache priority.
+	cacheDNSNames *compile.DNSNames
 	// split publishes which devices follow split policies, from the latest
 	// compilation, to the DNS frontend's goroutines. Only compileLocked
 	// stores it.
@@ -276,6 +277,7 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 	if err := d.applyLocked(ctx, cfg); err != nil {
 		return nil, err
 	}
+	d.commitDomainCacheLocked()
 	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
 	if err := d.saveChangedSubscriptionSnapshotsLocked(cfg, before); err != nil {
 		d.audit("system", "Subscription selection not saved", "subscriptions", "warn", err.Error())
@@ -402,6 +404,7 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		d.startupBlocked = nil
 		close(activation)
 	}
+	d.commitDomainCacheLocked()
 	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
 	if activation == nil && save {
 		if err := d.persistConfig(cfg, false); err != nil {
@@ -944,7 +947,7 @@ func (d *Daemon) compileLocked() (compile.Output, error) {
 	if err := d.writeCategorySetsLocked(out.Categories); err != nil {
 		return out, err
 	}
-	d.writeDNSLocked()
+	d.writeDNSLocked(d.dnsNamesLocked())
 	if d.domainError != "" {
 		return out, fmt.Errorf("DNS rule-sets: %s", d.domainError)
 	}

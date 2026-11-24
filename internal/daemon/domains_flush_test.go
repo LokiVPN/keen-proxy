@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -211,12 +212,15 @@ func TestApplyReclassifiesCachedProviderNames(t *testing.T) {
 
 func TestProviderObservationRefreshesAfterJoiningOwnList(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		ttl  uint32
-		race bool
+		name           string
+		ttl            uint32
+		race           bool
+		expiredAtApply bool
 	}{
 		{name: "expired after Apply", ttl: 5},
 		{name: "answer used previous names", ttl: 36, race: true},
+		{name: "expired answer used previous names", ttl: 5, race: true},
+		{name: "expired while preparing Apply", ttl: 5, expiredAtApply: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, cfg, _ := newRulesTestDaemon(t)
@@ -232,6 +236,9 @@ func TestProviderObservationRefreshesAfterJoiningOwnList(t *testing.T) {
 
 			next := cfg.Clone()
 			next.Groups = append(next.Groups, model.Group{Name: "Own", Target: model.TargetDirect, Entries: []string{"direct.example"}})
+			if tc.expiredAtApply {
+				now = now.Add(32 * time.Second)
+			}
 			if err := d.Apply(t.Context(), next); err != nil {
 				t.Fatal(err)
 			}
@@ -239,31 +246,72 @@ func TestProviderObservationRefreshesAfterJoiningOwnList(t *testing.T) {
 				// A DNS goroutine that read the previous names can store its answer after Apply.
 				d.domains.Observe(name, answer, "observed", true)
 			}
-			now = now.Add(32 * time.Second)
-
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				d.runDomains(ctx)
-			}()
-			defer func() {
-				cancel()
-				<-done
-			}()
-			tick := time.NewTicker(10 * time.Millisecond)
-			defer tick.Stop()
-			refreshed := holdsAddress("198.51.100.7")
-			for !slices.ContainsFunc(d.domainRecords(), func(r domaincache.Record) bool {
-				return r.Name == name && refreshed(r)
-			}) {
-				select {
-				case <-tick.C:
-				case <-ctx.Done():
-					t.Fatal("the previously observed subdomain did not refresh on schedule")
-				}
+			if !tc.expiredAtApply {
+				now = now.Add(32 * time.Second)
 			}
+			requireScheduledDomainRefresh(t, d, name, "198.51.100.7")
 		})
+	}
+}
+
+func TestRejectedApplyKeepsOwnSubdomainRefreshHistory(t *testing.T) {
+	holdMemoryLimit(t)
+	cfg := quietConfig(t)
+	cfg.DNS.Upstreams = []string{dnsUpstream(t, "198.51.100.7")}
+	cfg.Groups = []model.Group{{Name: "Own", Target: model.TargetDirect, Entries: []string{"own.example"}}}
+	cfg.Networks = []model.Network{{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeSplit}}
+	runner := &watchdogRunner{}
+	d := newMemoryDaemon(t, writeSavedConfig(t, cfg), runner)
+	t.Cleanup(d.shutdown)
+	now := time.Now().Add(-31 * time.Second)
+	d.domains = domaincache.New(func() time.Time { return now })
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	const name = "www.own.example"
+	d.observeDomain(name, answerA(dns.Fqdn(name), 5, net.IPv4(203, 0, 113, 7)))
+	now = now.Add(32 * time.Second)
+
+	next := cfg.Clone()
+	next.Groups = nil
+	attempts := runner.applyCalls
+	runner.applyErr = errors.New("synthetic firewall install failure")
+	runner.applyErrAt = attempts + 1
+	if err := d.Apply(t.Context(), next); !errors.Is(err, runner.applyErr) {
+		t.Fatalf("expected the candidate to fail at firewall installation: %v", err)
+	}
+	restored := d.Config()
+	if runner.applyCalls != attempts+2 || len(restored.Groups) != 1 || !slices.Equal(restored.Groups[0].Entries, cfg.Groups[0].Entries) {
+		t.Fatal("firewall rollback did not restore the previous own list")
+	}
+	requireScheduledDomainRefresh(t, d, name, "198.51.100.7")
+}
+
+// requireScheduledDomainRefresh waits for the daemon's normal DNS worker to
+// replace a specific subdomain's device answer with the test resolver's IP.
+func requireScheduledDomainRefresh(t *testing.T, d *Daemon, name, ip string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.runDomains(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	refreshed := holdsAddress(ip)
+	for !slices.ContainsFunc(d.domainRecords(), func(r domaincache.Record) bool {
+		return r.Name == name && refreshed(r)
+	}) {
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+			t.Fatalf("the previously observed subdomain %s did not refresh on schedule", name)
+		}
 	}
 }
 
