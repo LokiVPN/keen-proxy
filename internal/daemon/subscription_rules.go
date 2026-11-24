@@ -23,6 +23,19 @@ const (
 	geoFileTimeout  = time.Minute
 	// geoFileReuse follows Happ, which refreshes geo files at most weekly.
 	geoFileReuse = 7 * 24 * time.Hour
+
+	// Apply spends at most applyGeoBudget on geo files and stops
+	// applyGeoHeadroom before its own deadline, which activation and saving
+	// need; with less than applyGeoMinimum left it skips the downloads.
+	// Files that miss Apply are the worker's retries.
+	applyGeoBudget   = 20 * time.Second
+	applyGeoHeadroom = 15 * time.Second
+	applyGeoMinimum  = time.Second
+
+	// Geo files that partial rules lack are downloaded again after
+	// rulesRetryFirst, doubling up to rulesRetryMax, without a subscription fetch.
+	rulesRetryFirst = time.Minute
+	rulesRetryMax   = time.Hour
 )
 
 var errGeoRedirect = errors.New("geo file redirect rejected")
@@ -33,10 +46,13 @@ var errGeoRedirect = errors.New("geo file redirect rejected")
 // when the provider sends none. Snapshots are replaced, never modified, so
 // comparing pointers detects a change.
 type rulesSnapshot struct {
-	Built   *compile.ProviderRules `json:"built,omitempty"`
-	Geosite geoFileRecord          `json:"geosite,omitzero"`
-	Geoip   geoFileRecord          `json:"geoip,omitzero"`
-	Error   string                 `json:"error,omitempty"` // fixed English text
+	Built *compile.ProviderRules `json:"built,omitempty"`
+	// Profile is the provider profile Built came from; a geo file retry
+	// rebuilds the rules from it.
+	Profile *subscription.RoutingProfile `json:"profile,omitempty"`
+	Geosite geoFileRecord                `json:"geosite,omitzero"`
+	Geoip   geoFileRecord                `json:"geoip,omitzero"`
+	Error   string                       `json:"error,omitempty"` // fixed English text
 }
 
 // geoFileRecord names the geo file whose data the rules hold. Downloaded is
@@ -52,6 +68,71 @@ func (f geoFileRecord) loaded() bool { return f.URL == "" || !f.Downloaded.IsZer
 // need, so they can stand in as the last good rules after a failure.
 func (s *rulesSnapshot) complete() bool {
 	return s != nil && s.Built != nil && s.Geosite.loaded() && s.Geoip.loaded()
+}
+
+// retryable reports whether the rules lack a geo file's data and keep the
+// profile to download it again.
+func (s *rulesSnapshot) retryable() bool {
+	return s != nil && s.Built != nil && s.Profile != nil && !s.complete()
+}
+
+// rulesRetryDelay is the wait before the given consecutive geo file retry.
+func rulesRetryDelay(failures int) time.Duration {
+	return min(rulesRetryFirst<<(min(max(failures, 1), 7)-1), rulesRetryMax)
+}
+
+// scheduleRulesRetry follows newly installed rules: rules lacking geo file
+// data get another download with a doubling delay; any other rules end the
+// series. The subscription's own refresh schedule is not involved.
+func (s *appliedSubscription) scheduleRulesRetry(now time.Time) {
+	if !s.snapshot.Rules.retryable() {
+		s.rulesFailures, s.rulesRetry = 0, time.Time{}
+		return
+	}
+	s.rulesFailures++
+	s.rulesRetry = now.Add(rulesRetryDelay(s.rulesFailures))
+}
+
+// applyGeoContext bounds the geo downloads of an Apply by applyGeoBudget and
+// by Apply's deadline less applyGeoHeadroom. A budget under applyGeoMinimum
+// is spent at once: the downloads fail without a request, as on expiry.
+func applyGeoContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := applyGeoBudget
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = min(budget, time.Until(deadline)-applyGeoHeadroom)
+	}
+	if budget < applyGeoMinimum {
+		budget = 0
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+// finishProviderRulesRetryLocked installs rules rebuilt by a geo file retry
+// unless the source, its rules or the settings changed meanwhile. A failed
+// activation keeps the previous rules and schedules the next retry.
+func (d *Daemon) finishProviderRulesRetryLocked(request *subscriptionRefresh, rules *rulesSnapshot) {
+	id := request.source.ID
+	state := d.subscriptions.states[id]
+	if state.request != request {
+		return
+	}
+	state.request = nil
+	if state.snapshot.Rules != request.previous || providerRulesSource(d.cfg) != id {
+		d.subscriptions.states[id] = state
+		return
+	}
+	state.snapshot.Rules = rules
+	state.scheduleRulesRetry(time.Now())
+	before, err := d.activateSubscriptionStateLocked(id, state, !sameProviderRules(request.previous, rules))
+	if err != nil {
+		state = d.subscriptions.states[id]
+		state.request = nil
+		state.scheduleRulesRetry(time.Now())
+		d.subscriptions.states[id] = state
+		d.audit("system", "Provider rules not updated", id, "warn", "provider rules could not be activated or saved")
+		return
+	}
+	d.auditSubscriptionSelectionsLocked(before)
 }
 
 // holds reports whether the rules hold the data of url for exactly refs, from
@@ -97,6 +178,7 @@ func syncProviderRules(cfg *model.Config, s *appliedSubscription) {
 	switch {
 	case s.source.ID != providerRulesSource(cfg):
 		s.snapshot.Rules = nil
+		s.rulesFailures, s.rulesRetry = 0, time.Time{}
 	case s.snapshot.Rules == nil && s.request == nil:
 		s.next = time.Time{}
 	}
@@ -163,7 +245,7 @@ func (d *Daemon) evaluateProviderRules(ctx context.Context, result subscription.
 	rules := compile.BuildProviderRules(profile, sites, ips, d.countryLookup(profile, ipRefs))
 	markUnavailable(&rules, "geosite:", siteFailure)
 	markUnavailable(&rules, "geoip:", ipFailure)
-	return &rulesSnapshot{Built: &rules, Geosite: siteFile, Geoip: ipFile, Error: failure}
+	return &rulesSnapshot{Built: &rules, Profile: profile, Geosite: siteFile, Geoip: ipFile, Error: failure}
 }
 
 // markUnavailable replaces the builder's generic reason on the rules of a geo

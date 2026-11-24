@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -30,12 +31,13 @@ type rulesProvider struct {
 	routing  string
 	enable   string
 	files    map[string][]byte
+	held     map[string]chan struct{}
 	requests map[string]int
 }
 
 func newRulesProvider(t *testing.T) *rulesProvider {
 	t.Helper()
-	p := &rulesProvider{files: map[string][]byte{}, requests: map[string]int{}}
+	p := &rulesProvider{files: map[string][]byte{}, held: map[string]chan struct{}{}, requests: map[string]int{}}
 	p.Server = httptest.NewTLSServer(http.HandlerFunc(p.serve))
 	t.Cleanup(p.Close)
 	return p
@@ -43,8 +45,18 @@ func newRulesProvider(t *testing.T) *rulesProvider {
 
 func (p *rulesProvider) serve(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.requests[r.URL.Path]++
+	held := p.held[r.URL.Path]
+	p.mu.Unlock()
+	if held != nil {
+		select {
+		case <-held:
+		case <-r.Context().Done():
+			return
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if r.URL.Path == "/sub" {
 		if p.routing != "" {
 			w.Header().Set("routing", p.routing)
@@ -60,6 +72,13 @@ func (p *rulesProvider) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// hold stalls requests for path until the test ends or the client gives up.
+func (p *rulesProvider) hold(t *testing.T, path string) {
+	held := make(chan struct{})
+	p.update(func(p *rulesProvider) { p.held[path] = held })
+	t.Cleanup(func() { close(held) })
 }
 
 func (p *rulesProvider) update(change func(*rulesProvider)) {
@@ -122,16 +141,19 @@ func testGeoip(tags map[string][]string) []byte {
 	return list
 }
 
-var testGeositeData = testGeosite(map[string][]string{
-	"VIDEO": {"video.example"}, "ADS": {"ads.example"}, "UNUSED": {"unused.example"},
-})
+var (
+	testGeositeData = testGeosite(map[string][]string{
+		"VIDEO": {"video.example"}, "ADS": {"ads.example"}, "UNUSED": {"unused.example"},
+	})
+	testGeoipData = testGeoip(map[string][]string{"DIRECT": {"192.0.2.0/24"}})
+)
 
 func newRulesTestDaemon(t *testing.T) (*Daemon, *model.Config, *rulesProvider) {
 	t.Helper()
 	p := newRulesProvider(t)
 	p.update(func(p *rulesProvider) {
 		p.files["/geosite.dat"] = testGeositeData
-		p.files["/geoip.dat"] = testGeoip(map[string][]string{"DIRECT": {"192.0.2.0/24"}})
+		p.files["/geoip.dat"] = testGeoipData
 	})
 	p.useProfile("/geosite.dat", "/geoip.dat")
 	d, cfg := newSubscriptionTestDaemon(t, p.Client().Transport)
@@ -277,7 +299,9 @@ func TestProviderRulesKeepLastGoodRulesOnFailures(t *testing.T) {
 			for i := range domains {
 				domains[i] = fmt.Sprintf("d%d.example", i)
 			}
-			p.update(func(p *rulesProvider) { p.files["/huge/geosite.dat"] = testGeosite(map[string][]string{"VIDEO": domains}) })
+			p.update(func(p *rulesProvider) {
+				p.files["/huge/geosite.dat"] = testGeosite(map[string][]string{"VIDEO": domains})
+			})
 			p.useProfile("/huge/geosite.dat", "/geoip.dat")
 		}},
 		{"malformed profile", "The provider routing profile could not be read", func() {
@@ -401,5 +425,160 @@ func TestProviderRulesFollowTheSettings(t *testing.T) {
 		if _, ok := snapshot["rules"]; ok {
 			t.Fatalf("snapshot keeps rules that were turned off: %s", raw)
 		}
+	}
+}
+
+func TestProviderRulesApplyBoundsStalledGeoDownloads(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	p.hold(t, "/geoip.dat")
+	// Apply's deadline leaves about two seconds for geo files before its headroom.
+	ctx, cancel := context.WithTimeout(t.Context(), applyGeoHeadroom+2*time.Second)
+	defer cancel()
+	started := time.Now()
+	if err := d.Apply(ctx, cfg); err != nil {
+		t.Fatalf("a stalled geo file failed Apply after %v: %v", time.Since(started), err)
+	}
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Fatalf("Apply waited %v for a stalled geo file", waited)
+	}
+	rules, _, ok := d.ProviderRules()
+	if !ok {
+		t.Fatal("rules are unavailable")
+	}
+	if rule := providerRule(t, rules, "direct:geoip:direct"); rule.Unavailable != "geoip file could not be downloaded" || rule.CIDR != nil {
+		t.Fatalf("rule of the stalled file = %+v", rule)
+	}
+	if rule := providerRule(t, rules, "proxy:geosite:video"); rule.Unavailable != "" {
+		t.Fatalf("rule of the downloaded file = %+v", rule)
+	}
+	if got := d.Subscriptions()[0].RulesError; got != "geoip file could not be downloaded" {
+		t.Fatalf("rules error = %q", got)
+	}
+}
+
+func TestProviderRulesApplyWithoutTimeLeavesGeoFilesToTheWorker(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	// Less than the minimum is left before the headroom.
+	ctx, cancel := context.WithTimeout(t.Context(), applyGeoHeadroom+applyGeoMinimum/2)
+	defer cancel()
+	if err := d.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if n := p.count("/geosite.dat") + p.count("/geoip.dat"); n != 0 {
+		t.Fatalf("Apply started %d geo downloads without time for them", n)
+	}
+	rules, _, ok := d.ProviderRules()
+	if !ok || providerRule(t, rules, "proxy:geosite:video").Unavailable == "" || providerRule(t, rules, "direct:literals:site").Unavailable != "" {
+		t.Fatalf("rules = %+v", rules)
+	}
+}
+
+// claimSubscriptionRequest takes the worker's next request as if the clock
+// read now plus after.
+func claimSubscriptionRequest(d *Daemon, after time.Duration) *subscriptionRefresh {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.nextSubscriptionRefreshLocked(time.Now().Add(after))
+}
+
+func TestProviderRulesRetryMissingGeoFilesEarly(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	p.update(func(p *rulesProvider) { delete(p.files, "/geoip.dat") })
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	subscriptionRequests := p.count("/sub")
+	for i, wait := range []time.Duration{time.Minute, 2 * time.Minute} {
+		if claimSubscriptionRequest(d, wait-5*time.Second) != nil {
+			t.Fatalf("retry %d came before %v", i+1, wait)
+		}
+		request := claimSubscriptionRequest(d, wait+time.Second)
+		if request == nil {
+			t.Fatalf("no retry %d after %v", i+1, wait)
+		}
+		if i == 1 {
+			p.update(func(p *rulesProvider) { p.files["/geoip.dat"] = testGeoipData })
+		}
+		d.runSubscriptionRequest(t.Context(), request)
+	}
+	requireAppliedProviderRules(t, d)
+	if got := d.Subscriptions()[0].RulesError; got != "" {
+		t.Fatalf("rules error after recovery = %q", got)
+	}
+	if p.count("/sub") != subscriptionRequests || p.count("/geosite.dat") != 1 || p.count("/geoip.dat") != 3 {
+		t.Fatalf("requests: sub %d, geosite %d, geoip %d", p.count("/sub"), p.count("/geosite.dat"), p.count("/geoip.dat"))
+	}
+	if claimSubscriptionRequest(d, 2*time.Hour) != nil {
+		t.Fatal("retries continued after the files loaded")
+	}
+
+	// Complete rules stay as last good rules, so only a failure after the
+	// provider withheld them starts retries again: from one minute.
+	for _, change := range []func(*rulesProvider){
+		func(p *rulesProvider) { p.enable = "0" },
+		func(p *rulesProvider) { p.enable = ""; delete(p.files, "/geoip.dat") },
+	} {
+		p.update(change)
+		d.RefreshSubscription("sample")
+		d.runSubscriptionRequest(t.Context(), claimSubscriptionRequest(d, 0))
+	}
+	if claimSubscriptionRequest(d, 55*time.Second) != nil || claimSubscriptionRequest(d, time.Minute+time.Second) == nil {
+		t.Fatal("a new series of retries did not start from one minute")
+	}
+}
+
+func TestProviderRulesRetryKeepsAManualRefresh(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	p.update(func(p *rulesProvider) { delete(p.files, "/geoip.dat") })
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	retry := claimSubscriptionRequest(d, time.Minute+time.Second)
+	if retry == nil || !d.RefreshSubscription("sample") {
+		t.Fatal("retry or manual refresh was not accepted")
+	}
+	d.runSubscriptionRequest(t.Context(), retry)
+	refresh := claimSubscriptionRequest(d, 0)
+	if refresh == nil {
+		t.Fatal("a manual refresh requested during a geo file retry was lost")
+	}
+	subscriptionRequests := p.count("/sub")
+	d.runSubscriptionRequest(t.Context(), refresh)
+	if p.count("/sub") != subscriptionRequests+1 {
+		t.Fatal("the manual refresh did not fetch the subscription")
+	}
+}
+
+func TestProviderRulesRetryDelayDoublesUpToAnHour(t *testing.T) {
+	var got []time.Duration
+	for failures := 1; failures <= 9; failures++ {
+		got = append(got, rulesRetryDelay(failures)/time.Minute)
+	}
+	if want := []time.Duration{1, 2, 4, 8, 16, 32, 60, 60, 60}; !slices.Equal(got, want) {
+		t.Fatalf("retry delays in minutes = %v, want %v", got, want)
+	}
+}
+
+func TestProviderRulesRetryActivationFailureWaitsForTheNextRetry(t *testing.T) {
+	d, cfg, p := newRulesTestDaemon(t)
+	p.update(func(p *rulesProvider) { delete(p.files, "/geoip.dat") })
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	partial, _, _ := d.ProviderRules()
+	path := d.subscriptionSnapshotPath(cfg)
+	if err := os.Rename(path, path+".before"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p.update(func(p *rulesProvider) { p.files["/geoip.dat"] = testGeoipData })
+	d.runSubscriptionRequest(t.Context(), claimSubscriptionRequest(d, time.Minute+time.Second))
+	if rules, _, _ := d.ProviderRules(); !reflect.DeepEqual(rules, partial) {
+		t.Fatalf("rules that could not be saved were installed: %+v", rules)
+	}
+	if claimSubscriptionRequest(d, time.Minute) != nil || claimSubscriptionRequest(d, 2*time.Minute+time.Second) == nil {
+		t.Fatal("a failed activation did not wait for the next retry")
 	}
 }

@@ -89,6 +89,10 @@ type appliedSubscription struct {
 	// A probe started against an older catalog can finish after a refresh or
 	// Apply, including when the core stayed in place.
 	probeEpoch *byte
+	// rulesRetry is when the worker downloads the geo files that partial
+	// provider rules lack; rulesFailures counts the retries for backoff.
+	rulesRetry    time.Time
+	rulesFailures int
 }
 
 type subscriptionAttempt struct {
@@ -103,9 +107,10 @@ type subscriptionAttempt struct {
 // removes and re-adds the same source settings before the request returns.
 type subscriptionRefresh struct {
 	source subscription.Source
-	// rules asks the download to evaluate provider rules from previous.
-	rules    bool
-	previous *rulesSnapshot
+	// rules asks the download to evaluate provider rules from previous;
+	// rulesOnly downloads only the geo files that previous lacks.
+	rules, rulesOnly bool
+	previous         *rulesSnapshot
 }
 
 func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
@@ -242,7 +247,8 @@ func (d *Daemon) RefreshSubscription(id string) bool {
 	if !exists || d.closed {
 		return false
 	}
-	if state.request == nil {
+	// A geo file retry in flight does not fetch the subscription.
+	if state.request == nil || state.request.rulesOnly {
 		state.next = time.Time{}
 		d.subscriptions.states[id] = state
 		wakeSubscriptionWorker(d.subscriptions.wake)
@@ -287,7 +293,9 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config) 
 			}
 			d.mu.Unlock()
 			candidate := candidates[identity]
-			candidate.rules = d.evaluateProviderRules(ctx, candidate.result, nil)
+			geoCtx, cancel := applyGeoContext(ctx)
+			candidate.rules = d.evaluateProviderRules(geoCtx, candidate.result, nil)
+			cancel()
 			candidates[identity] = candidate
 			continue
 		}
@@ -361,6 +369,7 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 			state.accept(candidate)
 		}
 		syncProviderRules(cfg, &state)
+		state.scheduleRulesRetry(time.Now())
 		states[source.ID] = state
 	}
 	return states
@@ -426,15 +435,7 @@ func (d *Daemon) runSubscriptions(ctx context.Context) {
 		request := d.nextSubscriptionRefreshLocked(now)
 		d.mu.Unlock()
 		if request != nil {
-			attempt := d.fetchSubscription(ctx, request.source)
-			if request.rules && attempt.result.State == subscription.StateReady {
-				attempt.rules = d.evaluateProviderRules(ctx, attempt.result, request.previous)
-			}
-			d.mu.Lock()
-			if d.applyAdmissionLocked(ctx) == nil {
-				d.finishSubscriptionRefreshLocked(request, attempt)
-			}
-			d.mu.Unlock()
+			d.runSubscriptionRequest(ctx, request)
 			continue
 		}
 		select {
@@ -446,21 +447,56 @@ func (d *Daemon) runSubscriptions(ctx context.Context) {
 	}
 }
 
+// runSubscriptionRequest performs one claimed request: downloads run without
+// d.mu and the result is committed under it.
+func (d *Daemon) runSubscriptionRequest(ctx context.Context, request *subscriptionRefresh) {
+	if request.rulesOnly {
+		rules := d.evaluateProviderRules(ctx, subscription.Result{Routing: request.previous.Profile}, request.previous)
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.applyAdmissionLocked(ctx) == nil {
+			d.finishProviderRulesRetryLocked(request, rules)
+		}
+		return
+	}
+	attempt := d.fetchSubscription(ctx, request.source)
+	if request.rules && attempt.result.State == subscription.StateReady {
+		attempt.rules = d.evaluateProviderRules(ctx, attempt.result, request.previous)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.applyAdmissionLocked(ctx) == nil {
+		d.finishSubscriptionRefreshLocked(request, attempt)
+	}
+}
+
+// nextSubscriptionRefreshLocked claims the first due request: a scheduled
+// refresh, or a geo file retry for partial provider rules.
 func (d *Daemon) nextSubscriptionRefreshLocked(now time.Time) *subscriptionRefresh {
 	if d.cfg == nil || d.closed || d.startupBlocked != nil {
 		return nil
 	}
 	for _, source := range d.cfg.Subscriptions {
 		state := d.subscriptions.states[source.ID]
-		if state.request == nil && !now.Before(state.next) {
-			request := &subscriptionRefresh{source: source}
-			if source.ID == providerRulesSource(d.cfg) {
+		if state.request != nil {
+			continue
+		}
+		rulesSource := source.ID == providerRulesSource(d.cfg)
+		var request *subscriptionRefresh
+		switch {
+		case !now.Before(state.next):
+			request = &subscriptionRefresh{source: source}
+			if rulesSource {
 				request.rules, request.previous = true, state.snapshot.Rules
 			}
-			state.request = request
-			d.subscriptions.states[source.ID] = state
-			return request
+		case rulesSource && state.snapshot.Rules.retryable() && !now.Before(state.rulesRetry):
+			request = &subscriptionRefresh{source: source, rulesOnly: true, previous: state.snapshot.Rules}
+		default:
+			continue
 		}
+		state.request = request
+		d.subscriptions.states[source.ID] = state
+		return request
 	}
 	return nil
 }
@@ -485,30 +521,14 @@ func (d *Daemon) finishSubscriptionRefreshLocked(request *subscriptionRefresh, a
 	state.accept(attempt)
 	// Apply may have turned provider rules off or on during the download.
 	syncProviderRules(d.cfg, &state)
-	before := maps.Clone(d.subscriptions.states)
-	previousHealth := maps.Clone(d.health)
-	d.subscriptions.states[id] = state
+	if attempt.rules != nil {
+		state.scheduleRulesRetry(time.Now())
+	}
 	sameNodes := previous.probeEpoch == state.probeEpoch
 	// Rule changes reach the core through the same path as node changes.
 	coreChanged := !sameNodes || !sameProviderRules(previous.snapshot.Rules, state.snapshot.Rules)
-	var err error
-	var restoreBalanceSessions func()
-	if coreChanged {
-		restoreBalanceSessions = d.eng.SubscriptionBalanceCheckpoint()
-		err = d.applySubscriptionCoreLocked()
-	}
-	if err == nil {
-		err = d.saveSubscriptionSnapshotsLocked(d.cfg)
-	}
+	before, err := d.activateSubscriptionStateLocked(id, state, coreChanged)
 	if err != nil {
-		d.subscriptions.states = before
-		d.health = previousHealth
-		if coreChanged {
-			restoreBalanceSessions()
-			if rollback := d.applySubscriptionCoreLocked(); rollback != nil {
-				d.audit("system", "Subscription rollback failed", id, "error", "previous subscription runtime could not be restored")
-			}
-		}
 		state = d.subscriptions.states[id]
 		state.request = nil
 		state.recordAttempt(subscriptionAttempt{at: attempt.at, result: subscription.Result{
@@ -529,6 +549,35 @@ func (d *Daemon) finishSubscriptionRefreshLocked(request *subscriptionRefresh, a
 	}
 	d.auditSubscriptionSelectionsLocked(before)
 	d.audit("system", "Subscription refreshed", id, "ok", fmt.Sprintf("%d usable nodes", len(state.snapshot.Nodes)))
+}
+
+// activateSubscriptionStateLocked publishes state for id, reconciles the core
+// when coreChanged and saves the snapshots. On failure it restores the
+// previous states, health and balance sessions and returns the error; before
+// holds the states as they were.
+func (d *Daemon) activateSubscriptionStateLocked(id string, state appliedSubscription, coreChanged bool) (before map[string]appliedSubscription, err error) {
+	before = maps.Clone(d.subscriptions.states)
+	previousHealth := maps.Clone(d.health)
+	d.subscriptions.states[id] = state
+	var restoreBalanceSessions func()
+	if coreChanged {
+		restoreBalanceSessions = d.eng.SubscriptionBalanceCheckpoint()
+		err = d.applySubscriptionCoreLocked()
+	}
+	if err == nil {
+		err = d.saveSubscriptionSnapshotsLocked(d.cfg)
+	}
+	if err != nil {
+		d.subscriptions.states = before
+		d.health = previousHealth
+		if coreChanged {
+			restoreBalanceSessions()
+			if rollback := d.applySubscriptionCoreLocked(); rollback != nil {
+				d.audit("system", "Subscription rollback failed", id, "error", "previous subscription runtime could not be restored")
+			}
+		}
+	}
+	return before, err
 }
 
 // applySubscriptionCoreLocked only reconciles the core. Managed nodes do not
