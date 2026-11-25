@@ -64,21 +64,6 @@ func wizardLocationFor(values url.Values) wizardLocation {
 	return loc
 }
 
-// wizardSuggestedName turns imported display labels into a bounded,
-// single-line form suggestion. The underlying payload stays in the draft.
-func wizardSuggestedName(draft connectionimport.Draft) string {
-	name := strings.TrimSpace(draft.Connection.Name)
-	count := 0
-	for i := range name {
-		if count == 160 {
-			name = name[:i]
-			break
-		}
-		count++
-	}
-	return strings.Join(strings.Fields(name), " ")
-}
-
 func (p pages) renderConnectionWizard(w http.ResponseWriter, r *http.Request, status int, cfg *model.Config, loc wizardLocation, view connectionWizardPage) {
 	data := p.opts.pageData(r)
 	data.SignedIn, data.ViewOnly = true, p.role(r) == RoleView
@@ -121,15 +106,16 @@ func (p pages) renderWizardChoices(w http.ResponseWriter, r *http.Request, statu
 		return
 	}
 	choices := make([]wizardChoice, 0, len(draft.candidates))
+	text := localized(r)
 	for i, candidate := range draft.candidates {
-		name := cmp.Or(wizardSuggestedName(candidate), candidate.Summary.Protocol)
+		name := fmt.Sprintf(text["wizard_protocol_name"], candidate.Summary.Protocol, i+1)
 		if server := candidate.Summary.Server; server != "" {
 			name += " · " + server
 		}
 		choices = append(choices, wizardChoice{Index: i, Name: name})
 	}
 	p.renderConnectionWizard(w, r, status, cfg, draft.location, connectionWizardPage{
-		Choices: choices, ChoiceToken: token, Error: localized(r)[errorKey],
+		Choices: choices, ChoiceToken: token, Error: text[errorKey],
 	})
 }
 

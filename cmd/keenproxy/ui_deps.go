@@ -9,7 +9,6 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
-	"github.com/ordo-systems/keen-proxy/internal/connectionimport"
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -81,7 +80,7 @@ func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id st
 		return errors.New("missing connection to validate")
 	}
 	changed := cfg.Connections[i]
-	if err := connectionimport.ValidateRoutingOptions(changed); err != nil {
+	if err := validateWizardRouting(ctx, changed); err != nil {
 		return err
 	}
 	if err := api.ValidateProfileFields(changed); err != nil {
@@ -98,6 +97,20 @@ func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id st
 	return d.validateConnectionGraph(ctx, &validation)
 }
 
+// Check the edited raw profile in isolation before constructing a core that
+// can also resolve tags from the applied and generated configuration.
+func validateWizardRouting(ctx context.Context, profile model.Connection) error {
+	if profile.Type != model.ConnSingBox {
+		return nil
+	}
+	profile.Disabled = false
+	raw, err := compile.ConnectionValidationConfig(&model.Config{Connections: []model.Connection{profile}})
+	if err == nil {
+		err = engine.ValidateImportedProfileRouting(ctx, raw)
+	}
+	return safeWizardCoreError(err)
+}
+
 func (d uiDeps) validateConnectionGraph(ctx context.Context, cfg *model.Config) error {
 	compiled, err := d.daemon.CompileConnectionDraft(cfg)
 	if err == nil {
@@ -107,7 +120,11 @@ func (d uiDeps) validateConnectionGraph(ctx context.Context, cfg *model.Config) 
 			err = engine.ValidateRuntimeProfiles(ctx, raw)
 		}
 	}
-	if err != nil && !errors.Is(err, model.ErrConnectionTagConflict) {
+	return safeWizardCoreError(err)
+}
+
+func safeWizardCoreError(err error) error {
+	if err != nil && !errors.Is(err, model.ErrConnectionTagConflict) && !errors.Is(err, model.ErrConnectionRoutingOverride) {
 		return errors.New("core rejected the connection configuration")
 	}
 	return err

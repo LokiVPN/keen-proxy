@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -142,48 +143,29 @@ func (p pages) chooseWizardProfile(w http.ResponseWriter, r *http.Request, cfg *
 
 func (p pages) reviewWizardProfile(w http.ResponseWriter, r *http.Request, cfg *model.Config, draft connectionDraft) {
 	profile := draft.candidates[0]
-	name := wizardSuggestedName(profile)
-	if draft.location.method == "manual" {
-		name = cmp.Or(name, profile.Summary.Protocol)
-	}
-	id := draft.location.replace
-	if id != "" {
+	var review wizardReview
+	if id := draft.location.replace; id != "" {
 		i := connectionIndex(cfg, id)
 		if i < 0 {
 			p.notFound(w, r)
 			return
 		}
-		// A replacement must keep its existing ID. If the new profile
-		// treats that ID as a credential, refuse without rendering it.
-		if profile.ContainsCredential(id) {
-			p.renderPage(w, r, http.StatusUnprocessableEntity, localized(r)["wizard_replace"], "wizard_replace_credential")
+		review = wizardReview{ID: id, Name: cmp.Or(cfg.Connections[i].Name, id)}
+	} else {
+		reserved, err := p.wizardReservedIDs(cfg)
+		if err != nil {
+			p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, wizardValidationKey(err))
 			return
 		}
-		name = cmp.Or(cfg.Connections[i].Name, id)
+		review = suggestWizardIdentity(profile.Summary.Protocol, localized(r)["wizard_protocol_name"], reserved)
 	}
-	reserved, err := p.wizardReservedIDs(cfg, id)
-	if err != nil {
-		p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, wizardValidationKey(err))
-		return
-	}
-	review := safeWizardIdentity(profile, name, id, reserved)
-	checkID := review.ID
-	if checkID == "" {
-		// Check the profile even when no safe suggestion can be displayed.
-		// Save validates again with the identifier entered on this form.
-		checkID = availableWizardID(reserved, "connection")
-	}
-	candidate := withWizardConnection(cfg, profile.Connection, draft.location.replace, checkID, review.Name)
-	if err := p.deps.ValidateConnection(r.Context(), candidate, checkID); err != nil {
+	candidate := withWizardConnection(cfg, profile.Connection, draft.location.replace, review.ID, review.Name)
+	if err := p.deps.ValidateConnection(r.Context(), candidate, review.ID); err != nil {
 		p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, wizardValidationKey(err))
 		return
 	}
 	draft.session = p.wizardSession(w, r, true)
-	var errorKey string
-	if review.Name == "" {
-		errorKey = "wizard_identity_unavailable"
-	}
-	p.renderWizardReview(w, r, http.StatusOK, cfg, draft, review, errorKey)
+	p.renderWizardReview(w, r, http.StatusOK, cfg, draft, review, "")
 }
 
 func (p pages) connectionWizardSave(w http.ResponseWriter, r *http.Request) {
@@ -198,16 +180,6 @@ func (p pages) connectionWizardSave(w http.ResponseWriter, r *http.Request) {
 	}
 	profile := draft.candidates[0]
 	input := wizardSaveIdentity(cfg, draft.location, r.PostForm)
-	if profile.ContainsCredential(input.Name, input.ID) {
-		reserved, err := p.wizardReservedIDs(cfg, draft.location.replace)
-		if err != nil {
-			p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, wizardValidationKey(err))
-			return
-		}
-		corrected := safeWizardIdentity(profile, "", draft.location.replace, reserved)
-		p.renderWizardReview(w, r, http.StatusUnprocessableEntity, cfg, draft, corrected, "wizard_review_identity")
-		return
-	}
 	if input.NameError != "" || input.IDError != "" {
 		p.renderWizardReview(w, r, http.StatusUnprocessableEntity, cfg, draft, input, "")
 		return
@@ -242,7 +214,7 @@ func wizardValidationKey(err error) string {
 	switch {
 	case errors.Is(err, model.ErrConnectionTagConflict):
 		return "wizard_tag_conflict"
-	case errors.Is(err, connectionimport.ErrRoutingOverride):
+	case errors.Is(err, model.ErrConnectionRoutingOverride):
 		return "wizard_routing_options"
 	default:
 		return "wizard_validation"
@@ -359,10 +331,7 @@ func wizardIDTaken(cfg *model.Config, id string) bool {
 		connectionIndex(cfg, id) >= 0 || slices.ContainsFunc(cfg.Subscriptions, func(source subscription.Source) bool { return source.ID == id })
 }
 
-func (p pages) wizardReservedIDs(cfg *model.Config, fixedID string) (map[string]bool, error) {
-	if fixedID != "" {
-		return nil, nil
-	}
+func (p pages) wizardReservedIDs(cfg *model.Config) (map[string]bool, error) {
 	tags, err := p.deps.ConnectionRuntimeTags(cfg)
 	if err != nil {
 		return nil, err
@@ -380,47 +349,17 @@ func (p pages) wizardReservedIDs(cfg *model.Config, fixedID string) (map[string]
 	return reserved, nil
 }
 
-// safeWizardIdentity checks the rendered name and the exact final ID against
-// the profile after each transformation, including uniqueness suffixing.
-func safeWizardIdentity(profile connectionimport.Draft, preferred, fixedID string, reserved map[string]bool) wizardReview {
-	suggest := func(name string) wizardReview {
-		id := fixedID
-		if id == "" {
-			id = availableWizardID(reserved, name)
+// suggestWizardIdentity uses the application's fixed protocol label and the
+// occupied IDs. Protocol labels use ASCII letters, digits and hyphens.
+func suggestWizardIdentity(protocol, nameFormat string, reserved map[string]bool) wizardReview {
+	base := strings.ToLower(protocol)
+	for number := 1; ; number++ {
+		id := base
+		if number > 1 {
+			id += "-" + strconv.Itoa(number)
 		}
-		return wizardReview{Name: name, ID: id}
-	}
-	if name := strings.Join(strings.Fields(preferred), " "); name != "" {
-		if candidate := suggest(name); !profile.ContainsCredential(candidate.Name, candidate.ID) {
-			return candidate
+		if !reserved[id] {
+			return wizardReview{Name: fmt.Sprintf(nameFormat, protocol, number), ID: id}
 		}
 	}
-	prefix := profile.Summary.Protocol
-	if profile.ContainsCredential(prefix, connectionimport.Slug(prefix)) {
-		prefix = "Connection"
-		if profile.ContainsCredential(prefix, connectionimport.Slug(prefix)) {
-			prefix = ""
-		}
-	}
-	// Try the separator-free spelling if every spaced name or hyphenated
-	// identifier matches. Leave the identity editable even if both run out.
-	for _, separator := range []string{" ", ""} {
-		for n := 1; n <= 128; n++ {
-			candidate := suggest(strings.TrimSpace(prefix + separator + strconv.Itoa(n)))
-			if !profile.ContainsCredential(candidate.Name, candidate.ID) {
-				return candidate
-			}
-		}
-	}
-	return wizardReview{ID: fixedID}
-}
-
-func availableWizardID(reserved map[string]bool, name string) string {
-	base := cmp.Or(connectionimport.Slug(name), "connection")
-	id := base
-	for n := 2; reserved[id]; n++ {
-		suffix := "-" + strconv.Itoa(n)
-		id = base[:min(len(base), 32-len(suffix))] + suffix
-	}
-	return id
 }

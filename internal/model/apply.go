@@ -6,6 +6,10 @@ import "errors"
 // would claim the same tag, including tags generated for routing.
 var ErrConnectionTagConflict = errors.New("connection identifier conflicts with a routing tag")
 
+// ErrConnectionRoutingOverride indicates that a wizard import references a
+// tag or assigns host routing that the application owns.
+var ErrConnectionRoutingOverride = errors.New("profile includes unsupported routing options")
+
 // AppliedUnsavedError reports a successful runtime change whose configuration
 // could not be persisted. The saved configuration may be used on restart.
 type AppliedUnsavedError struct {

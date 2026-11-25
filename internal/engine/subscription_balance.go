@@ -23,9 +23,9 @@ import (
 )
 
 type subscriptionBalanceOptions struct {
-	Outbounds []string `json:"outbounds"`
+	Outbounds []string `json:"outbounds" reference:"outbound"`
 	// Fallback replaces block as the target while no member is eligible.
-	Fallback string `json:"fallback,omitempty"`
+	Fallback string `json:"fallback,omitempty" reference:"outbound"`
 }
 
 func registerSubscriptionBalance(registry *outbound.Registry) {

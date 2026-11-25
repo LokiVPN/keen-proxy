@@ -5,12 +5,12 @@ import (
 	"net/netip"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"golang.org/x/net/idna"
 )
 
-// Summary is the allowlisted projection for the check screen.
+// Summary is the allowlisted projection for the check screen. Protocol is an
+// application-owned label shared by both locales.
 type Summary struct {
 	Protocol, Security, Server, SNI string
 }
@@ -19,9 +19,9 @@ var protocolLabel = map[string]string{
 	"wireguard": "WireGuard", "vless": "VLESS", "vmess": "VMess", "shadowsocks": "Shadowsocks",
 	"trojan": "Trojan", "hysteria2": "Hysteria2", "socks": "SOCKS", "tuic": "TUIC",
 	"anytls": "AnyTLS", "trusttunnel": "TrustTunnel", "hysteria": "Hysteria",
-	"snell": "Snell",
-	"ssh":   "SSH", "http": "HTTP", "naive": "Naive", "tailscale": "Tailscale",
-	"openvpn": "OpenVPN", "openconnect": "OpenConnect", "tor": "Tor",
+	"snell": "Snell", "shadowtls": "ShadowTLS", "masque": "MASQUE",
+	"ssh": "SSH", "http": "HTTP", "naive": "Naive", "tailscale": "Tailscale",
+	"openvpn": "OpenVPN", "openconnect": "OpenConnect", "tor": "Tor", "bridge": "Bridge",
 }
 
 func outboundSummary(out map[string]any) Summary {
@@ -99,29 +99,4 @@ func displayHost(host string) string {
 		return ""
 	}
 	return ascii
-}
-
-var slugSeparator = regexp.MustCompile(`[^a-z0-9]+`)
-
-var russianTransliteration = [...]string{
-	"a", "b", "v", "g", "d", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p",
-	"r", "s", "t", "u", "f", "h", "c", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya",
-}
-
-// Slug carries over the former wizard's transliteration and 32-byte limit.
-// The caller resolves collisions with reserved and configured IDs.
-func Slug(name string) string {
-	var latin strings.Builder
-	for _, r := range strings.ToLower(name) {
-		switch {
-		case r >= '\u0430' && r <= '\u044f':
-			latin.WriteString(russianTransliteration[r-'\u0430'])
-		case r == '\u0451':
-			latin.WriteByte('e')
-		default:
-			latin.WriteRune(r)
-		}
-	}
-	id := strings.Trim(slugSeparator.ReplaceAllString(latin.String(), "-"), "-")
-	return strings.TrimRight(id[:min(32, len(id))], "-")
 }

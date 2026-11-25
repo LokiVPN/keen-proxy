@@ -69,14 +69,10 @@ func Manual(f url.Values) (Draft, error) {
 			out["tls"] = manualTLS(f, host)
 		}
 	}
-	draft := Draft{
+	return Draft{
 		Connection: model.Connection{Type: model.ConnSingBox, Outbound: out},
 		Summary:    outboundSummary(out),
-	}
-	values := profileValues(
-		[]string{f.Get("username"), f.Get("password"), f.Get("shortId")}, nonSummaryProfile(out, false), 3,
-	)
-	return credentialDraft(draft, values), nil
+	}, nil
 }
 
 var (
@@ -168,5 +164,5 @@ func manualWireGuard(f url.Values) (Draft, error) {
 		}
 		wg.Peer.Keepalive = uint16(n)
 	}
-	return credentialDraft(wireGuardDraft(wg), wireGuardSecrets(wg)), nil
+	return wireGuardDraft(wg), nil
 }

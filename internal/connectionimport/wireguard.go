@@ -36,7 +36,7 @@ var knownWGOptions = map[string]UnsupportedWGOption{
 	"preup": "PreUp", "predown": "PreDown", "postup": "PostUp", "postdown": "PostDown",
 }
 
-func importConf(raw, text, filename string) (Draft, error) {
+func importConf(raw, text string) (Draft, error) {
 	if awgSetting.MatchString(text) {
 		for rawLine := range strings.SplitSeq(text, "\n") {
 			line := confLine(rawLine)
@@ -46,29 +46,25 @@ func importConf(raw, text, filename string) (Draft, error) {
 				return Draft{}, knownWGOptions[name]
 			}
 		}
-		return amneziaDraft(model.Connection{Type: model.ConnAmneziaWG, AmneziaWG: raw, Name: filename})
+		return amneziaDraft(raw)
 	}
 	wg, err := parseWireGuard(text)
 	if err != nil {
 		return Draft{}, err
 	}
-	values, nonSummary := confValues(text)
-	return importedIdentity(wireGuardDraft(wg), filename, values, nonSummary), nil
+	return wireGuardDraft(wg), nil
 }
 
-func wireGuardSecrets(wg *model.WireGuard) []string {
-	return []string{wg.PrivateKey, wg.Peer.PublicKey, wg.Peer.PresharedKey}
-}
-
-func amneziaDraft(c model.Connection) (Draft, error) {
-	endpoint, err := awg.Parse(c.AmneziaWG)
+func amneziaDraft(raw string) (Draft, error) {
+	endpoint, err := awg.Parse(raw)
 	if err != nil {
 		return Draft{}, ErrInvalid
 	}
 	peer := endpoint["peers"].([]map[string]any)[0]
-	draft := Draft{Connection: c, Summary: Summary{Protocol: "AmneziaWG", Server: profileAddress(peer, "address", "port")}}
-	values, nonSummary := confValues(c.AmneziaWG)
-	return importedIdentity(draft, c.Name, values, nonSummary), nil
+	return Draft{
+		Connection: model.Connection{Type: model.ConnAmneziaWG, AmneziaWG: raw},
+		Summary:    Summary{Protocol: "AmneziaWG", Server: profileAddress(peer, "address", "port")},
+	}, nil
 }
 
 func wireGuardDraft(wg *model.WireGuard) Draft {
@@ -82,32 +78,6 @@ func wireGuardDraft(wg *model.WireGuard) Draft {
 func confLine(raw string) string {
 	line, _, _ := strings.Cut(raw, "#")
 	return strings.TrimSpace(line)
-}
-
-func confValues(text string) (values, nonSummary []string) {
-	for raw := range strings.SplitSeq(text, "\n") {
-		key, value, ok := strings.Cut(confLine(raw), "=")
-		if !ok {
-			continue
-		}
-		value = strings.Clone(strings.TrimSpace(value))
-		assignment := len(values)
-		values = appendProfileValue(values, value, 1)
-		switch strings.ToLower(strings.TrimSpace(strings.TrimPrefix(key, "\uFEFF"))) {
-		case "address", "allowedips", "dns":
-			if strings.Contains(value, ",") {
-				values = append(values, splitWGList(value, func(r rune) bool { return r == ',' })...)
-			}
-		case "endpoint":
-			continue
-		}
-		for _, item := range values[assignment:] {
-			if len(item) >= 3 {
-				nonSummary = append(nonSummary, item)
-			}
-		}
-	}
-	return values, nonSummary
 }
 
 func parseWireGuard(text string) (*model.WireGuard, error) {

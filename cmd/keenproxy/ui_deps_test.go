@@ -89,6 +89,7 @@ func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 	d := &wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
 		{ID: "home", Type: model.ConnLink, Link: "socks5://home.example:1080", Fallback: model.TargetDirect},
 		{ID: "home-2", Type: model.ConnLink, Link: "socks5://other.example:1080", Fallback: model.TargetDirect},
+		{ID: "socks", Name: "Primary SOCKS", Type: model.ConnLink, Link: "socks5://old.example:1080"},
 	}}}
 	d.cfg.Defaults()
 	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
@@ -107,45 +108,50 @@ func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 	}
 	const profile = `{"type":"socks","server":"vpn.example.test","server_port":1080`
 	w := check(profile + `,"tag":"Failover Home"}`)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `name="id" value="failover-home-3"`) {
-		t.Errorf("Check did not offer an ID distinct from both generated tags: HTTP %d", w.Code)
-	}
-	const missing = "synthetic-absent-detour"
-	for _, raw := range []string{
-		profile + `,"detour":"` + missing + `"}`,
-		profile + `,"tag":"Cycle","detour":"cycle"}`,
-	} {
-		w := check(raw)
-		if w.Code != http.StatusUnprocessableEntity || strings.Contains(w.Body.String(), missing) {
-			t.Errorf("invalid graph was accepted or its error was exposed: HTTP %d", w.Code)
-		}
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `name="id" value="socks-2"`) ||
+		!strings.Contains(w.Body.String(), `name="name" value="SOCKS 2"`) {
+		t.Errorf("Check did not suggest the next protocol identity: HTTP %d", w.Code)
 	}
 	const wireGuard = `{"endpoint":{"type":"wireguard","address":["10.1.0.2/32"],"private_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","peers":[{"address":"192.0.2.10","port":51820,"public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=","allowed_ips":["0.0.0.0/0"]}],"detour":"direct"}}`
-	for _, raw := range []string{
-		wireGuard,
-		profile + `,"detour":"block"}`,
-		profile + `,"detour":"failover-home"}`,
-		profile + `,"detour":"home"}`,
-		profile + `,"domain_resolver":"validation-dns"}`,
-		profile + `,"DOMAIN_RESOLVER":{"SERVER":"validation-dns","strategy":"ipv4_only"}}`,
-		`{"outbounds":[` + profile + `,"domain_resolver":"validation-dns"}],"dns":{"servers":[{"type":"local","tag":"validation-dns"}]}}`,
-		`{"type":"hysteria2","realm":{"stun_domain_resolver":{"server":"validation-dns"}}}`,
-		`{"type":"hysteria2","realm":{"http_client":{"detour":"home"}}}`,
-		`{"type":"chain","outbounds":["home"]}`,
-		profile + `,"bind_interface":"synthetic-device"}`,
-		profile + `,"inet4_bind_address":"192.0.2.10"}`,
-	} {
-		refused := check(raw)
-		if refused.Code != http.StatusUnprocessableEntity || !strings.Contains(refused.Body.String(), "includes unsupported routing options") ||
-			strings.Contains(refused.Body.String(), "synthetic-device") || strings.Contains(refused.Body.String(), "validation-dns") || d.applies != 0 {
-			t.Errorf("Check did not refuse explicit routing before Apply: HTTP %d", refused.Code)
-		}
+	type routingCase struct{ name, raw string }
+	routingCases := []routingCase{
+		{"endpoint detour", wireGuard},
+		{"unknown detour", profile + `,"detour":"fixture-absent-detour"}`},
+		{"built-in detour", profile + `,"detour":"block"}`},
+		{"generated detour", profile + `,"detour":"failover-home"}`},
+		{"existing detour", profile + `,"detour":"home"}`},
+		{"own profile tag", profile + `,"tag":"fixture-own-tag","detour":"fixture-own-tag"}`},
+		{"discarded wrapper tag", `{"outbounds":[` + profile + `,"detour":"fixture-direct"},{"type":"direct","tag":"fixture-direct"}]}`},
+		{"resolver string", profile + `,"domain_resolver":"validation-dns"}`},
+		{"case-folded resolver object", profile + `,"DOMAIN_RESOLVER":{"SERVER":"validation-dns","strategy":"ipv4_only"}}`},
+		{"Unicode-folded resolver key", profile + `,"domain_re\u017folver":"validation-dns"}`},
+		{"Unicode-folded resolver server", profile + `,"domain_resolver":{"\u017ferver":"validation-dns"}}`},
+		{"discarded wrapper resolver", `{"outbounds":[` + profile + `,"domain_resolver":"validation-dns"}],"dns":{"servers":[{"type":"local","tag":"validation-dns"}]}}`},
+		{"interface binding", profile + `,"BIND_INTERFACE":"synthetic-device"}`},
+		{"address binding", profile + `,"inet4_bind_address":"192.0.2.10"}`},
+		{"generated balance fallback", `{"type":"subscription-balance","fallback":"home"}`},
 	}
 	if engine.BuildVariant == "full" {
+		routingCases = append(routingCases,
+			routingCase{"nested resolver", `{"type":"hysteria2","realm":{"http_client":{"domain_resolver":{"server":"validation-dns"}}}}`},
+			routingCase{"embedded HTTP dialer", `{"type":"hysteria2","realm":{"http_client":{"detour":"home"}}}`},
+			routingCase{"HTTP client reference", `{"type":"hysteria2","realm":{"http_client":"fixture-http-client"}}`},
+			routingCase{"chain members", `{"type":"chain","outbounds":["home"]}`},
+		)
 		withHeaders := check(`{"type":"http","server":"vpn.example.test","server_port":8080,"tag":"Office","headers":{"domain_resolver":"ordinary-header","detour":"ordinary-header"}}`)
 		if withHeaders.Code != http.StatusOK {
 			t.Fatalf("an independent profile with HTTP headers failed Check: HTTP %d", withHeaders.Code)
 		}
+	}
+	for _, tc := range routingCases {
+		t.Run(tc.name, func(t *testing.T) {
+			refused := check(tc.raw)
+			body := refused.Body.String()
+			if refused.Code != http.StatusUnprocessableEntity || !strings.Contains(body, "includes unsupported routing options") ||
+				strings.Contains(body, "synthetic-device") || strings.Contains(body, "validation-dns") || strings.Contains(body, "fixture-") || d.applies != 0 {
+				t.Errorf("Check did not refuse the routing option privately before Apply: HTTP %d", refused.Code)
+			}
+		})
 	}
 	checked := check(profile + `,"tag":"Office"}`)
 	if checked.Code != http.StatusOK {
@@ -172,6 +178,21 @@ func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 	form.Set("preview", token(w))
 	if saved := post("/connections/new/save", form, cookies...); saved.Code != http.StatusSeeOther || d.applies != 1 {
 		t.Fatalf("corrected ID failed Save: HTTP %d", saved.Code)
+	}
+
+	rev := ui.Revision(d.Config())
+	replaced := post("/connections/id/socks/replace/check", url.Values{"rev": {rev}, "method": {"paste"}, "profile": {profile + `}`}})
+	if replaced.Code != http.StatusOK || !strings.Contains(replaced.Body.String(), `id="wizard-id" value="socks" readonly`) {
+		t.Fatalf("same-protocol JSON could not replace the existing ID: HTTP %d", replaced.Code)
+	}
+	form = url.Values{
+		"rev": {rev}, "preview": {token(replaced)}, "replace": {"socks"}, "id": {"ignored"}, "name": {"Primary SOCKS"},
+	}
+	if saved := post("/connections/new/save", form, replaced.Result().Cookies()...); saved.Code != http.StatusSeeOther || d.applies != 2 {
+		t.Fatalf("Save could not replace the same-protocol profile: HTTP %d", saved.Code)
+	}
+	if got := d.cfg.Connections[2]; got.ID != "socks" || got.Outbound["server"] != "vpn.example.test" {
+		t.Fatal("replacement changed the ID or failed to store the checked JSON")
 	}
 }
 

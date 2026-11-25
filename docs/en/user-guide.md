@@ -50,17 +50,17 @@ Open **Connections**. The **Manual connections** table shows each profile's prot
 
 Choose **Add connection**. **Paste** detects a share link, standalone Amnezia `vpn://` export, WireGuard or AmneziaWG `.conf`, or sing-box JSON containing one connection profile. **From file** accepts the same formats up to 2 MiB. **Manual** offers WireGuard, VLESS, Shadowsocks, Trojan, Hysteria2 and SOCKS.
 
-Choose **Check** to validate the profile on the router and review its type, server and SNI. Edit the name and identifier, then choose **Save** to apply the connection and return to the list. An identifier starts with a lowercase Latin letter or digit and uses up to 32 lowercase Latin letters, digits, hyphens or underscores. It must be unique and available for manual connections. If the checked draft expires or settings change in another window, check your input again. Replacing a profile reuses its identifier and all routing and reserve references.
+Choose **Check** to validate the profile on the router and review its type, server and SNI. For a new connection the wizard suggests a numbered protocol name, such as `VLESS 2`, and an available identifier, such as `vless-2`. You can edit both before choosing **Save** to apply the connection and return to the list. An identifier starts with a lowercase Latin letter or digit and uses up to 32 lowercase Latin letters, digits, hyphens or underscores. It must be unique and available for manual connections. If the checked draft expires or settings change in another window, check your input again. Replacing a profile reuses its identifier and all routing and reserve references.
 
 If an identifier conflicts with a routing tag, choose another one. After a manual input error, correct the highlighted field and re-enter credentials before checking again.
 
-Import a self-contained profile. KeenProxy configures routing, DNS resolution and interface binding. If the wizard leaves the name or identifier blank, enter one of your own.
+Import a standalone sing-box outbound or endpoint. Check refuses explicit tag references such as `detour` and `domain_resolver`, including references to tags declared in the same JSON. KeenProxy configures routing, DNS resolution and interface binding.
 
 Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Profiles can also be set in the [YAML configuration](getting-started.md).
 
 Groups, devices, networks, and DNS settings keep their references to a disabled connection. Traffic follows its configured enabled fallback chain; with no enabled fallback it is blocked, not silently routed directly or passed to the next rule. An explicitly configured **Direct** fallback remains intentional. DNS keeps its separate strict/direct failure policy: disabling a connection must not create a direct DNS path in strict mode.
 
-Raw sing-box profiles keep their `detour` and selector references to the configured connection ID. When that connection is disabled, its runtime relay uses the same enabled fallback chain, or blocks if none is available; the saved raw profile is not rewritten.
+In the YAML configuration, raw sing-box profiles keep their `detour` and selector references to the configured connection ID. When that connection is disabled, its runtime relay uses the same enabled fallback chain, or blocks if none is available; the saved raw profile is not rewritten.
 
 ### Native subscriptions { #native-subscriptions }
 

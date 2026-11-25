@@ -3,10 +3,8 @@
 package connectionimport
 
 import (
-	"cmp"
 	"encoding/json"
 	"errors"
-	"maps"
 	"path"
 	"strings"
 	"unicode"
@@ -31,11 +29,10 @@ var (
 type Draft struct {
 	Connection model.Connection
 	Summary    Summary
-	secrets    []string
 }
 
-// Parse detects the format of one bounded connection input. Filename is used
-// for .conf detection and as a suggested name when the profile has none.
+// Parse detects the format of one bounded connection input. The filename is
+// used only to recognize .conf uploads.
 func Parse(raw, filename string) ([]Draft, error) {
 	if len(raw) > MaxSize {
 		return nil, ErrTooLarge
@@ -52,20 +49,15 @@ func Parse(raw, filename string) ([]Draft, error) {
 		return importAmnezia("vpn://" + body)
 	}
 
-	base := path.Base(strings.ReplaceAll(filename, "\\", "/"))
-	fallback := ""
-	if filename != "" {
-		fallback = strings.TrimSuffix(base, path.Ext(base))
-	}
 	var draft Draft
 	var err error
 	switch {
 	case strings.EqualFold(path.Ext(filename), ".conf") || interfaceSection.MatchString(text):
-		draft, err = importConf(raw, text, fallback)
+		draft, err = importConf(raw, text)
 	case strings.HasPrefix(text, "{"):
-		draft, err = importJSON(text, fallback)
+		draft, err = importJSON(text)
 	default:
-		draft, err = importLink(text, fallback)
+		draft, err = importLink(text)
 	}
 	if err != nil {
 		return nil, err
@@ -73,7 +65,7 @@ func Parse(raw, filename string) ([]Draft, error) {
 	return []Draft{draft}, nil
 }
 
-func importLink(text, fallback string) (Draft, error) {
+func importLink(text string) (Draft, error) {
 	if strings.IndexFunc(text, unicode.IsSpace) >= 0 {
 		return Draft{}, ErrInvalid
 	}
@@ -81,18 +73,10 @@ func importLink(text, fallback string) (Draft, error) {
 	if err != nil {
 		return Draft{}, ErrInvalid
 	}
-	draft := Draft{
+	return Draft{
 		Connection: model.Connection{Type: model.ConnLink, Link: strings.Clone(text)},
 		Summary:    outboundSummary(out),
-	}
-	values, nonSummary := linkValues(text)
-	nonSummary = profileValues(nonSummary, nonSummaryProfile(out, false), 1)
-	// The adapter assigns the outbound type from the URL scheme. Its fixed
-	// label can still be used as a fallback for a share link.
-	payload := maps.Clone(out)
-	delete(payload, "type")
-	values = profileValues(values, payload, 1)
-	return importedIdentity(draft, cmp.Or(links.Name(text), fallback), values, nonSummary), nil
+	}, nil
 }
 
 func importAmnezia(uri string) ([]Draft, error) {
@@ -102,7 +86,7 @@ func importAmnezia(uri string) ([]Draft, error) {
 	}
 	drafts := make([]Draft, 0, len(connections))
 	for _, connection := range connections {
-		draft, err := amneziaDraft(connection)
+		draft, err := amneziaDraft(connection.AmneziaWG)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +103,7 @@ type jsonProfile struct {
 // importJSON accepts an individual profile or the profile containers of a
 // sing-box file. Global inbounds, routing, DNS and experimental settings are
 // never copied. Built-in actions do not count as connection profiles.
-func importJSON(text, fallback string) (Draft, error) {
+func importJSON(text string) (Draft, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &root); err != nil {
 		return Draft{}, ErrInvalid
@@ -128,7 +112,6 @@ func importJSON(text, fallback string) (Draft, error) {
 	if err != nil {
 		return Draft{}, err
 	}
-	name, _ := profile.options["tag"].(string)
 	delete(profile.options, "tag")
 	var draft Draft
 	draft.Connection.Type = model.ConnSingBox
@@ -139,9 +122,7 @@ func importJSON(text, fallback string) (Draft, error) {
 		draft.Connection.Outbound = profile.options
 		draft.Summary = outboundSummary(profile.options)
 	}
-	values := profileValues(nil, profile.options, 3)
-	nonSummary := profileValues(nil, nonSummaryProfile(profile.options, profile.endpoint), 3)
-	return importedIdentity(draft, cmp.Or(name, fallback), values, nonSummary), nil
+	return draft, nil
 }
 
 func oneJSONProfile(root map[string]json.RawMessage, raw json.RawMessage) (jsonProfile, error) {

@@ -33,7 +33,7 @@ func TestParseWireGuard(t *testing.T) {
 		t.Fatalf("imported %d WireGuard profiles", len(drafts))
 	}
 	c := drafts[0].Connection
-	if c.Type != model.ConnWireGuard || c.Name != "home" || !reflect.DeepEqual(c.WireGuard, want) {
+	if c.Type != model.ConnWireGuard || c.Name != "" || !reflect.DeepEqual(c.WireGuard, want) {
 		t.Fatalf("unexpected WireGuard import")
 	}
 	if got := drafts[0].Summary; got.Protocol != "WireGuard" || got.Server != "[2001:db8::1]:51820" || got.SNI != "" {
@@ -140,7 +140,7 @@ func TestParseSingBoxSingleProfile(t *testing.T) {
 		t.Fatalf("importable profiles = %d: %v", len(drafts), err)
 	}
 	d := drafts[0]
-	if d.Connection.Name != "work" || d.Connection.Outbound["tag"] != nil || d.Connection.Outbound["route"] != nil ||
+	if d.Connection.Name != "" || d.Connection.Outbound["tag"] != nil || d.Connection.Outbound["route"] != nil ||
 		d.Connection.Outbound["password"] != "secret" || d.Summary.Server != "proxy.example:443" || d.Summary.SNI != "cover.example" {
 		t.Fatal("sing-box import changed profile options or included global settings")
 	}
@@ -173,8 +173,8 @@ func TestParseConnectionLink(t *testing.T) {
 		t.Fatalf("link at size limit: %v", err)
 	}
 	d := drafts[0]
-	if c := d.Connection; c.Type != model.ConnLink || c.Name != "Work VPN" || c.Link != link {
-		t.Fatal("share link or its display name was changed")
+	if c := d.Connection; c.Type != model.ConnLink || c.Name != "" || c.Link != link {
+		t.Fatal("import changed the share link or supplied a name")
 	}
 	if got := d.Summary; got != (Summary{Protocol: "VLESS", Security: "REALITY", Server: "vpn.example.test:443", SNI: "cover.example.test"}) {
 		t.Fatalf("summary = %#v", got)
@@ -184,41 +184,6 @@ func TestParseConnectionLink(t *testing.T) {
 	}
 	if _, err := Parse("unsupported-secret://private", ""); !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("unsafe failure: %v", err)
-	}
-}
-
-func TestImportedIdentityTreatsProfileValuesAsPrivate(t *testing.T) {
-	for _, tt := range []struct {
-		name, raw, filename, server string
-		values                      []string
-	}{
-		{"JSON leaves", `{"type":"http","server":"proxy.example","server_port":8080,"tag":"Office","headers":{"Proxy-Authorization":["Basic fixture-header"],"X-Nested":["fixture-value","xy"]}}`,
-			"", "proxy.example:8080", []string{"http", "proxy.example", "Basic fixture-header", "fixture-header", "fixture-value"}},
-		{"link options", "trojan://q@proxy.example:443?arbitrary=fixture-option&another=z#Office",
-			"", "proxy.example:443", []string{"q", "fixture-option", "z"}},
-		{"WireGuard assignments", strings.Replace(wireGuardConf, "[Peer]", "DNS=192.0.2.53, fixture.example\nMTU=1400\n[Peer]", 1),
-			"Office.conf", "[2001:db8::1]:51820", []string{wireGuardKey, "fixture.example", "1400"}},
-		{"AmneziaWG assignments", strings.Replace(wireGuardConf, "[Peer]", "Jc=0\nDNS=192.0.2.53\n[Peer]", 1),
-			"Office.conf", "[2001:db8::1]:51820", []string{wireGuardKey, "192.0.2.53"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			drafts, err := Parse(tt.raw, tt.filename)
-			if err != nil || len(drafts) != 1 {
-				t.Fatalf("import failed: %v", err)
-			}
-			d := drafts[0]
-			if d.Connection.Name != "Office" || d.Summary.Server != tt.server {
-				t.Fatal("import lost the safe label or server summary")
-			}
-			for _, value := range tt.values {
-				if !d.ContainsCredential("label-" + value + "-suffix") {
-					t.Error("identity check missed an imported profile value")
-				}
-			}
-			if d.ContainsCredential("Office") || tt.name == "JSON leaves" && d.ContainsCredential("xy") {
-				t.Fatal("identity check treated the label or a short JSON value as profile data")
-			}
-		})
 	}
 }
 
@@ -287,18 +252,6 @@ func TestBuildManualProtocols(t *testing.T) {
 		fields.Set("port", port)
 		if _, err := Manual(fields); err != ManualField("port") {
 			t.Errorf("invalid port returned %v", err)
-		}
-	}
-}
-
-func TestSuggestID(t *testing.T) {
-	for name, want := range map[string]string{
-		"  Work - VPN__42! ": "work-vpn-42",
-		"\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0435\u0440\u0432\u0435\u0440": "rabochiy-server",
-		strings.Repeat("u", 40): strings.Repeat("u", 32),
-	} {
-		if got := Slug(name); got != want {
-			t.Errorf("slug = %q, want %q", got, want)
 		}
 	}
 }

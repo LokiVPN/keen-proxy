@@ -34,9 +34,12 @@ type wizardFixture struct {
 	*setupFixture
 	validations int
 	validateErr error
+	runtimeTags []string
 }
 
-func (*wizardFixture) ConnectionRuntimeTags(*model.Config) ([]string, error) { return nil, nil }
+func (f *wizardFixture) ConnectionRuntimeTags(*model.Config) ([]string, error) {
+	return f.runtimeTags, nil
+}
 
 func newWizardFixture() *wizardFixture {
 	cfg := &model.Config{}
@@ -87,12 +90,12 @@ func TestConnectionWizardCheckSaveAndFlash(t *testing.T) {
 	f := newWizardFixture()
 	h := New(f, setupTestOptions(RoleManage))
 	w, save := wizardCheck(t, h, "/connections/new", wizardLink+"#Work%20%3Cscript%3E")
-	for _, want := range []string{"VLESS", "vpn.example.test:443", "cover.example.test", "Work &lt;script&gt;", `value="work-script"`} {
+	for _, want := range []string{"VLESS", "vpn.example.test:443", "cover.example.test", "VLESS 1", `name="id" value="vless"`} {
 		if !strings.Contains(w.Body.String(), want) {
 			t.Errorf("checked page lacks %q", want)
 		}
 	}
-	if strings.Contains(w.Body.String(), wizardUUID) || strings.Contains(w.Body.String(), "vless://"+wizardUUID) || f.applies != 0 {
+	if strings.Contains(w.Body.String(), wizardUUID) || strings.Contains(w.Body.String(), "Work &lt;script&gt;") || f.applies != 0 {
 		t.Fatal("check disclosed or applied the draft")
 	}
 	save.Set("id", "work")
@@ -121,26 +124,21 @@ func TestConnectionWizardCheckSaveAndFlash(t *testing.T) {
 	}
 }
 
-func TestConnectionWizardSanitizesImportedNamesThroughView(t *testing.T) {
-	const password = "synthetic-fixture-password"
-	const token = "synthetic-fixture-token"
-	base := "trojan://" + password + "@vpn.example.test:443"
-	jsonTag := `{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"` + password +
-		`","tag":"Office ` + password + `","tls":{"enabled":true}}`
-	wgWithTag := `{"endpoint":{"type":"wireguard","private_key":"` + wizardWGKey + `","tag":"key ` + wizardWGKey + `"}}`
-	for _, tt := range []struct{ name, profile, suggestion, secret string }{
-		{"uuid fragment", wizardLink + "#Work-" + wizardUUID, "VLESS 1", wizardUUID},
-		{"encoded password", base + "#Work%2520synthetic%252dfixture%252dpassword", "Trojan 1", password},
-		{"password in generated ID", base + "#synthetic%20fixture%20password", "Trojan 1", password},
-		{"JSON tag", jsonTag, "Connection 1", password},
-		{"private key", wgWithTag, "Connection 1", wizardWGKey},
-		{"query token", base + "?token=" + token + "#Work-" + token, "Trojan 1", token},
-		{"unrelated URL", base + "#Office%20https%3A%2F%2Fprovider.example%2F" + token, "Office", token},
-		{"credential-like token", base + "#Office%20token%3D" + token, "Trojan 1", token},
-		{"Snell PSK", `{"type":"snell","server":"vpn.example.test","server_port":443,"psk":"` + password + `","tag":"Home ` + password + `"}`,
-			"Connection 1", password},
-		{"Snell user key", `{"type":"snell","server":"vpn.example.test","server_port":443,"userkey":"` + token + `","tag":"Home ` + token + `"}`,
-			"Connection 1", token},
+func TestConnectionWizardSuggestsProtocolIdentityForImports(t *testing.T) {
+	const password = "fixture-private-password"
+	const label = "fixture-imported-label"
+	const header = "fixture-header-value"
+	for _, tt := range []struct{ name, profile, wantName, wantID, hidden string }{
+		{"share link", wizardLink + "#Work-" + label + "-" + wizardUUID, "VLESS 1", "vless", wizardUUID},
+		{"port hopping", "hy2://q@vpn.example.test:443,8443?up=073#server073", "Hysteria2 1", "hysteria2", "server073"},
+		{"semicolon query", "trojan://q@vpn.example.test:443?token=" + password + ";other=1#Office-" + password,
+			"Trojan 1", "trojan", password},
+		{"JSON tag", `{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"q","tag":"office-q","tls":{"enabled":true}}`,
+			"Trojan 1", "trojan", "office-q"},
+		{"HTTP header", `{"type":"http","server":"vpn.example.test","server_port":8080,"headers":{"Proxy-Authorization":"Basic ` + header +
+			`"},"tag":"Office ` + header + `"}`, "HTTP 1", "http", header},
+		{"ShadowTLS tag", `{"type":"shadowtls","server":"vpn.example.test","server_port":443,"tag":"fixture-imported-label"}`,
+			"ShadowTLS 1", "shadowtls", label},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newWizardFixture()
@@ -148,153 +146,52 @@ func TestConnectionWizardSanitizesImportedNamesThroughView(t *testing.T) {
 			role := RoleManage
 			opts.Role = func(*http.Request) Role { return role }
 			h := New(f, opts)
-			checked, form := wizardCheck(t, h, "/connections/new", tt.profile)
-			name := html.UnescapeString(formField(t, checked.Body.String(), "name"))
-			id := formField(t, checked.Body.String(), "id")
-			if name != tt.suggestion || strings.Contains(checked.Body.String(), tt.secret) {
-				t.Error("check exposed an untrusted label or failed to suggest a safe name")
+			checked, save := wizardCheck(t, h, "/connections/new", tt.profile)
+			body := checked.Body.String()
+			save.Set("name", html.UnescapeString(formField(t, body, "name")))
+			save.Set("id", formField(t, body, "id"))
+			if save.Get("name") != tt.wantName || save.Get("id") != tt.wantID ||
+				strings.Contains(body, tt.hidden) || strings.Contains(body, label) || !strings.Contains(body, "vpn.example.test") {
+				t.Error("Check did not show the generic protocol identity and server")
 			}
-			form.Set("name", name)
-			form.Set("id", id)
-			if saved := wizardPost(h, "/connections/new/save", form, checked.Result().Cookies()...); saved.Code != http.StatusSeeOther {
-				t.Fatalf("default save returned %d", saved.Code)
+			if saved := wizardPost(h, "/connections/new/save", save, checked.Result().Cookies()...); saved.Code != http.StatusSeeOther {
+				t.Fatalf("default save returned HTTP %d", saved.Code)
 			}
 			role = RoleView
 			page := setupRequest(h, "/connections", nil)
-			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), tt.suggestion) || strings.Contains(page.Body.String(), tt.secret) ||
-				strings.Contains(id, tt.secret) || f.cfg.Connections[0].Name != tt.suggestion {
-				t.Fatal("the unsafe suggestion reached the saved identity or view")
+			got := f.cfg.Connections[0]
+			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), tt.wantName) || strings.Contains(page.Body.String(), tt.hidden) ||
+				got.Name != tt.wantName || got.ID != tt.wantID {
+				t.Fatal("the saved default did not preserve the generic identity for viewers")
 			}
 		})
 	}
 }
 
-func TestConnectionWizardChecksFinalIdentity(t *testing.T) {
-	const spaced = "synthetic space password"
-	for _, test := range []struct{ name, profile, secret, id, wantName string }{
-		{"collapsed name", `{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"` + spaced +
-			`","tag":"synthetic   space    password"}`, spaced, "connection-1-2", "Connection 1"},
-		{"suffixed ID", "trojan://office-2@vpn.example.test:443#Office", "office-2", "trojan-1-2", "Trojan 1"},
-		{"fallback suffix", `{"type":"socks","server":"vpn.example.test","server_port":1080,"username":"office-2","password":"connection-1-2","tag":"Office"}`,
-			"connection-1-2", "connection-2", "Connection 2"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newWizardFixture()
-			f.cfg.Connections = []model.Connection{
-				{ID: "office", Type: model.ConnLink, Link: "socks5://older.example:1080"},
-				{ID: "trojan-1", Type: model.ConnLink, Link: "socks5://other.example:1080"},
-				{ID: "connection-1", Type: model.ConnLink, Link: "socks5://another.example:1080"},
-			}
-			role := RoleManage
-			opts := setupTestOptions(RoleManage)
-			opts.Role = func(*http.Request) Role { return role }
-			h := New(f, opts)
-			checked, save := wizardCheck(t, h, "/connections/new", test.profile)
-			save.Set("id", formField(t, checked.Body.String(), "id"))
-			save.Set("name", html.UnescapeString(formField(t, checked.Body.String(), "name")))
-			if save.Get("id") != test.id || save.Get("name") != test.wantName || strings.Contains(checked.Body.String(), test.secret) {
-				t.Error("the final name or unique ID was unsafe")
-			}
-			if w := wizardPost(h, "/connections/new/save", save, checked.Result().Cookies()...); w.Code != http.StatusSeeOther {
-				t.Fatalf("suggested identity failed Save: HTTP %d", w.Code)
-			}
-			role = RoleView
-			if page := setupRequest(h, "/connections", nil); page.Code != http.StatusOK || strings.Contains(page.Body.String(), test.secret) {
-				t.Fatal("saved identity exposed a credential to a viewer")
-			}
-		})
-	}
-}
-
-func TestConnectionWizardProtectsImportedHeaderValue(t *testing.T) {
+func TestConnectionWizardSkipsConfiguredAndGeneratedIDs(t *testing.T) {
 	f := newWizardFixture()
-	role := RoleManage
-	opts := setupTestOptions(RoleManage)
-	opts.Role = func(*http.Request) Role { return role }
-	h := New(f, opts)
-	const credential = "synthetic-header-value"
+	f.cfg.Connections = []model.Connection{{ID: "trojan", Type: model.ConnLink, Link: "socks5://old.example:1080"}}
+	f.runtimeTags = []string{"trojan-2"}
+	h := New(f, setupTestOptions(RoleManage))
+	checked, _ := wizardCheck(t, h, "/connections/new", "trojan://fixture-private@vpn.example.test:443#Office")
+	body := checked.Body.String()
+	if formField(t, body, "name") != "Trojan 3" || formField(t, body, "id") != "trojan-3" {
+		t.Fatal("Check did not skip the configured ID and generated tag")
+	}
+}
+
+func TestConnectionWizardAcceptsOperatorIdentity(t *testing.T) {
+	f := newWizardFixture()
+	h := New(f, setupTestOptions(RoleManage))
 	checked, save := wizardCheck(t, h, "/connections/new",
-		`{"type":"http","server":"proxy.example","server_port":8080,"headers":{"Proxy-Authorization":"Basic `+credential+`"},"tag":"Office `+credential+`"}`)
-	if strings.Contains(checked.Body.String(), credential) || !strings.Contains(checked.Body.String(), "proxy.example:8080") {
-		t.Error("Check exposed an authorization value or omitted the server")
+		`{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"fixture-private","tls":{"enabled":true}}`)
+	save.Set("id", "trojan-office")
+	save.Set("name", "My Trojan connection")
+	if saved := wizardPost(h, "/connections/new/save", save, checked.Result().Cookies()...); saved.Code != http.StatusSeeOther {
+		t.Fatalf("Save rejected an otherwise valid operator choice, HTTP %d", saved.Code)
 	}
-	cookies := checked.Result().Cookies()
-	save.Set("id", "office-"+credential)
-	review := wizardPost(h, "/connections/new/save", save, cookies...)
-	if review.Code != http.StatusUnprocessableEntity || strings.Contains(review.Body.String(), credential) || f.applies != 0 {
-		t.Fatalf("Save accepted or reflected an authorization value, HTTP %d", review.Code)
-	}
-	save.Set("preview", formField(t, review.Body.String(), "preview"))
-	save.Set("id", formField(t, review.Body.String(), "id"))
-	save.Set("name", formField(t, review.Body.String(), "name"))
-	if w := wizardPost(h, "/connections/new/save", save, cookies...); w.Code != http.StatusSeeOther {
-		t.Fatalf("the safe identity could not be saved, HTTP %d", w.Code)
-	}
-	role = RoleView
-	if page := setupRequest(h, "/connections", nil); page.Code != http.StatusOK || strings.Contains(page.Body.String(), credential) {
-		t.Fatal("saved identity exposed the authorization value to a viewer")
-	}
-}
-
-func TestConnectionWizardKeepsIdentityEditableForSeparatorCredential(t *testing.T) {
-	for _, tt := range []struct{ name, query, wantName, wantID string }{
-		{"separator free", "", "Trojan1", "trojan1"},
-		{"all numbered suggestions match", "?v0=0&v1=1&v2=2&v3=3&v4=4&v5=5&v6=6&v7=7&v8=8&v9=9", "", ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newWizardFixture()
-			h := New(f, setupTestOptions(RoleManage))
-			rev := Revision(f.Config())
-			checked := wizardPost(h, "/connections/new/check", url.Values{
-				"rev": {rev}, "method": {"paste"}, "profile": {"trojan://-@proxy.example:443" + tt.query},
-			})
-			body := checked.Body.String()
-			if checked.Code != http.StatusOK || !strings.Contains(body, `name="name" value="`+tt.wantName+`"`) ||
-				!strings.Contains(body, `name="id" value="`+tt.wantID+`"`) {
-				t.Fatalf("Check did not offer the safe editable identity, HTTP %d", checked.Code)
-			}
-			save := url.Values{"rev": {rev}, "preview": {formField(t, body, "preview")}, "name": {"Work"}, "id": {"work"}}
-			if w := wizardPost(h, "/connections/new/save", save, checked.Result().Cookies()...); w.Code != http.StatusSeeOther {
-				t.Fatalf("a safe edited identity failed Save, HTTP %d", w.Code)
-			}
-		})
-	}
-}
-
-func TestConnectionWizardKeepsReplaceIDWhenItMatchesAnImportedCredential(t *testing.T) {
-	f := newWizardFixture()
-	const id = "secret-test-id"
-	f.cfg.Connections = []model.Connection{{ID: id, Name: "Home", Type: model.ConnLink, Link: "socks5://old.example:1080"}}
-	h := New(f, setupTestOptions(RoleManage))
-	w := wizardPost(h, connectionDetailPath(id)+"/replace/check", url.Values{
-		"rev": {Revision(f.Config())}, "method": {"paste"}, "profile": {"trojan://" + id + "@vpn.example.test:443"},
-	})
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), translations["en"]["wizard_replace_credential"]) ||
-		strings.Contains(w.Body.String(), id) || f.applies != 0 || f.cfg.Connections[0].ID != id {
-		t.Fatal("replace disclosed the new credential or changed the saved identifier")
-	}
-}
-
-func TestConnectionWizardReviewDoesNotEchoAnEditedCredential(t *testing.T) {
-	f := newWizardFixture()
-	h := New(f, setupTestOptions(RoleManage))
-	const password = "private-test-value"
-	checked, form := wizardCheck(t, h, "/connections/new", "trojan://"+password+"@vpn.example.test:443#Office")
-	form.Set("id", password)
-	form.Set("name", "Office")
-	cookies := checked.Result().Cookies()
-	review := wizardPost(h, "/connections/new/save", form, cookies...)
-	if review.Code != http.StatusUnprocessableEntity || strings.Contains(review.Body.String(), password) || f.applies != 0 {
-		t.Fatal("Save used the credential as an identifier")
-	}
-	form.Set("id", formField(t, review.Body.String(), "id"))
-	form.Set("name", html.UnescapeString(formField(t, review.Body.String(), "name")))
-	form.Set("preview", formField(t, review.Body.String(), "preview"))
-	if form.Get("id") != "trojan-1" || form.Get("name") != "Trojan 1" {
-		t.Fatal("the correction did not offer a safe replacement identity")
-	}
-	if saved := wizardPost(h, "/connections/new/save", form, cookies...); saved.Code != http.StatusSeeOther || f.applies != 1 {
-		t.Fatal("could not confirm the corrected identity")
+	if got := f.cfg.Connections[0]; got.ID != "trojan-office" || got.Name != "My Trojan connection" {
+		t.Fatal("Save changed the operator's chosen identity")
 	}
 }
 
@@ -418,15 +315,15 @@ func TestConnectionWizardDraftExpiryAndSingleUse(t *testing.T) {
 
 func TestConnectionWizardEditIdentityAndRejectEngineError(t *testing.T) {
 	f := newWizardFixture()
-	f.cfg.Subscriptions = []subscription.Source{{ID: "main", URL: "https://provider.example/source"}}
+	f.cfg.Subscriptions = []subscription.Source{{ID: "vless", URL: "https://provider.example/source"}}
 	f.cfg.Connections = []model.Connection{{ID: "existing", Type: model.ConnLink, Link: "socks5://existing.example:1080"}}
 	h := New(f, setupTestOptions(RoleManage))
 	checked, form := wizardCheck(t, h, "/connections/new", wizardLink+"#Main")
-	if !strings.Contains(checked.Body.String(), `value="main-2"`) {
+	if !strings.Contains(checked.Body.String(), `name="id" value="vless-2"`) {
 		t.Fatal("suggested ID collides with the subscription")
 	}
 	cookies := checked.Result().Cookies()
-	for _, id := range []string{"direct", "block", "main", "existing", "Invalid", "-first", "subscription:main:auto", strings.Repeat("a", 33)} {
+	for _, id := range []string{"direct", "block", "vless", "existing", "Invalid", "-first", "subscription:vless:auto", strings.Repeat("a", 33)} {
 		form.Set("id", id)
 		oldToken := form.Get("preview")
 		rejected := wizardPost(h, "/connections/new/save", form, cookies...)
@@ -689,6 +586,10 @@ func TestConnectionWizardMultipartLimit(t *testing.T) {
 		h.ServeHTTP(w, r)
 		if w.Code != tt.status || strings.Contains(w.Body.String(), wizardWGKey) || f.applies != 0 {
 			t.Fatalf("upload of %d bytes returned HTTP %d", tt.size, w.Code)
+		}
+		if w.Code == http.StatusOK && (formField(t, w.Body.String(), "name") != "WireGuard 1" ||
+			formField(t, w.Body.String(), "id") != "wireguard") {
+			t.Error("the uploaded filename influenced the suggested identity")
 		}
 	}
 }
