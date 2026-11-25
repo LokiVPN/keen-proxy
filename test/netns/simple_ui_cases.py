@@ -149,6 +149,7 @@ def repair_event(cursor, outcome, missing="DNS", retry=True):
         assert event["duration_ms"] >= 250, event
     if outcome == "restored":
         assert "after" not in event, event
+        nat_jump("-C", "DNS")
         assert_drops(False)
         for protocol in ("notcp", "tcp"):
             dns_answer("192.168.77.254", protocol, f"restored-{cursor}", "0.0.0.0")
@@ -181,7 +182,7 @@ def release_loss(state, hook):
     wait_for("DNS guard re-arm after the filter commit", (state / "rearmed").exists)
     try:
         probe = (state / "first-probe").read_text().strip()
-        assert probe == "-w -t nat -C PREROUTING -j KEENPROXY_DNS", probe
+        assert probe == "1 -w -t nat -C PREROUTING -j KEENPROXY_DNS", probe
         assert_drops(True)
         for protocol in ("notcp", "tcp"):
             dns_answer("192.168.77.1", protocol, "frontend", "0.0.0.0")
@@ -192,7 +193,14 @@ def release_loss(state, hook):
     finally:
         (state / "resume").touch()
     repair_event(cursor, "restored")
-    print("ok   DNS jump loss during guard removal re-arms both DNS drops before the retry")
+    trace = [line.split() for line in (state / "release-trace").read_text().splitlines()]
+    expected = ["filter-commit", "first-probe", "rearm-commit", "retry-entry", "retry-protection", "retry-nat"]
+    steps = [step for step, _ in trace]
+    assert steps == expected, f"expected release trace {expected}, got {steps}"
+    times = {step: int(at) for step, at in trace}
+    rearm_ms = (times["rearm-commit"] - times["filter-commit"]) / 1_000_000
+    print(f"ok   DNS jump loss during guard removal re-arms both DNS drops before the retry "
+          f"(filter commit to re-arm {rearm_ms:.1f} ms)")
 
 
 # Keep one forwarded TCP flow open so transfers use the same socket on both sides of recovery.
@@ -219,6 +227,13 @@ def transfer_on_open_socket(process):
     assert ready and process.stdout.readline() == "ok\n", "WAN transfer on the open TCP flow failed"
 
 
+def assert_lan_tcp_source(label, peer):
+    path = f"/?probe={label}"
+    curl("client", f"http://198.51.100.3{path}", "--interface", "192.168.77.10", "-o", "/dev/null")
+    sources = [line.split()[0] for line in WAN_HTTP_LOG.read_text().splitlines() if f'"GET {path} HTTP/' in line]
+    assert sources == [peer], f"{label} reached WAN from {sources}, expected {peer}"
+
+
 def port_forward(state, hook):
     dnat = ("-i", "veth-w", "-p", "tcp", "-d", "198.51.100.1", "--dport", "18080",
             "-j", "DNAT", "--to-destination", "192.168.77.10:18080")
@@ -237,12 +252,14 @@ def port_forward(state, hook):
             blocked = curl("client", "http://198.51.100.3/", "--interface", "192.168.77.10", check=False)
             assert blocked.returncode == 28, f"new LAN flow was not dropped: {blocked.returncode}"
             repair_event(notify(hook), "restored", missing="TCP", retry=False)
+            assert_lan_tcp_source("recovered-lan", "198.51.100.1")
             transfer_on_open_socket(flow)
             assert curl("wan", FORWARD_URL, "--interface", "198.51.100.5").stdout == FORWARD_BODY
         finally:
             flow.stdin.close()
             firewall("-t", "nat", "-D", "PREROUTING", *dnat)
     print("ok   established and new WAN port forwards transfer during recovery while new LAN TCP is dropped")
+    print("ok   fresh LAN TCP uses restored interception (WAN sees 198.51.100.1)")
 
 
 def firewall_recovery(state, hook):
@@ -264,8 +281,7 @@ def firewall_recovery(state, hook):
                                                                 "192.168.77.11").stdout.strip() == "198.51.100.5")
         # The return route makes a completely unhooked TCP flow succeed at this same destination.
         nat_jump("-D", "TCP")
-        curl("client", "http://198.51.100.3/", "--interface", "192.168.77.10", "-o", "/dev/null")
-        assert WAN_HTTP_LOG.read_text().splitlines()[-1].startswith("192.168.77.10 ")
+        assert_lan_tcp_source("unhooked-lan", "192.168.77.10")
         nat_jump("-I", "TCP")
         dns_answer("198.51.100.3", "tcp", "tcp-hook-first", "0.0.0.0")
         insertion_loss(state, hook, 1)
