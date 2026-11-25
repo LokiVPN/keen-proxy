@@ -38,16 +38,22 @@ func TestSampleProcessUsage(t *testing.T) {
 	if second == nil || second.CPU == nil || *second.CPU != 5 || second.RSSBytes != 25*uint64(os.Getpagesize()) {
 		t.Fatalf("unexpected second sample: %+v", second)
 	}
-	if !sampler.last.CPUKnown || sampler.last.CPU != 100 || sampler.last.MemPct != 50 || sampler.last.MemMB != 256 || first.RSSBytes != 20*uint64(os.Getpagesize()) {
+	if !sampler.last.CPUKnown || sampler.last.CPU != 100 || !sampler.last.MemKnown || sampler.last.MemPct != 50 || sampler.last.MemMB != 256 || first.RSSBytes != 20*uint64(os.Getpagesize()) {
 		t.Fatalf("router totals or earlier snapshot changed: %+v", sampler.last)
 	}
 	write("stat", "cpu invalid\n")
 	sampler.sample(root)
+	if sampler.last.CPUKnown {
+		t.Fatal("a failed router CPU read retained the previous measurement")
+	}
 	if got := sampler.last.Process; got == nil || got.CPU != nil || got.RSSBytes != second.RSSBytes {
 		t.Fatalf("RSS should remain available when router counters are missing: %+v", got)
 	}
 	sample(250, 60, 20, 6, 25)
 	sampler.sample(root)
+	if sampler.last.CPUKnown {
+		t.Fatal("router CPU requires two consecutive valid counter reads")
+	}
 	if sampler.last.Process.CPU != nil {
 		t.Fatal("first valid sample after interruption must establish a new baseline")
 	}
@@ -70,6 +76,9 @@ func TestSampleProcessUsage(t *testing.T) {
 	if sampler.last.Process.CPU != nil {
 		t.Fatal("unchanged router counters must not produce a percentage")
 	}
+	if sampler.last.CPUKnown {
+		t.Fatal("unchanged router counters do not measure router CPU either")
+	}
 	write("self/stat", "truncated")
 	sampler.sample(root)
 	if sampler.last.Process != nil {
@@ -83,6 +92,41 @@ func TestSampleProcessUsage(t *testing.T) {
 	sampler.sample(root)
 	if cpu := sampler.last.Process.CPU; cpu == nil || *cpu != 5 {
 		t.Fatal("a nonzero baseline should work even after a reset")
+	}
+	write("meminfo", "MemTotal: 262144 kB\n")
+	sampler.sample(root)
+	if sampler.last.MemKnown || sampler.last.MemMB != 256 {
+		t.Fatal("partial memory data retained the previous usage measurement")
+	}
+	write("meminfo", "MemTotal: 262144 kB\nMemAvailable: 262144 kB\n")
+	write("stat", "cpu 101 0 0 100\n")
+	sampler.sample(root)
+	if !sampler.last.MemKnown || sampler.last.MemPct != 0 || !sampler.last.CPUKnown || sampler.last.CPU != 0 {
+		t.Fatal("measured zero CPU and RAM usage should remain available")
+	}
+}
+
+func TestRouterMemAvailableIsRequiredForUsage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "meminfo")
+	for _, sample := range []struct {
+		name, available string
+		known           bool
+	}{
+		{"missing", "", false},
+		{"empty", "MemAvailable:\n", false},
+		{"invalid", "MemAvailable: invalid\n", false},
+		{"greater than total", "MemAvailable: 8000 kB\n", false},
+		{"all used", "MemAvailable: 0 kB\n", true},
+		{"none used", "MemAvailable: 4096 kB\n", true},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte("MemTotal: 4096 kB\n"+sample.available), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, known := readMem(path); known != sample.known {
+				t.Errorf("usage available = %t, want %t", known, sample.known)
+			}
+		})
 	}
 }
 

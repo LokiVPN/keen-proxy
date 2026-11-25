@@ -8,6 +8,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
 )
 
@@ -74,6 +75,31 @@ func TrafficMemberTags(manager adapter.OutboundManager, tag string) ([]string, b
 	}
 	slices.Sort(tags)
 	return tags, true
+}
+
+// SelectedTCPLeaf follows declared group members to one concrete outbound.
+// An excluded tag stops the walk before a generated reserve can be unwrapped.
+func SelectedTCPLeaf(manager adapter.OutboundManager, tag string, excluded func(string) bool) (leaf adapter.Outbound, blocked bool) {
+	selected := func(out adapter.Outbound) ([]string, bool) {
+		if excluded(out.Tag()) {
+			blocked = true
+			return nil, true
+		}
+		members, group := targetMembers(out)
+		if !group {
+			return nil, false
+		}
+		if selector, ok := out.(adapter.OutboundGroup); ok {
+			if next := selector.Selected(N.NetworkTCP); next != nil && slices.Contains(members, next.Tag()) {
+				return []string{next.Tag()}, true
+			}
+		}
+		return nil, true
+	}
+	for out := range targetLeaves(manager, tag, selected) {
+		return out, false
+	}
+	return nil, blocked
 }
 
 func trafficMembers(out adapter.Outbound) ([]string, bool) {

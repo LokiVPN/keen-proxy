@@ -37,6 +37,7 @@ type managementDaemon interface {
 	ConnectionTraffic(id string) (int, []stats.Point)
 	CheckConnectionIfCurrent(ctx context.Context, id, revision string) error
 	SystemStats() stats.System
+	DiagnosticNode(tag string) daemon.DiagnosticNode
 	DiagnosticTargetIfCurrent(ctx context.Context, target, revision string) (daemon.DiagnosticReport, error)
 }
 

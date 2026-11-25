@@ -11,8 +11,9 @@ import (
 // System contains router resource usage displayed in the panel.
 type System struct {
 	CPU      float64       `json:"cpu"`     // %
-	CPUKnown bool          `json:"-"`       // at least two comparable samples
+	CPUKnown bool          `json:"-"`       // a delta for the current sample
 	MemPct   float64       `json:"mem_pct"` // Used memory percentage.
+	MemKnown bool          `json:"-"`       // both memory counters were read
 	MemMB    int           `json:"mem_mb"`  // Total memory in MiB.
 	Process  *ProcessUsage `json:"process,omitempty"`
 }
@@ -33,20 +34,23 @@ type systemSampler struct {
 
 func (s *systemSampler) sample(root string) {
 	idle, total, ok := readCPU(filepath.Join(root, "stat"))
-	if ok {
-		if s.lastTotal > 0 && total > s.lastTotal && idle >= s.lastIdle {
-			elapsed := total - s.lastTotal
-			busy := elapsed - min(elapsed, idle-s.lastIdle)
-			s.last.CPU = round1(float64(busy) / float64(elapsed) * 100)
-			s.last.CPUKnown = true
+	var sample System
+	if ok && s.lastTotal > 0 && total > s.lastTotal && idle >= s.lastIdle {
+		elapsed, idleDelta := total-s.lastTotal, idle-s.lastIdle
+		if idleDelta <= elapsed {
+			sample.CPU = round1(float64(elapsed-idleDelta) / float64(elapsed) * 100)
+			sample.CPUKnown = true
 		}
-		s.lastIdle, s.lastTotal = idle, total
 	}
-	s.last.Process = s.process.sample(filepath.Join(root, "self", "stat"), total)
-	if total, avail, ok := readMem(filepath.Join(root, "meminfo")); ok && total > 0 {
-		s.last.MemPct = round1(float64(total-avail) / float64(total) * 100)
-		s.last.MemMB = int(total / 1024)
+	s.lastIdle, s.lastTotal = idle, total
+	sample.Process = s.process.sample(filepath.Join(root, "self", "stat"), total)
+	mem, available, known := readMem(filepath.Join(root, "meminfo"))
+	sample.MemMB = int(mem / 1024)
+	if known {
+		sample.MemPct = round1(float64(mem-available) / float64(mem) * 100)
+		sample.MemKnown = true
 	}
+	s.last = sample
 }
 
 func round1(v float64) float64 { return float64(int(v*10+0.5)) / 10 }
@@ -80,7 +84,8 @@ func readCPU(path string) (idle, total uint64, ok bool) {
 	return idle, total, true
 }
 
-// readMem reads MemTotal and MemAvailable in procfs KiB units; missing totals mark the sample invalid.
+// readMem reads the procfs counters in KiB. Used memory requires a valid
+// total and a current MemAvailable value, which can be zero.
 func readMem(path string) (total, avail uint64, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -88,18 +93,25 @@ func readMem(path string) (total, avail uint64, ok bool) {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
+	haveAvailable := false
 	for sc.Scan() {
 		k, v, found := strings.Cut(sc.Text(), ":")
-		if !found {
+		if !found || (k != "MemTotal" && k != "MemAvailable") {
 			continue
 		}
-		n, _ := strconv.ParseUint(strings.Fields(v)[0], 10, 64)
-		switch k {
-		case "MemTotal":
+		fields := strings.Fields(v)
+		if len(fields) == 0 {
+			continue
+		}
+		n, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil {
+			continue
+		}
+		if k == "MemTotal" {
 			total = n
-		case "MemAvailable":
-			avail = n
+		} else {
+			avail, haveAvailable = n, true
 		}
 	}
-	return total, avail, total > 0
+	return total, avail, sc.Err() == nil && total > 0 && haveAvailable && avail <= total
 }

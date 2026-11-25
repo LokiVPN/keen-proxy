@@ -21,7 +21,7 @@ type diagnosticTicket struct {
 	owner          [sha256.Size]byte
 	expires        time.Time
 	revision       string
-	probes         []DiagnosticProbe
+	check          DiagnosticCheckResult
 	target         string
 }
 

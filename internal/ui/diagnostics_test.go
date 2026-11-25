@@ -14,6 +14,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 	"github.com/ordo-systems/keen-proxy/internal/update"
 )
 
@@ -50,6 +51,9 @@ type diagnosticUpdate struct {
 type diagnosticsFixture struct {
 	fakeDeps
 	state     DiagnosticStatus
+	subs      []AppliedSubscription
+	pinned    DiagnosticNode
+	checkedAt time.Time
 	probes    []DiagnosticProbe
 	probeErr  error
 	checked   []string
@@ -61,9 +65,22 @@ type diagnosticsFixture struct {
 
 func (f *diagnosticsFixture) DiagnosticStatus(context.Context) DiagnosticStatus { return f.state }
 
-func (f *diagnosticsFixture) CheckDiagnosticTarget(_ context.Context, target, _ string) ([]DiagnosticProbe, error) {
+func (f *diagnosticsFixture) Subscriptions() []AppliedSubscription { return f.subs }
+
+func (f *diagnosticsFixture) DiagnosticNode(string) DiagnosticNode { return f.pinned }
+
+func (f *diagnosticsFixture) CheckDiagnosticTarget(_ context.Context, target, _ string) (DiagnosticCheckResult, error) {
 	f.checked = append(f.checked, target)
-	return f.probes, f.probeErr
+	result := DiagnosticCheckResult{Probes: f.probes, CheckedAt: f.checkedAt}
+	for _, sub := range f.subs {
+		for i, node := range sub.Nodes {
+			if node.ID == sub.ActiveNode {
+				result.Node = DiagnosticNode{Name: node.Name, Position: i + 1}
+				break
+			}
+		}
+	}
+	return result, f.probeErr
 }
 
 func (f *diagnosticsFixture) UpdateStatus() update.Status { return f.updates }
@@ -107,7 +124,7 @@ func TestDiagnosticsStateRendersDaemonFactsWithPartialResourceSamples(t *testing
 	f := &diagnosticsFixture{state: DiagnosticStatus{
 		Started: at.Add(-time.Minute), AppliedAt: at, Core: true, Firewall: true, DNS: true,
 		Mode: "tproxy", GeoLoaded: true, GeoBuilt: "2026-11-01", Restorations: 2,
-		System: stats.System{CPU: 0, CPUKnown: true, Process: &stats.ProcessUsage{RSSBytes: 46 << 20}},
+		System: stats.System{CPU: 0, CPUKnown: true, MemMB: 256, MemPct: 100, Process: &stats.ProcessUsage{RSSBytes: 46 << 20}},
 		Build:  "KeenProxy v0.11.0 · arm64 · full",
 	}}
 	w := diagnosticRequest(diagnosticsHandler(f), http.MethodGet, "/diagnostics", "owner", nil)
@@ -119,6 +136,74 @@ func TestDiagnosticsStateRendersDaemonFactsWithPartialResourceSamples(t *testing
 		"CPU 0 % · RAM \u2014", "CPU \u2014 · RAM 46 MiB",
 		"KeenProxy v0.11.0 · arm64 · full", `data-copy="diagnostics-build"`,
 	)
+	f.state.System.MemKnown, f.state.System.MemPct = true, 0
+	w = diagnosticRequest(diagnosticsHandler(f), http.MethodGet, "/diagnostics", "owner", nil)
+	assertContains(t, w.Body.String(), "CPU 0 % · RAM 0 %")
+}
+
+func TestDiagnosticsPinnedLabelHidesCredentialsForBothRoles(t *testing.T) {
+	const secret = "A7E68FBA-CD36-4079-9C4A-FA7B5C8D93A2"
+	node := strings.Repeat("a", 32)
+	cfg := &model.Config{
+		Networks:      []model.Network{{Name: "Home", Target: model.ManagedTarget("main", node)}},
+		Subscriptions: []subscription.Source{{ID: "main"}},
+	}
+	f := &diagnosticsFixture{fakeDeps: fakeDeps{config: cfg}, pinned: DiagnosticNode{Position: 2}, subs: []AppliedSubscription{
+		{ID: "main", Nodes: []SubscriptionNode{{ID: strings.Repeat("b", 32), Name: "First"}, {ID: node, Name: "Region " + secret}}},
+	}}
+	for _, role := range []Role{RoleManage, RoleView} {
+		h := New(f, Options{Role: func(*http.Request) Role { return role }})
+		w := diagnosticRequest(h, http.MethodGet, "/diagnostics", "", nil)
+		body := w.Body.String()
+		if w.Code != http.StatusOK || strings.Contains(body, secret) || !strings.Contains(body, `value="Node 2"`) {
+			t.Errorf("role %d did not get a generic pinned label", role)
+		}
+	}
+}
+
+func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
+	first, second := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	cfg := &model.Config{
+		Networks:      []model.Network{{Name: "Home", Target: model.ManagedTarget("main", "auto")}},
+		Subscriptions: []subscription.Source{{ID: "main"}},
+	}
+	f := &diagnosticsFixture{
+		fakeDeps: fakeDeps{config: cfg}, probes: []DiagnosticProbe{{Kind: "http", OK: true, LatencyMS: 38}},
+		checkedAt: time.Date(2026, 11, 1, 10, 2, 0, 0, time.Local),
+		subs: []AppliedSubscription{
+			{ID: "main", ActiveNode: first, Nodes: []SubscriptionNode{{ID: first, Name: "First region"}, {ID: second, Name: "Second region"}}},
+		},
+	}
+	h := diagnosticsHandler(f)
+	form := url.Values{"rev": {Revision(cfg)}}
+	firstCheck := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", form)
+	if firstCheck.Code != http.StatusSeeOther {
+		t.Fatalf("first check returned HTTP %d", firstCheck.Code)
+	}
+	f.subs[0].ActiveNode = second
+	f.checkedAt = f.checkedAt.Add(time.Minute)
+	secondCheck := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", form)
+	if secondCheck.Code != http.StatusSeeOther {
+		t.Fatalf("second check returned HTTP %d", secondCheck.Code)
+	}
+	for _, check := range []struct {
+		response          *httptest.ResponseRecorder
+		want, other, time string
+	}{
+		{firstCheck, "First region", "Second region", "10:02"},
+		{secondCheck, "Second region", "First region", "10:03"},
+	} {
+		location := check.response.Header().Get("Location")
+		fragment := strings.Replace(location, "/diagnostics?", "/fragments/diagnostics/check?", 1)
+		for _, path := range []string{location, fragment} {
+			w := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
+			body := w.Body.String()
+			if w.Code != http.StatusOK || !strings.Contains(body, check.want) || strings.Contains(body, check.other) ||
+				!strings.Contains(body, check.time) {
+				t.Errorf("the result for %s lost the actual tested identity", check.want)
+			}
+		}
+	}
 }
 
 func TestDiagnosticsChecksOnlyCurrentMainTarget(t *testing.T) {
@@ -171,6 +256,12 @@ func TestDiagnosticsChecksOnlyCurrentMainTarget(t *testing.T) {
 		t.Fatal("connection check error was not handled with a fixed message")
 	}
 	assertContains(t, failed.Body.String(), "The main connection could not be checked.")
+	f.probeErr = ErrDiagnosticPath
+	refused := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", form)
+	if refused.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("dependent path refusal HTTP %d, want 422", refused.Code)
+	}
+	assertContains(t, refused.Body.String(), "This check requires a connection that can be dialed without a detour or reserve.")
 }
 
 func TestDiagnosticsRequiresConfirmationBeforeStartingUpdates(t *testing.T) {

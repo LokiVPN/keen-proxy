@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/ordo-systems/keen-proxy/internal/api"
+	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/ui"
 	"github.com/ordo-systems/keen-proxy/internal/update"
 )
@@ -32,16 +34,23 @@ func (d uiDeps) DiagnosticStatus(ctx context.Context) ui.DiagnosticStatus {
 	}
 }
 
-func (d uiDeps) CheckDiagnosticTarget(ctx context.Context, target, revision string) ([]ui.DiagnosticProbe, error) {
+func (d uiDeps) DiagnosticNode(target string) ui.DiagnosticNode {
+	return ui.DiagnosticNode(d.daemon.DiagnosticNode(target))
+}
+
+func (d uiDeps) CheckDiagnosticTarget(ctx context.Context, target, revision string) (ui.DiagnosticCheckResult, error) {
 	report, err := d.daemon.DiagnosticTargetIfCurrent(ctx, target, revision)
+	if errors.Is(err, engine.ErrDiagnosticPath) {
+		return ui.DiagnosticCheckResult{}, ui.ErrDiagnosticPath
+	}
 	if err != nil {
-		return nil, err
+		return ui.DiagnosticCheckResult{}, err
 	}
 	probes := make([]ui.DiagnosticProbe, 0, len(report.Results))
 	for _, result := range report.Results {
 		probes = append(probes, ui.DiagnosticProbe{Kind: result.Kind, OK: result.OK, LatencyMS: result.Latency})
 	}
-	return probes, nil
+	return ui.DiagnosticCheckResult{Probes: probes, Node: ui.DiagnosticNode(report.Node), CheckedAt: report.CheckedAt}, nil
 }
 
 func (d uiDeps) SupportBundle(w http.ResponseWriter, r *http.Request) {

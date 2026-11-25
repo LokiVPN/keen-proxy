@@ -54,7 +54,7 @@ func diagnosticStateRows(status DiagnosticStatus, lang string, text map[string]s
 	}
 	system := status.System
 	routerCPU := diagnosticPercent(system.CPU, system.CPUKnown, lang, text)
-	routerRAM := diagnosticPercent(system.MemPct, system.MemMB > 0, lang, text)
+	routerRAM := diagnosticPercent(system.MemPct, system.MemKnown, lang, text)
 	processCPU, processRAM := diagnosticUnknown, diagnosticUnknown
 	if process := system.Process; process != nil {
 		if process.CPU != nil {
@@ -116,8 +116,7 @@ func (p pages) diagnosticTargetLabel(cfg *model.Config, text map[string]string) 
 		return text["overview_direct"], true
 	case cfg.HasManagedTarget(target):
 		id, mode, _ := model.ParseManagedTarget(target)
-		sub := appliedSubscriptionFor(p.deps.Subscriptions(), id)
-		label := text["diag_subscription_node"]
+		var label string
 		switch mode {
 		case "auto":
 			label = text["diag_automatic_node"]
@@ -128,13 +127,9 @@ func (p pages) diagnosticTargetLabel(cfg *model.Config, text map[string]string) 
 		case model.SubscriptionStickySession:
 			label = text["overview_sticky_session"]
 		default:
-			for _, node := range sub.Nodes {
-				if node.ID == mode {
-					label = cmp.Or(node.Name, label)
-					break
-				}
-			}
+			return cmp.Or(diagnosticNodeName(p.deps.DiagnosticNode(target), text), text["diag_subscription_node"]), true
 		}
+		sub := appliedSubscriptionFor(p.deps.Subscriptions(), id)
 		return sub.title(text) + " · " + label, true
 	default:
 		for _, conn := range cfg.Connections {
@@ -144,6 +139,29 @@ func (p pages) diagnosticTargetLabel(cfg *model.Config, text map[string]string) 
 		}
 	}
 	return diagnosticUnknown, false
+}
+
+func diagnosticNodeName(node DiagnosticNode, text map[string]string) string {
+	if node.Name != "" {
+		return node.Name
+	}
+	if node.Position > 0 {
+		return fmt.Sprintf(text["diag_generic_node"], node.Position)
+	}
+	return ""
+}
+
+type diagnosticResultView struct {
+	Node, Checked string
+	Rows          []diagnosticRow
+}
+
+func diagnosticResult(result DiagnosticCheckResult, text map[string]string) diagnosticResultView {
+	view := diagnosticResultView{Node: diagnosticNodeName(result.Node, text), Rows: diagnosticProbeRows(result.Probes, text)}
+	if !result.CheckedAt.IsZero() {
+		view.Checked = overviewTimestamp(result.CheckedAt, text)
+	}
+	return view
 }
 
 func diagnosticProbeRows(probes []DiagnosticProbe, text map[string]string) []diagnosticRow {

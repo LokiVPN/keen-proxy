@@ -10,7 +10,21 @@ import (
 	"strings"
 
 	"github.com/gofrs/uuid/v5"
+	"github.com/ordo-systems/keen-proxy/internal/links"
 )
+
+// SafeLinkLabel checks a provider-redacted name as well as its original
+// spelling, so truncation cannot make a repeated credential look safe.
+func SafeLinkLabel(link, redacted string) string {
+	if redacted == "" {
+		return ""
+	}
+	profile, err := links.Parse(link)
+	if err != nil || repeatsProfileString(profileDisplayStrings(profile), nil, links.Name(link), redacted) {
+		return ""
+	}
+	return redacted
+}
 
 type profileString struct {
 	path  []string

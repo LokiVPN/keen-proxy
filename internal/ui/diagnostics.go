@@ -15,6 +15,9 @@ const (
 	diagnosticsFormSize = 4 << 10
 )
 
+// ErrDiagnosticPath maps a reserved or dependent dial to fixed page copy.
+var ErrDiagnosticPath = errors.New("diagnostic path requires a detour or reserve")
+
 func (p pages) diagnosticsGet(w http.ResponseWriter, r *http.Request) {
 	if !p.canReadDiagnostics(w, r) {
 		return
@@ -40,7 +43,7 @@ func (p pages) renderDiagnostics(w http.ResponseWriter, r *http.Request, status 
 	if query != "" {
 		data.Diagnostics.FragmentURL = diagnosticsFragment + query
 	}
-	data.DiagnosticProbes = diagnosticProbeRows(result, data.Text)
+	data.DiagnosticResult = diagnosticResult(result, data.Text)
 	render(w, r, status, "diagnostics", data)
 }
 
@@ -70,16 +73,18 @@ func (p pages) diagnosticsCheck(w http.ResponseWriter, r *http.Request) {
 	rev := r.PostForm.Get("rev")
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
-	probes, err := p.deps.CheckDiagnosticTarget(ctx, network.Target, rev)
+	result, err := p.deps.CheckDiagnosticTarget(ctx, network.Target, rev)
 	switch {
 	case errors.Is(err, model.ErrConfigChanged):
 		p.renderDiagnostics(w, r, http.StatusConflict, "revision_changed")
+	case errors.Is(err, ErrDiagnosticPath):
+		p.renderDiagnostics(w, r, http.StatusUnprocessableEntity, "diag_check_detour")
 	case err != nil:
 		p.renderDiagnostics(w, r, http.StatusServiceUnavailable, "diag_check_unavailable")
 	default:
 		token := p.diagnosticTickets.put(diagnosticTicket{
 			owner: p.diagnosticsOwner(r), purpose: diagnosticsFragment,
-			revision: rev, probes: probes,
+			revision: rev, check: result,
 		})
 		redirectWithFlash(w, r, diagnosticsPath+"?result="+token, "flash_diag_checked")
 	}
@@ -91,18 +96,18 @@ func (p pages) diagnosticsCheckFragment(w http.ResponseWriter, r *http.Request) 
 	}
 	data := p.opts.pageData(r)
 	result, _ := p.lastDiagnosticCheck(r, Revision(p.deps.Config()))
-	data.DiagnosticProbes = diagnosticProbeRows(result, data.Text)
+	data.DiagnosticResult = diagnosticResult(result, data.Text)
 	render(w, r, http.StatusOK, "diagnostics-probes", data)
 }
 
-func (p pages) lastDiagnosticCheck(r *http.Request, revision string) ([]DiagnosticProbe, string) {
+func (p pages) lastDiagnosticCheck(r *http.Request, revision string) (DiagnosticCheckResult, string) {
 	if p.role(r) == RoleManage {
 		token := r.URL.Query().Get("result")
 		if ticket, ok := p.diagnosticTickets.get(token, diagnosticsFragment, p.diagnosticsOwner(r)); ok && ticket.revision == revision {
-			return ticket.probes, "?result=" + ticket.token
+			return ticket.check, "?result=" + ticket.token
 		}
 	}
-	return nil, ""
+	return DiagnosticCheckResult{}, ""
 }
 
 func (p pages) diagnosticsBundle(w http.ResponseWriter, r *http.Request) {

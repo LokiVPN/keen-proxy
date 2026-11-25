@@ -12,7 +12,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/compile"
+	"github.com/ordo-systems/keen-proxy/internal/connectionimport"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
@@ -30,6 +33,15 @@ type DiagnosticResult struct {
 type DiagnosticReport struct {
 	Connection string             `json:"connection"`
 	Results    []DiagnosticResult `json:"results"`
+	Node       DiagnosticNode     `json:"-"`
+	CheckedAt  time.Time          `json:"-"`
+}
+
+// DiagnosticNode projects one subscription member from the applied catalog.
+// A private name is blank and the position supplies its generic display label.
+type DiagnosticNode struct {
+	Name     string
+	Position int
 }
 
 // ErrDiagnosticConnection means the requested profile is absent from applied runtime state.
@@ -95,14 +107,58 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 		d.mu.Unlock()
 		return DiagnosticReport{}, ErrDiagnosticConnection
 	}
-	out, engineContext, running := d.eng.Outbound(tag)
+	out, engineContext, err := d.eng.DiagnosticLeaf(tag, d.diagnosticReserveLocked)
+	var node subscription.Node
+	var position int
+	if out != nil {
+		node, position = d.diagnosticNodeLocked(out.Tag())
+	}
 	d.mu.Unlock()
 	report := DiagnosticReport{Connection: tag}
-	if !running {
+	if err != nil {
+		return report, err
+	}
+	if out == nil {
 		return report, ErrDiagnosticConnection
 	}
+	report.Connection = out.Tag()
+	report.Node = diagnosticNode(node, position)
+	report.CheckedAt = time.Now()
 	report.Results = diagnosticProfileChecks(ctx, engineContext, out.DialContext)
 	return report, nil
+}
+
+// DiagnosticNode reads the same protected display label used by the report.
+func (d *Daemon) DiagnosticNode(tag string) DiagnosticNode {
+	d.mu.Lock()
+	node, position := d.diagnosticNodeLocked(tag)
+	d.mu.Unlock()
+	return diagnosticNode(node, position)
+}
+
+func (d *Daemon) diagnosticNodeLocked(tag string) (subscription.Node, int) {
+	if id, node, managed := model.ParseManagedTarget(tag); managed {
+		for index, entry := range d.subscriptions.states[id].snapshot.Nodes {
+			if entry.ID == node {
+				return entry, index + 1
+			}
+		}
+	}
+	return subscription.Node{}, 0
+}
+
+func diagnosticNode(node subscription.Node, position int) DiagnosticNode {
+	return DiagnosticNode{connectionimport.SafeLinkLabel(node.Link, node.Name), position}
+}
+
+// A nested routing group must never unwrap an installed reserve relay.
+func (d *Daemon) diagnosticReserveLocked(tag string) bool {
+	if _, node, managed := model.ParseManagedTarget(tag); managed {
+		return node == "auto" || model.IsSubscriptionBalance(node)
+	}
+	return slices.ContainsFunc(d.cfg.Connections, func(c model.Connection) bool {
+		return c.ID == tag && c.Disabled
+	}) || slices.ContainsFunc(d.chains, func(chain compile.FailoverChain) bool { return chain.Tag == tag })
 }
 
 // diagnosticOutboundLocked bypasses the compiler's reserve aliases. For a

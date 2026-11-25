@@ -211,7 +211,7 @@ The change bar appears whenever the draft differs from the saved configuration. 
 
 Open **Diagnostics → State** to see whether the core and DNS listener are running, the interception mode, when configuration was applied, the country database, firewall repairs since startup, and CPU and RAM for the router and KeenProxy.
 
-Choose **Run check** to test HTTP, HTTPS with certificate verification, and a 64 KiB transfer through the applied main connection. Automatic selection and balancing test one subscription node for all three checks. The check leaves the active route selection unchanged and bypasses its reserve. The DNS row describes the listener. Use [a test from the affected device](network-flow.md#how-to-trace-one-request) to verify its DNS and traffic paths.
+Choose **Run check** to test HTTP, HTTPS with certificate verification, and a 64 KiB transfer through the applied main connection. The check uses a single selected outbound. It requires an outbound that can be dialed without a detour or reserve. The results show the subscription node tested and the time of the check. The DNS row describes the listener. Use [a test from the affected device](network-flow.md#how-to-trace-one-request) to verify its DNS and traffic paths.
 
 ### Export journals and diagnostics { #export-journals }
 

@@ -40,7 +40,7 @@ type pageData struct {
 	ConnectionDetail        *connectionDetailPage
 	ConnectionWizard        *connectionWizardPage
 	Diagnostics             diagnosticsPage
-	DiagnosticProbes        []diagnosticRow
+	DiagnosticResult        diagnosticResultView
 	UpdateConfirmation      updateConfirmationView
 	SubscriptionNodes       subscriptionNodesView
 	Traffic                 trafficView

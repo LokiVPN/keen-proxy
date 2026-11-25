@@ -93,6 +93,26 @@ func staticOutboundGraph(ctx context.Context, config []byte) (map[string][]strin
 	return graph, nil
 }
 
+// independentDiagnosticLeaf also checks decoded references that a protocol
+// may use outside its runtime startup dependency list.
+func independentDiagnosticLeaf(ctx context.Context, config []byte, tag string) bool {
+	options, err := decodeOptions(ctx, config)
+	if err != nil {
+		return false
+	}
+	for _, profile := range options.Outbounds {
+		if profile.Tag == tag {
+			return len(staticOutboundReferences(profile.Options)) == 0
+		}
+	}
+	for _, profile := range options.Endpoints {
+		if profile.Tag == tag {
+			return len(staticOutboundReferences(profile.Options)) == 0
+		}
+	}
+	return false
+}
+
 func staticOutboundReferences(options any) []string {
 	var tags []string
 	walkProfileOptions(reflect.ValueOf(options), func(value reflect.Value) bool {

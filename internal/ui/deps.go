@@ -38,7 +38,8 @@ type Deps interface {
 	CheckConnection(ctx context.Context, id, revision string) error
 	ConnectionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error)
 	DiagnosticStatus(context.Context) DiagnosticStatus
-	CheckDiagnosticTarget(ctx context.Context, target, revision string) ([]DiagnosticProbe, error)
+	DiagnosticNode(target string) DiagnosticNode
+	CheckDiagnosticTarget(ctx context.Context, target, revision string) (DiagnosticCheckResult, error)
 	SupportBundle(http.ResponseWriter, *http.Request)
 	UpdateStatus() update.Status
 	CheckUpdates(context.Context)
@@ -63,6 +64,20 @@ type DiagnosticProbe struct {
 	Kind      string
 	OK        bool
 	LatencyMS int64
+}
+
+// DiagnosticNode is a subscription member's protected name and position at
+// the time of observation. A name withheld for privacy is empty.
+type DiagnosticNode struct {
+	Name     string
+	Position int
+}
+
+// DiagnosticCheckResult ties probe timings to the member actually dialed.
+type DiagnosticCheckResult struct {
+	Probes    []DiagnosticProbe
+	Node      DiagnosticNode
+	CheckedAt time.Time
 }
 
 // DiscoveredDevice is an observation from the LAN snapshot. The applied
