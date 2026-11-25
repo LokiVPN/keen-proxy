@@ -211,6 +211,46 @@ func TestConnectionDetailMasksBinaryCredentialInInternationalHostname(t *testing
 	assertContains(t, w.Body.String(), `<pre class="detail-profile"`, `&#34;auth&#34;: &#34;`+encoded+`&#34;`)
 }
 
+func TestConnectionDetailMasksCredentialSpellings(t *testing.T) {
+	const id = "a6518951-4211-466c-a3c4-d58d896aae6e"
+	const uuidSNI = id + ".example.test"
+	for _, tc := range []struct {
+		name, kind, sni   string
+		field, credential string
+	}{
+		{"uppercase VLESS UUID", "vless", uuidSNI, "uuid", strings.ToUpper(id)},
+		{"compact VMess UUID", "vmess", uuidSNI, "uuid", strings.ReplaceAll(strings.ToUpper(id), "-", "")},
+		{"ASCII case in binary Hysteria auth", "hysteria", "caf\u00e9-mAsk.example.test", "auth",
+			base64.StdEncoding.EncodeToString([]byte("\xa9-MaSK.example.test"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDetailFixture(t)
+			f.cfg.Connections[0] = model.Connection{
+				ID: "old", Name: "Office", Type: model.ConnSingBox,
+				Outbound: map[string]any{
+					"type": tc.kind, "server": "vpn.example.test", "server_port": 443, tc.field: tc.credential,
+					"tls": map[string]any{"enabled": true, "server_name": tc.sni},
+				},
+			}
+			for _, request := range []struct {
+				role  Role
+				query string
+			}{
+				{RoleManage, ""},
+				{RoleView, "?reveal=1"},
+			} {
+				w := setupRequest(New(f, setupTestOptions(request.role)), "/connections/id/old"+request.query, nil)
+				requireDetailStatus(t, w, http.StatusOK)
+				body := w.Body.String()
+				if !strings.Contains(body, `<dt>SNI</dt><dd class="clip" title="Hidden">Hidden</dd>`) ||
+					strings.Contains(body, tc.sni) || strings.Contains(body, tc.credential) {
+					t.Errorf("SNI masking failed for role %v", request.role)
+				}
+			}
+		})
+	}
+}
+
 func TestConnectionDetailSelectorListsBuiltInMembers(t *testing.T) {
 	f := newDetailFixture(t)
 	f.cfg.Connections[1] = model.Connection{ID: "backup", Name: "Selector", Type: model.ConnSingBox,

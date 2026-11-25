@@ -1,12 +1,15 @@
 package connectionimport
 
 import (
+	"bytes"
 	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/gofrs/uuid/v5"
 )
 
 type profileString struct {
@@ -43,7 +46,7 @@ func profileDisplayStrings(profile any) []profileString {
 				forms = append(forms, profileStringForms(cookie.Value)...)
 			}
 		}
-		leaves = append(leaves, profileString{path: slices.Clone(path), forms: forms})
+		leaves = append(leaves, profileString{path: slices.Clone(path), forms: profileComparisonForms(forms)})
 	})
 	return leaves
 }
@@ -94,9 +97,38 @@ func profileStringForms(value string) []string {
 	return forms
 }
 
-// repeatsProfileString excludes only the source of the displayed fact. It
-// compares raw and decoded forms bytewise because credentials can contain
-// arbitrary bytes, including a partial UTF-8 sequence.
+// profileComparisonForms adds spellings without changing the original bytes.
+// The UUID parser accepts the same representations as the core's clients.
+func profileComparisonForms(forms []string) []string {
+	for _, form := range forms {
+		folded := foldProfileASCII(form)
+		if folded != form {
+			forms = append(forms, folded)
+		}
+		if id, err := uuid.FromString(form); err == nil {
+			if canonical := id.String(); canonical != folded {
+				forms = append(forms, canonical)
+			}
+		}
+	}
+	return forms
+}
+
+// Fold only ASCII runs so UTF-8 and arbitrary high bytes keep their spelling.
+func foldProfileASCII(form string) string {
+	start := strings.IndexAny(form, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	if start < 0 {
+		return form
+	}
+	folded := []byte(form)
+	for ascii := range bytes.FieldsFuncSeq(folded[start:], func(r rune) bool { return r > 0x7f }) {
+		copy(ascii, bytes.ToLower(ascii))
+	}
+	return string(folded)
+}
+
+// repeatsProfileString checks the fact's forms against every other leaf.
+// Bytewise containment works even when a credential divides a UTF-8 sequence.
 func repeatsProfileString(leaves []profileString, source []string, values ...string) bool {
 	var forms []string
 	for _, value := range values {
@@ -104,6 +136,7 @@ func repeatsProfileString(leaves []profileString, source []string, values ...str
 			forms = append(forms, profileStringForms(value)...)
 		}
 	}
+	forms = profileComparisonForms(forms)
 	for _, leaf := range leaves {
 		if len(source) > 0 && len(leaf.path) >= len(source) && slices.Equal(leaf.path[:len(source)], source) {
 			continue
