@@ -13,21 +13,51 @@ import (
 
 const firewallVerifyRetryDelay = 250 * time.Millisecond
 
-// installFirewall installs the current plan and makes shutdown responsible for its cleanup.
-// A failed update stays pending even when the previous entry jumps remain installed.
+// setFirewallPlan carries the guarded filter through config and neighbor
+// recompiles after a guarded recovery in this daemon run.
+func (d *Daemon) setFirewallPlan(plan netfilter.Plan) {
+	plan.GuardUnintercepted = d.plan.GuardUnintercepted
+	d.plan = plan
+}
+
+// installFirewall installs a plan during Apply or a neighbor update. Guarded
+// installs always verify their handoff before reporting success.
 func (d *Daemon) installFirewall(ctx context.Context) error {
+	after, err := d.applyFirewall(ctx, false)
+	if after != nil {
+		return errors.Join(fmt.Errorf("verify guarded interception: %s", after.Error), err)
+	}
+	return err
+}
+
+// applyFirewall keeps the guard plan until final verification succeeds. A
+// failed install stays pending even when residual entry jumps pass checks.
+func (d *Daemon) applyFirewall(ctx context.Context, verify bool) (*netfilter.CheckFailure, error) {
+	f := d.opt.Firewall
+	guarded := d.planGuard != nil
 	var err error
-	if d.planGuard == nil {
-		err = d.opt.Firewall.Apply(ctx, d.plan)
-	} else {
-		err = d.opt.Firewall.ApplyProtected(ctx, d.plan, *d.planGuard)
+	if !guarded {
+		err = f.Apply(ctx, d.plan)
+	} else if err = d.armRollbackGuard(ctx); err == nil {
+		err = f.ApplyProtected(ctx, d.plan)
 	}
 	if err != nil {
 		d.planPending = true
-		return err
+		return nil, err
 	}
+	var after *netfilter.CheckFailure
+	if verify || guarded {
+		after = f.Check(ctx, d.plan)
+	}
+	if guarded && after != nil {
+		d.planOn, d.planPending = false, true
+		return after, d.armRollbackGuard(ctx)
+	}
+	// A firmware rebuild can remove a jump after its check has passed.
+	// Keep the scoped drops active across the next ordinary repair as well.
+	d.plan.GuardUnintercepted = d.plan.GuardUnintercepted || guarded
 	d.planOn, d.planPending, d.planGuard = true, false, nil
-	return nil
+	return after, nil
 }
 
 // protectPreviousPlan uses the last known protected sources when a normal
@@ -40,9 +70,18 @@ func (d *Daemon) protectPreviousPlan(previous netfilter.Plan) error {
 		d.planGuard = &previous
 	}
 	d.planOn = false
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	return d.armRollbackGuard(context.Background())
+}
+
+// armRollbackGuard installs the actual drops. The desired plan and shared
+// filter jumps alone cannot prove that a previous guard write succeeded.
+func (d *Daemon) armRollbackGuard(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return d.opt.Firewall.Protect(ctx, *d.planGuard)
+	if err := d.opt.Firewall.Protect(ctx, *d.planGuard); err != nil {
+		return fmt.Errorf("install rollback guard: %w", err)
+	}
+	return nil
 }
 
 func (d *Daemon) detachStartupJumps() error {
@@ -53,10 +92,18 @@ func (d *Daemon) detachStartupJumps() error {
 	return d.opt.Firewall.Detach(ctx, netfilter.Plan{Mode: model.InterceptTProxy})
 }
 
-// checkFirewall runs under d.mu. An installed or pending plan can be repaired;
-// a pending plan must be applied even if residual entry jumps pass inspection.
+// checkFirewall runs under d.mu. A guard can be maintained even when the
+// saved interception plan is waiting on its runtime dependencies.
 func (d *Daemon) checkFirewall(ctx context.Context, trigger string) {
-	if ctx.Err() != nil || (!d.planOn && !d.planPending) {
+	if ctx.Err() != nil {
+		return
+	}
+	if !d.planOn && !d.planPending {
+		if d.planGuard != nil {
+			if err := d.armRollbackGuard(ctx); err != nil && ctx.Err() == nil {
+				d.log.Error("maintain rollback guard", "trigger", trigger, "err", err)
+			}
+		}
 		return
 	}
 	started := time.Now()
@@ -97,16 +144,14 @@ func (d *Daemon) repairFirewall(ctx context.Context, event *journal.FirewallEven
 }
 
 func (d *Daemon) applyAndVerifyFirewall(ctx context.Context, event *journal.FirewallEvent) {
-	// Evidence describes the final attempt, which may fail before verification.
-	event.After = nil
-	if err := d.installFirewall(ctx); err != nil {
+	after, err := d.applyFirewall(ctx, true)
+	event.After, event.ApplyError, event.Restore = journalFirewallCheck(after), "", nil
+	event.Outcome = "restored"
+	if err != nil {
 		event.Outcome, event.ApplyError = "apply_failed", err.Error()
 		event.Restore = journalRestoreFailure(err)
-		return
 	}
-	event.After = journalFirewallCheck(d.opt.Firewall.Check(ctx, d.plan))
-	event.Outcome = "restored"
-	if event.After != nil {
+	if after != nil {
 		event.Outcome = "verify_failed"
 	}
 }

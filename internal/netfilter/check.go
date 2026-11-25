@@ -20,11 +20,7 @@ type CheckFailure struct {
 // Check inspects required entry jumps and retains the first command failure.
 // A nil result means every required jump passed at the time it was checked.
 func (f *Firewall) Check(ctx context.Context, p Plan) *CheckFailure {
-	return f.checkJumps(ctx, p.Jumps())
-}
-
-func (f *Firewall) checkJumps(ctx context.Context, jumps []Jump) *CheckFailure {
-	for _, j := range jumps {
+	for _, j := range p.Jumps() {
 		if err := f.Run.Run(ctx, "", f.IPTables, "-w", "-t", j.Table, "-C", j.From, "-j", j.To); err != nil {
 			return failedCheck(ctx, j, err)
 		}

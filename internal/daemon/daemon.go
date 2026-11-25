@@ -92,7 +92,7 @@ type Daemon struct {
 	plan         netfilter.Plan
 	planOn       bool
 	planPending  bool            // installation failed after the plan and its dependencies were prepared
-	planGuard    *netfilter.Plan // sources guarded until a replacement plan is verified
+	planGuard    *netfilter.Plan // desired protection until a replacement plan is verified
 	neighbors    map[string]netip.Addr
 	deviceNames  map[string]cachedDeviceName
 	started      time.Time
@@ -301,7 +301,7 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 // startup commits only after saving; an already-active daemon can report an
 // applied-but-unsaved change.
 func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
-	return d.apply(ctx, cfg, "", nil)
+	return d.apply(ctx, cfg, applyConditions{})
 }
 
 // ApplyIfCurrent applies a page draft only while the configuration used to
@@ -311,7 +311,16 @@ func (d *Daemon) ApplyIfCurrent(ctx context.Context, cfg *model.Config, revision
 	if revision == "" {
 		return model.ErrConfigChanged
 	}
-	return d.apply(ctx, cfg, revision, nil)
+	return d.apply(ctx, cfg, applyConditions{revision: revision})
+}
+
+// ApplyRuleSwitchesIfCurrent also requires that the edited source has not
+// withheld its rules at the point the draft is committed.
+func (d *Daemon) ApplyRuleSwitchesIfCurrent(ctx context.Context, cfg *model.Config, revision, source string) error {
+	if revision == "" {
+		return model.ErrConfigChanged
+	}
+	return d.apply(ctx, cfg, applyConditions{revision: revision, switchSource: source})
 }
 
 // ApplySubscriptionPreview applies only the checked attempt for the selected
@@ -326,10 +335,16 @@ func (d *Daemon) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config
 	}) {
 		return subscription.ErrPreviewChanged
 	}
-	return d.apply(ctx, cfg, revision, &checked)
+	return d.apply(ctx, cfg, applyConditions{revision: revision, checked: &checked})
 }
 
-func (d *Daemon) apply(ctx context.Context, cfg *model.Config, revision string, checked *subscription.PreviewRef) error {
+type applyConditions struct {
+	revision     string
+	checked      *subscription.PreviewRef
+	switchSource string // set for a submitted change to this source's rule switches
+}
+
+func (d *Daemon) apply(ctx context.Context, cfg *model.Config, conditions applyConditions) error {
 	by, from := applyActor(ctx)
 	cfg.Defaults()
 	if err := cfg.Validate(); err != nil {
@@ -343,7 +358,7 @@ func (d *Daemon) apply(ctx context.Context, cfg *model.Config, revision string, 
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
 	}
-	return d.applyWithSubscriptions(ctx, cfg, revision, checked)
+	return d.applyWithSubscriptions(ctx, cfg, conditions)
 }
 
 func applyActor(ctx context.Context) (by, from string) {
@@ -772,12 +787,12 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	}
 	d.route = newRoute
 
-	// Mode changes retire the old prerouting chains. A rollback guard keeps
-	// its filter hooks until the replacement can take over.
+	// Mode changes retire the old prerouting chains. Keep recovery drops
+	// attached until the replacement can take over.
 	if hadPlan && d.plan.Mode != out.Plan.Mode {
-		d.removeFirewall(d.planGuard != nil)
+		d.removeFirewall(d.planGuard != nil || d.plan.GuardUnintercepted)
 	}
-	d.plan = out.Plan
+	d.setFirewallPlan(out.Plan)
 	if err := d.installFirewall(ctx); err != nil {
 		// Keep residual jumps while the caller attempts rollback. Detaching
 		// them here would return protected traffic straight to the router.
@@ -927,6 +942,11 @@ func (d *Daemon) startDNS() error {
 func (d *Daemon) watch(ctx context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.planGuard != nil {
+		// Repair the guard or the prepared plan before recompiling neighbors.
+		d.checkFirewall(ctx, "watchdog")
+		return
+	}
 	if ctx.Err() != nil || (!d.planOn && !d.planPending) {
 		return
 	}
@@ -951,7 +971,7 @@ func (d *Daemon) watch(ctx context.Context) {
 		} else if restarted {
 			d.log.Warn("sing-box configuration changed after address updates, core restarted")
 		}
-		d.plan = out.Plan
+		d.setFirewallPlan(out.Plan)
 		if !d.planPending {
 			if err := d.installFirewall(ctx); err != nil && ctx.Err() == nil {
 				d.log.Error("rule update", "err", err)

@@ -45,6 +45,9 @@ type PreviewRef struct {
 // ErrPreviewChanged asks setup to check again before activating a subscription.
 var ErrPreviewChanged = errors.New("checked subscription preview is no longer available")
 
+// ErrRulesWithheld means a rule-switch edit lost its provider rules before Apply.
+var ErrRulesWithheld = errors.New("provider routing rules are withheld")
+
 // Node contains the original share link for the private snapshot and compiler.
 // API handlers must project it to an ID and display name before returning it.
 type Node struct {

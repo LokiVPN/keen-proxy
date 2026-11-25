@@ -12,6 +12,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 const (
@@ -122,13 +123,15 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
 		return
 	}
-	if providerProblem == "setup_rules_withheld" && len(draft.Switches) != 0 {
-		if draft.changesSwitches(cfg.ProviderRules) {
+	switchesChanged := draft.changesSwitches(cfg.ProviderRules)
+	if switchesChanged {
+		if providerProblem == "setup_rules_withheld" {
+			draft.Switches = nil
 			p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "routing_rules_changed")
 			return
 		}
-		// A ready form can submit unchanged controls after withholding starts.
-		// Save its other edits without rewriting the stored rule keys.
+	} else {
+		// A ready form submits unchanged controls along with unrelated edits.
 		draft.Switches = nil
 	}
 	if (draft.VPN != nil && len(draft.VPN.InvalidLines) != 0) ||
@@ -147,7 +150,12 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
 	revision := form.Get("rev")
-	err := p.deps.Apply(ctx, cfg, revision)
+	var err error
+	if switchesChanged {
+		err = p.deps.ApplyRuleSwitches(ctx, cfg, revision, state.source)
+	} else {
+		err = p.deps.Apply(ctx, cfg, revision)
+	}
 	if err == nil {
 		redirectWithFlash(w, r, "/routing", "flash_saved")
 		return
@@ -159,6 +167,9 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusInternalServerError, current, nil, "apply_not_saved")
 	case errors.Is(err, model.ErrConfigChanged), Revision(current) != revision:
 		p.renderRouting(w, r, http.StatusConflict, current, nil, "revision_changed")
+	case errors.Is(err, subscription.ErrRulesWithheld):
+		draft.Switches = nil
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, current, &draft, "routing_rules_changed")
 	default:
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, current, &draft, "routing_apply_error")
 	}
@@ -244,6 +255,9 @@ func (d routingDraft) apply(cfg *model.Config, network *model.Network, source st
 // changesSwitches compares submitted states with the applied revision,
 // including legacy disabled keys represented by opaque controls.
 func (d routingDraft) changesSwitches(settings *model.ProviderRulesSettings) bool {
+	if len(d.Switches) == 0 {
+		return false
+	}
 	disabled := settings.DisabledRuleKeys()
 	for key, enabled := range d.Switches {
 		wasEnabled := !disabled[key]

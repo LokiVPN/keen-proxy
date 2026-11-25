@@ -23,6 +23,8 @@ type Deps interface {
 	CheckConnectionSettings(ctx context.Context, cfg *model.Config) error
 	ValidateConnectionSettings(ctx context.Context, cfg *model.Config) error
 	Apply(ctx context.Context, cfg *model.Config, revision string) error
+	// ApplyRuleSwitches also checks that the source supplies rules at commit.
+	ApplyRuleSwitches(ctx context.Context, cfg *model.Config, revision, source string) error
 	ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error
 	OverviewStatus() OverviewStatus
 	Devices() []DiscoveredDevice

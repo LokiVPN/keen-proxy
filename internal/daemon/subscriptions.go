@@ -389,8 +389,9 @@ func (d *Daemon) checkedPreviewLocked(check subscription.PreviewRef, now time.Ti
 // applyWithSubscriptions obtains missing candidates, and the provider rules of
 // a new candidate for the configured source, outside the Apply lock and
 // rechecks them against the configuration that is active when Apply acquires it.
-func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, revision string, checked *subscription.PreviewRef) error {
+func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, conditions applyConditions) error {
 	candidates := make(map[subscription.Source]subscriptionAttempt)
+	checked := conditions.checked
 	var checkedSource subscription.Source
 	if checked != nil {
 		checkedSource = checked.Source
@@ -402,9 +403,16 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, 
 			return err
 		}
 		// Hash the same configuration representation returned by Config.
-		if revision != "" && !d.matchesConfigRevisionLocked(revision) {
+		if conditions.revision != "" && !d.matchesConfigRevisionLocked(conditions.revision) {
 			d.mu.Unlock()
 			return model.ErrConfigChanged
+		}
+		if source := conditions.switchSource; source != "" {
+			snapshot := d.subscriptions.states[source].snapshot
+			if snapshot.RulesWithheld || snapshot.Rules.state() == ProviderRulesWithheld {
+				d.mu.Unlock()
+				return subscription.ErrRulesWithheld
+			}
 		}
 		now := time.Now()
 		d.expireSubscriptionPreviewsLocked(now)

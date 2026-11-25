@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -532,6 +533,93 @@ func TestProviderRulesDroppedWhenProviderWithholdsThem(t *testing.T) {
 		status.RulesError != "" || status.RulesState != ProviderRulesWithheld {
 		t.Fatalf("withheld rules: state %s, settings %+v, status %+v", state, settings, status)
 	}
+}
+
+func TestRoutingSaveChecksWithholdingAtCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		editSwitch bool
+	}{
+		{"changed switch", true},
+		{"unchanged switch and list edit", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, cfg, provider := newRulesTestDaemon(t)
+			settings := cfg.ProviderRules
+			cfg.RouteHomeThroughSubscription("sample", netip.MustParsePrefix("192.0.2.0/24"))
+			cfg.ProviderRules = settings
+			if err := d.Apply(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			requireAppliedProviderRules(t, d)
+			const ruleKey = "proxy:geosite:video"
+			const listEdit = "draft-direct.example"
+			before := d.Config()
+			rev := model.ConfigRevision(before)
+			saved, err := os.ReadFile(d.opt.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deps := routingWithholdingDeps{overviewTestDeps{d: d}, func() {
+				provider.update(func(p *rulesProvider) { p.enable = "0" })
+				refreshAppliedSubscription(t, d, "sample")
+				request := claimSubscriptionRequest(d, 0)
+				if request == nil {
+					t.Fatal("withholding refresh was not scheduled")
+				}
+				d.runSubscriptionRequest(t.Context(), request)
+				if _, _, state := d.ProviderRules(); state != ProviderRulesWithheld || model.ConfigRevision(d.Config()) != rev {
+					t.Fatalf("refresh did not publish withholding with a matching revision: %s", state)
+				}
+			}}
+			h := ui.New(deps, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+			get := httptest.NewRecorder()
+			h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/routing", nil))
+			if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `name="enabled" value="`+ruleKey+`" checked`) {
+				t.Fatal("ready form did not show the enabled provider switch")
+			}
+			form := url.Values{"rev": {rev}, "mode": {"provider"}, "rule": {ruleKey}, "own-direct": {listEdit}}
+			if !tc.editSwitch {
+				form.Set("enabled", ruleKey)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/routing", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			post := httptest.NewRecorder()
+			h.ServeHTTP(post, request)
+			if tc.editSwitch {
+				if post.Code != http.StatusUnprocessableEntity || !strings.Contains(post.Body.String(), "The provider stopped supplying routing rules.") ||
+					!strings.Contains(post.Body.String(), listEdit) {
+					t.Fatalf("switch edit after withholding returned HTTP %d or omitted the refusal and list draft", post.Code)
+				}
+				if after, err := os.ReadFile(d.opt.ConfigPath); err != nil || !bytes.Equal(after, saved) || model.ConfigRevision(d.Config()) != rev {
+					t.Fatal("the refused switch edit changed the saved or applied configuration")
+				}
+				return
+			}
+			current := d.Config()
+			if post.Code != http.StatusSeeOther || !reflect.DeepEqual(current.ProviderRules, before.ProviderRules) ||
+				!slices.ContainsFunc(current.Groups, func(g model.Group) bool {
+					return g.Name == "own-direct" && slices.Equal(g.Entries, []string{listEdit})
+				}) {
+				t.Fatalf("list-only save after withholding returned HTTP %d or lost the list edit or saved switches", post.Code)
+			}
+		})
+	}
+}
+
+type routingWithholdingDeps struct {
+	overviewTestDeps
+	beforeApply func()
+}
+
+func (v routingWithholdingDeps) Apply(ctx context.Context, cfg *model.Config, revision string) error {
+	v.beforeApply()
+	return v.overviewTestDeps.Apply(ctx, cfg, revision)
+}
+
+func (v routingWithholdingDeps) ApplyRuleSwitches(ctx context.Context, cfg *model.Config, revision, source string) error {
+	v.beforeApply()
+	return v.d.ApplyRuleSwitchesIfCurrent(ctx, cfg, revision, source)
 }
 
 // The accessor and the configured source's status tell why rules are

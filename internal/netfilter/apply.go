@@ -57,15 +57,10 @@ func (f *Firewall) Apply(ctx context.Context, p Plan) error {
 	return f.installJumps(ctx, p.Jumps())
 }
 
-// ApplyProtected keeps the rollback drops until the replacement plan's
-// entry jumps are verified. Only then can a filter commit replace the drops.
-func (f *Firewall) ApplyProtected(ctx context.Context, p, protection Plan) error {
-	if f.checkJumps(ctx, filterJumps()) != nil {
-		// A second firmware rebuild can also remove the guard's hooks.
-		if err := f.Protect(ctx, protection); err != nil {
-			return fmt.Errorf("restore rollback protection: %w", err)
-		}
-	}
+// ApplyProtected assumes Protect has installed the rollback guard. It loads
+// interception before changing the filter, which still drops traffic that
+// would bypass the replacement plan. The caller verifies the final install.
+func (f *Firewall) ApplyProtected(ctx context.Context, p Plan) error {
 	var rules strings.Builder
 	p.renderPrerouting(&rules)
 	if err := f.restore(ctx, rules.String()); err != nil {
@@ -78,6 +73,7 @@ func (f *Firewall) ApplyProtected(ctx context.Context, p, protection Plan) error
 		return fmt.Errorf("verify interception before clearing rollback protection: %s", failure.Error)
 	}
 	rules.Reset()
+	p.GuardUnintercepted = true
 	p.renderFilter(&rules)
 	return f.restore(ctx, rules.String())
 }

@@ -34,11 +34,8 @@ func TestAdmittedApplySurvivesRequestCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/devices", nil)
-			runner := &applyCancellationFirewall{
-				recoveryFirewall: recoveryFirewall{jumps: make(map[[3]string]bool), chains: make(map[[2]string]bool)},
-				cancel:           cancel,
-				failRestore:      tc.failRestore,
-			}
+			runner := newRecoveryTestFirewall()
+			runner.cancel, runner.failRestore = cancel, tc.failRestore
 			d, _ := startMemoryDaemon(t, path, runner, 768*memoryMiB)
 			if tc.failRestore == 2 {
 				// Model a firmware rebuild before the candidate and rollback fail.
@@ -87,10 +84,12 @@ func assertProtectedWatchdogRecovery(t *testing.T, d *Daemon, runner *applyCance
 	t.Helper()
 	tcp := [3]string{"nat", "PREROUTING", netfilter.ChainTCP}
 	dns := [3]string{"nat", "PREROUTING", netfilter.ChainDNS}
-	forwardDrop := "-s 192.0.2.0/24 -j DROP"
-	dnsDrop := "--dport 53 -j DROP"
+	forwardDrop := rollbackSourceDrop
+	dropsDNS := func(hook string) bool {
+		return runner.drops(hook, "-p tcp --dport 53 -j DROP") && runner.drops(hook, "-p udp --dport 53 -j DROP")
+	}
 	guarded := func() bool {
-		return runner.drops("FORWARD", forwardDrop) && runner.drops("INPUT", dnsDrop) && runner.drops("FORWARD", dnsDrop)
+		return runner.drops("FORWARD", forwardDrop) && dropsDNS("INPUT") && dropsDNS("FORWARD")
 	}
 	if !guarded() || runner.jumps[tcp] || runner.jumps[dns] {
 		t.Fatal("failed rollback did not leave an active drop guard and missing NAT jumps")
@@ -99,8 +98,8 @@ func assertProtectedWatchdogRecovery(t *testing.T, d *Daemon, runner *applyCance
 	// chain restore followed by a failed DNS jump insertion or verification.
 	gap := false
 	runner.observe = func() {
-		if (!runner.jumps[tcp] && !runner.drops("FORWARD", forwardDrop)) ||
-			(!runner.jumps[dns] && (!runner.drops("INPUT", dnsDrop) || !runner.drops("FORWARD", dnsDrop))) {
+		if (!runner.jumps[tcp] && !runner.drops("FORWARD", forwardDrop) && !runner.drops("FORWARD", rollbackHandoffTCPDrop)) ||
+			(!runner.jumps[dns] && (!dropsDNS("INPUT") || !dropsDNS("FORWARD"))) {
 			gap = true
 		}
 	}
@@ -120,22 +119,121 @@ func assertProtectedWatchdogRecovery(t *testing.T, d *Daemon, runner *applyCance
 	}
 
 	runner.loseDNSOnCheck = false
+	runner.rebuildDuringRelease = true
+	d.watch(t.Context())
+	if runner.rebuildDuringRelease || gap || !guarded() || !runner.jumps[tcp] || runner.jumps[dns] || d.Status(t.Context()).Firewall {
+		t.Fatal("guard release exposed traffic during a NAT rebuild and failed follow-up insertion")
+	}
+	runner.fail = false
+	runner.loseNATAfterFinalDNSProbe = true
+	d.watch(t.Context())
+	if runner.loseNATAfterFinalDNSProbe || gap || d.Status(t.Context()).Firewall {
+		t.Fatal("the handoff allowed traffic through after the final NAT probe")
+	}
+	runner.fail = true
+	d.watch(t.Context())
+	if gap || !runner.jumps[tcp] || runner.jumps[dns] || d.Status(t.Context()).Firewall {
+		t.Fatal("the next repair removed handoff drops before its failed DNS insertion")
+	}
+	runner.fail = false
 	d.watch(t.Context())
 	status := d.Status(t.Context())
-	if gap || guarded() || !runner.jumps[tcp] || !runner.jumps[dns] || !status.Firewall || status.Restored != 1 {
+	if gap || guarded() || !runner.jumps[tcp] || !runner.jumps[dns] || !status.Firewall || status.Restored != 2 {
 		t.Fatal("watchdog did not restore interception and release the guard without a forwarding gap")
 	}
 }
+
+func TestWatchdogRearmsFailedRollbackGuardWithOrdinaryHooks(t *testing.T) {
+	runner := newRecoveryTestFirewall()
+	d := startRollbackGuardFixture(t, runner)
+	// A NAT-only rebuild leaves the ordinary filter jumps and rules intact.
+	runner.removeNATJumps()
+	runner.failRestore, runner.failGuardWrites = 2, 1
+	if err := d.ApplyIfCurrent(t.Context(), d.Config(), model.ConfigRevision(d.Config())); !errors.Is(err, errApplyCancellationRestore) {
+		t.Fatalf("expected the candidate and rollback firewall failure, got %v", err)
+	}
+	if runner.failGuardWrites != 0 || runner.drops("FORWARD", rollbackSourceDrop) ||
+		!runner.jumps[[3]string{"filter", "FORWARD", netfilter.ChainQUIC}] {
+		t.Fatal("test fixture did not leave ordinary filter hooks after the guard write failed")
+	}
+	runner.fail = true
+	d.watch(t.Context())
+	if d.Status(t.Context()).Firewall || !runner.drops("FORWARD", rollbackSourceDrop) ||
+		!runner.drops("INPUT", "--dport 53 -j DROP") {
+		t.Fatal("watchdog failed to re-arm rollback drops before another failed interception install")
+	}
+}
+
+func TestFirewallMaintainsGuardWithoutReadyDependencies(t *testing.T) {
+	runner := newRecoveryTestFirewall()
+	d := startRollbackGuardFixture(t, runner)
+	// Compilation cannot write its rule sets or reach the firewall install.
+	d.opt.RuleSetDir = d.opt.ConfigPath
+	cfg := d.Config()
+	if err := d.ApplyIfCurrent(t.Context(), cfg, model.ConfigRevision(cfg)); err == nil {
+		t.Fatal("apply unexpectedly reached firewall activation with an unusable rule-set directory")
+	}
+	if !runner.drops("FORWARD", rollbackSourceDrop) || !runner.drops("INPUT", "--dport 53 -j DROP") {
+		t.Fatal("dependency failure did not arm the saved plan's filter guard")
+	}
+	for _, recover := range []struct {
+		name string
+		run  func(context.Context)
+	}{
+		{"watchdog", d.watch}, {"netfilter_hook", d.checkFirewallEvent},
+	} {
+		t.Run(recover.name, func(t *testing.T) {
+			clear(runner.jumps)
+			clear(runner.chains)
+			runner.filterRules = ""
+			recover.run(t.Context())
+			status := d.Status(t.Context())
+			if !runner.drops("FORWARD", rollbackSourceDrop) || !runner.drops("INPUT", "--dport 53 -j DROP") ||
+				runner.jumps[[3]string{"nat", "PREROUTING", netfilter.ChainTCP}] ||
+				runner.jumps[[3]string{"nat", "PREROUTING", netfilter.ChainDNS}] || status.Firewall || status.Restored != 0 {
+				t.Fatal("recovery did not restore only the filter guard while interception dependencies were unavailable")
+			}
+		})
+	}
+}
+
+func newRecoveryTestFirewall() *applyCancellationFirewall {
+	return &applyCancellationFirewall{recoveryFirewall: recoveryFirewall{
+		jumps: make(map[[3]string]bool), chains: make(map[[2]string]bool),
+	}}
+}
+
+func startRollbackGuardFixture(t *testing.T, runner netfilter.Runner) *Daemon {
+	t.Helper()
+	holdMemoryLimit(t)
+	cfg := quietConfig(t)
+	cfg.Connections = []model.Connection{{ID: "saved", Type: model.ConnLink, Link: "socks5://saved.example.test:1080"}}
+	cfg.Networks = []model.Network{{CIDR: "192.0.2.0/24", Mode: model.ModeFull, Target: "saved"}}
+	d := newMemoryDaemon(t, writeSavedConfig(t, cfg), runner)
+	t.Cleanup(d.shutdown)
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+const (
+	rollbackSourceDrop     = "-s 192.0.2.0/24 -j DROP"
+	rollbackHandoffTCPDrop = "-s 192.0.2.0/24 -p tcp -m tcp ! --dport 53 -j DROP"
+)
 
 var errApplyCancellationRestore = errors.New("synthetic firewall restore failed")
 
 type applyCancellationFirewall struct {
 	recoveryFirewall
-	cancel                context.CancelFunc
-	failRestore           int
-	lastPlan, filterRules string
-	loseDNSOnCheck        bool
-	observe               func()
+	cancel                    context.CancelFunc
+	failRestore               int
+	failGuardWrites           int
+	lastPlan, filterRules     string
+	loseDNSOnCheck            bool
+	rebuildDuringRelease      bool
+	loseNATAfterFinalDNSProbe bool
+	observe                   func()
 }
 
 func (r *applyCancellationFirewall) Run(ctx context.Context, input, name string, args ...string) error {
@@ -146,7 +244,7 @@ func (r *applyCancellationFirewall) Run(ctx context.Context, input, name string,
 		return err
 	}
 	if name == "iptables-restore" && strings.HasPrefix(input, "*nat\n") {
-		if r.attempts == 1 {
+		if r.attempts == 1 && r.cancel != nil {
 			r.cancel()
 		}
 		if err := ctx.Err(); err != nil {
@@ -158,6 +256,10 @@ func (r *applyCancellationFirewall) Run(ctx context.Context, input, name string,
 		}
 		r.lastPlan = input
 	}
+	if r.failGuardWrites != 0 && strings.Contains(input, rollbackSourceDrop) {
+		r.failGuardWrites--
+		return errApplyCancellationRestore
+	}
 	if r.loseDNSOnCheck && name == "iptables" && args[3] == "-C" && args[len(args)-1] == netfilter.ChainDNS {
 		delete(r.jumps, [3]string{"nat", "PREROUTING", netfilter.ChainDNS})
 	}
@@ -166,8 +268,23 @@ func (r *applyCancellationFirewall) Run(ctx context.Context, input, name string,
 	}
 	if _, rules, found := strings.Cut(input, "*filter\n"); found {
 		r.filterRules = rules
+		if r.rebuildDuringRelease && !strings.Contains(rules, rollbackSourceDrop) {
+			r.rebuildDuringRelease = false
+			r.removeNATJumps()
+			r.fail = true // The follow-up restore can add TCP, but fails to add DNS.
+		}
+	}
+	if r.loseNATAfterFinalDNSProbe && name == "iptables" && args[3] == "-C" && args[len(args)-1] == netfilter.ChainDNS &&
+		r.drops("FORWARD", rollbackHandoffTCPDrop) {
+		r.loseNATAfterFinalDNSProbe = false
+		r.removeNATJumps()
 	}
 	return nil
+}
+
+func (r *applyCancellationFirewall) removeNATJumps() {
+	delete(r.jumps, [3]string{"nat", "PREROUTING", netfilter.ChainTCP})
+	delete(r.jumps, [3]string{"nat", "PREROUTING", netfilter.ChainDNS})
 }
 
 func (r *applyCancellationFirewall) drops(hook, ruleSuffix string) bool {

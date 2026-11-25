@@ -576,6 +576,10 @@ type routingFixture struct {
 
 func (f *routingFixture) ProviderRules() RoutingRules { return f.rules }
 
+func (f *routingFixture) ApplyRuleSwitches(ctx context.Context, cfg *model.Config, revision, _ string) error {
+	return f.Apply(ctx, cfg, revision)
+}
+
 func newRoutingFixture() *routingFixture {
 	return &routingFixture{
 		overviewFixture: newOverviewFixture(),

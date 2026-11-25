@@ -1,6 +1,7 @@
 package netfilter
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -26,6 +27,7 @@ func TestRenderTProxy(t *testing.T) {
 -A KEENPROXY_DNS -i br0 -s 192.168.7.104/32 -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 5354
 -A KEENPROXY_TCP -d 192.168.0.0/16 -j RETURN
 -A KEENPROXY_TCP -s 192.168.7.88/32 -j RETURN
+-A KEENPROXY_TCP -i br0 -p tcp -m tcp --dport 53 -j RETURN
 -A KEENPROXY_TCP -i br0 -s 192.168.7.104/32 -p tcp -j REDIRECT --to-ports 7901
 COMMIT
 *mangle
@@ -57,13 +59,55 @@ func TestRenderDNSBypassIsScopedToLANPort53(t *testing.T) {
 			p.DNSBypassSources = []netip.Addr{netip.MustParseAddr("192.168.7.104")}
 			dnsReturns := "-A KEENPROXY_DNS -i br0 -s 192.168.7.104/32 -p udp -m udp --dport 53 -j RETURN\n" +
 				"-A KEENPROXY_DNS -i br0 -s 192.168.7.104/32 -p tcp -m tcp --dport 53 -j RETURN\n"
-			tcpReturn := "-A KEENPROXY_TCP -i br0 -s 192.168.7.104/32 -p tcp -m tcp --dport 53 -j RETURN\n"
+			tcpReturn := "-A KEENPROXY_TCP -i br0 -p tcp -m tcp --dport 53 -j RETURN\n"
 			firstDNSRule := "-A KEENPROXY_DNS "
 			tcpRedirect := "-A KEENPROXY_TCP -i br0 -s 192.168.7.104/32 -p tcp -j REDIRECT"
 			want := strings.Replace(baseline, firstDNSRule, dnsReturns+firstDNSRule, 1)
-			want = strings.Replace(want, tcpRedirect, tcpReturn+tcpRedirect, 1)
+			if !strings.Contains(baseline, tcpReturn+tcpRedirect) {
+				t.Fatal("generic TCP interception must leave port 53 to the DNS hook")
+			}
 			if got := p.Render(); got != want {
 				t.Errorf("Render() =\n%s\nwant\n%s", got, want)
+			}
+		})
+	}
+}
+
+func TestHandoffDropsRespectDNSAndInterceptionScope(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     model.InterceptMode
+		dnsPort  uint16
+		dnsChain string
+	}{
+		{"redirect", model.InterceptRedirect, 5354, ChainDNSGuard},
+		{"tproxy with local DNS on port 53", model.InterceptTProxy, 53, ChainQUIC},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := testPlan(tc.mode)
+			p.DNSPort = tc.dnsPort
+			p.DNSBypassSources = []netip.Addr{netip.MustParseAddr("192.168.7.53")}
+			p.GuardUnintercepted = true
+			rules := p.Render()
+			for _, proto := range []string{"tcp", "udp"} {
+				dnsReturn := fmt.Sprintf("-A %s -i br0 -s 192.168.7.53/32 -p %s --dport 53 -j RETURN", tc.dnsChain, proto)
+				dnsDrop := fmt.Sprintf("-A %s -i br0 -s 192.168.7.104/32 -p %s --dport 53 -j DROP", tc.dnsChain, proto)
+				i, j := strings.Index(rules, dnsReturn), strings.Index(rules, dnsDrop)
+				if i < 0 || j < i {
+					t.Fatalf("the DNS source exemption must precede drops for %s", proto)
+				}
+			}
+			if tc.dnsPort == 53 && strings.Contains(rules, "-A KEENPROXY_DNS_GUARD ") {
+				t.Fatal("the handoff blocked the live INPUT resolver on port 53")
+			}
+			const bypass = "-A KEENPROXY_QUIC -d 192.168.0.0/16 -j RETURN"
+			const tcpDrop = "-A KEENPROXY_QUIC -i br0 -s 192.168.7.104/32 -p tcp -m tcp ! --dport 53 -j DROP"
+			const udpDrop = "-A KEENPROXY_QUIC -i br0 -s 192.168.7.104/32 -p udp -m udp ! --dport 53 -j DROP"
+			if i, j := strings.Index(rules, bypass), strings.Index(rules, tcpDrop); i < 0 || j < i {
+				t.Fatal("private destinations must bypass the TCP handoff drop")
+			}
+			if strings.Contains(rules, udpDrop) != (tc.mode == model.InterceptTProxy) {
+				t.Fatal("the handoff must drop non-DNS UDP forwarding only when TPROXY should intercept it")
 			}
 		})
 	}
