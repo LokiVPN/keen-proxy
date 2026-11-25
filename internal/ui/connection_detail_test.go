@@ -178,6 +178,39 @@ func TestConnectionDetailMasksDecodedCredentials(t *testing.T) {
 	}
 }
 
+func TestConnectionDetailMasksBinaryCredentialInInternationalHostname(t *testing.T) {
+	const auth = "\xa9-test.example" // Starts at the last byte of the hostname's accented character.
+	const hostname = "caf\xc3" + auth
+	encoded := base64.StdEncoding.EncodeToString([]byte(auth))
+	f := newDetailFixture(t)
+	f.cfg.Connections[0] = model.Connection{
+		ID: "old", Name: "Office", Type: model.ConnSingBox,
+		Outbound: map[string]any{
+			"type": "hysteria", "server": hostname, "server_port": 443, "auth": encoded,
+			"up_mbps": 20, "down_mbps": 100, "tls": map[string]any{"enabled": true},
+		},
+	}
+	for _, tc := range []struct {
+		role  Role
+		query string
+	}{
+		{RoleManage, ""},
+		{RoleView, "?reveal=1"},
+	} {
+		w := setupRequest(New(f, setupTestOptions(tc.role)), "/connections/id/old"+tc.query, nil)
+		requireDetailStatus(t, w, http.StatusOK)
+		body := w.Body.String()
+		if !strings.Contains(body, `<dt>Server</dt><dd class="clip" title="Hidden">Hidden</dd>`) ||
+			strings.Contains(body, "xn--caf-test-d1a.example") || strings.Contains(body, auth) || strings.Contains(body, encoded) {
+			t.Errorf("binary credential masking failed for the server fact in role %v", tc.role)
+		}
+	}
+
+	w := setupRequest(New(f, setupTestOptions(RoleManage)), "/connections/id/old?reveal=1", nil)
+	requireDetailStatus(t, w, http.StatusOK)
+	assertContains(t, w.Body.String(), `<pre class="detail-profile"`, `&#34;auth&#34;: &#34;`+encoded+`&#34;`)
+}
+
 func TestConnectionDetailSelectorListsBuiltInMembers(t *testing.T) {
 	f := newDetailFixture(t)
 	f.cfg.Connections[1] = model.Connection{ID: "backup", Name: "Selector", Type: model.ConnSingBox,

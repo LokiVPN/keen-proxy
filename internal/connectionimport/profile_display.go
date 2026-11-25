@@ -7,9 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode/utf8"
-
-	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 type profileString struct {
@@ -25,7 +22,14 @@ func profileDisplayStrings(profile any) []profileString {
 		if raw == "" {
 			return
 		}
-		forms := profileStringForms(raw)
+		// Recognized protocol and transport selectors are literal strings.
+		// For example, "ws" also decodes as Base64 to a byte in " · ".
+		literalType := slices.EqualFunc(path, []string{"type"}, strings.EqualFold) && protocolLabel[raw] != ""
+		literalTransport := slices.EqualFunc(path, []string{"transport", "type"}, strings.EqualFold) && detailTransportLabels[raw] != ""
+		forms := []string{raw}
+		if !literalType && !literalTransport {
+			forms = profileStringForms(raw)
+		}
 		if len(path) > 0 && strings.EqualFold(path[len(path)-1], "auth") {
 			forms = append(forms, decodedProfileBytes(raw))
 		}
@@ -91,7 +95,8 @@ func profileStringForms(value string) []string {
 }
 
 // repeatsProfileString excludes only the source of the displayed fact. It
-// compares both the input and its display spelling to every other leaf.
+// compares raw and decoded forms bytewise because credentials can contain
+// arbitrary bytes, including a partial UTF-8 sequence.
 func repeatsProfileString(leaves []profileString, source []string, values ...string) bool {
 	var forms []string
 	for _, value := range values {
@@ -105,23 +110,11 @@ func repeatsProfileString(leaves []profileString, source []string, values ...str
 		}
 		for _, form := range forms {
 			for _, other := range leaf.forms {
-				if containsProfileValue(form, other) {
+				if other != "" && strings.Contains(form, other) {
 					return true
 				}
 			}
 		}
 	}
 	return false
-}
-
-func containsProfileValue(value, other string) bool {
-	if other == "" {
-		return false
-	}
-	if !utf8.ValidString(value) {
-		return strings.Contains(value, other)
-	}
-	// A UTF-8 display value can only contain complete characters. Keep
-	// binary comparisons for the raw and decoded forms that contain bytes.
-	return utf8.ValidString(other) && subscription.ContainsDisplaySecret(value, []string{other})
 }
