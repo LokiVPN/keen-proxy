@@ -18,23 +18,31 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 	const compact = "a7e68fbacd3640799c4afa7b5c8d93a2"
 	const canonical = "a7e68fba-cd36-4079-9c4a-fa7b5c8d93a2"
 	const password = "fixture-password-keep-private"
-	labels := []string{strings.ToUpper(canonical), "%61" + compact[1:], strings.ToUpper(password), "Safe region"}
+	const combinedPassword = "hysteria-fixture:keep-private"
+	const cookieValue = "xhttp-fixture-keep-private"
+	labels := []string{strings.ToUpper(canonical), "%61" + compact[1:], strings.ToUpper(password), combinedPassword, cookieValue}
+	const xhttpID = "119379fe-06d0-4982-bd4b-e5c530602a9c"
+	xhttp := url.Values{"type": {"xhttp"}, "extra": {`{"headers":{"cOoKiE":["pref=basic; session=\"` + cookieValue + `\""]}}`}}
 	provider := new(subscriptionTestProvider)
 	provider.response.Store(&subscriptionTestResponse{body: strings.Join([]string{
 		"vless://" + compact + "@first.example.test:443#" + url.PathEscape("Region "+labels[0]),
 		"vless://" + canonical + "@second.example.test:443#" + url.PathEscape("Region "+labels[1]),
 		"socks5://" + url.UserPassword("fixture-operator", base64.StdEncoding.EncodeToString([]byte(password))).String() +
 			"@third.example.test:1080#" + url.PathEscape("Region "+labels[2]),
-		"socks5://fourth.example.test:1080#Safe%20region",
+		"hysteria2://" + url.UserPassword("fixture-hy2", combinedPassword).String() +
+			"@fourth.example.test:443#" + url.PathEscape("Region "+labels[3]),
+		"vless://" + xhttpID + "@fifth.example.test:443?" + xhttp.Encode() + "#" + url.PathEscape("Region "+labels[4]),
+		"socks5://sixth.example.test:1080#Safe%20region",
 	}, "\n")})
 	d, cfg := newSubscriptionTestDaemon(t, provider)
 	source := cfg.Subscriptions[0]
 	cfg.RouteHomeThroughSubscription(source.ID, netip.MustParsePrefix("192.0.2.0/24"))
 	preview := d.PreviewSubscriptionDetails(t.Context(), source).Status
-	if len(preview.Nodes) != 4 {
-		t.Fatalf("expected four valid preview nodes, got %d", len(preview.Nodes))
+	wantNames := []string{"Node 1", "Node 2", "Node 3", "Node 4", "Node 5", "Safe region"}
+	if len(preview.Nodes) != len(wantNames) {
+		t.Fatalf("expected %d valid preview nodes, got %d", len(wantNames), len(preview.Nodes))
 	}
-	for i, want := range []string{"Node 1", "Node 2", "Node 3", "Safe region"} {
+	for i, want := range wantNames {
 		if preview.Nodes[i].Name != want {
 			t.Errorf("preview node %d does not have the expected safe name", i+1)
 		}
@@ -49,10 +57,10 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 	checked := httptest.NewRecorder()
 	previewUI.ServeHTTP(checked, request)
 	body := checked.Body.String()
-	if checked.Code != http.StatusOK || !strings.Contains(body, "Node 1, Node 2, Node 3, Safe region") {
+	if checked.Code != http.StatusOK || !strings.Contains(body, strings.Join(wantNames, ", ")) {
 		t.Errorf("Setup preview returned HTTP %d or omitted the safe node names", checked.Code)
 	}
-	for _, private := range labels[:3] {
+	for _, private := range labels {
 		if strings.Contains(body, private) {
 			t.Error("Setup preview disclosed a node's dial credential")
 		}
@@ -65,11 +73,15 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 				w := httptest.NewRecorder()
 				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 				body := strings.ToLower(w.Body.String())
-				if w.Code != http.StatusOK || !strings.Contains(body, "node 1") || !strings.Contains(body, "node 2") ||
-					!strings.Contains(body, "node 3") || !strings.Contains(body, "safe region") {
-					t.Errorf("%s for role %v returned HTTP %d or omitted safe names", path, role, w.Code)
+				if w.Code != http.StatusOK {
+					t.Errorf("%s for role %v returned HTTP %d", path, role, w.Code)
 				}
-				for _, private := range []string{compact, canonical, password, labels[1]} {
+				for _, name := range wantNames {
+					if !strings.Contains(body, strings.ToLower(name)) {
+						t.Errorf("%s for role %v omitted %s", path, role, name)
+					}
+				}
+				for _, private := range []string{compact, canonical, password, labels[1], combinedPassword, cookieValue} {
 					if strings.Contains(body, private) {
 						t.Errorf("%s for role %v disclosed a node's dial credential", path, role)
 					}
@@ -80,7 +92,11 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 	assertViews()
 	// Recreate a snapshot from before the catalog-name protection existed.
 	state := d.subscriptions.states[source.ID]
-	state.snapshot.Nodes[2].Name = "Legacy " + strings.ToUpper(password)
+	for i := 2; i < len(labels); i++ {
+		node := &state.snapshot.Nodes[i]
+		node.Link, _, _ = strings.Cut(node.Link, "#")
+		node.Name = "Legacy " + labels[i]
+	}
 	d.subscriptions.states[source.ID] = state
 	if err := d.saveSubscriptionSnapshotsLocked(cfg); err != nil {
 		t.Fatal(err)

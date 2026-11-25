@@ -2,7 +2,6 @@ package profiledisplay
 
 import (
 	"bytes"
-	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
@@ -41,12 +40,8 @@ func StringLeaves(profile any, literal func([]string, string) bool) []StringLeaf
 		if slices.ContainsFunc(path, func(field string) bool { return matchesCredentialField(field, authorizationHeaders) }) {
 			forms = appendAuthorizationForms(forms, raw)
 		}
-		// Cookie values can repeat outside the header that carries them.
 		if slices.ContainsFunc(path, func(field string) bool { return strings.EqualFold(field, "Cookie") }) {
-			cookies, _ := http.ParseCookie(raw)
-			for _, cookie := range cookies {
-				forms = append(forms, profileStringForms(cookie.Value)...)
-			}
+			forms = appendCookieForms(forms, raw)
 		}
 		leaves = append(leaves, StringLeaf{path: slices.Clone(path), forms: profileComparisonForms(forms)})
 	})

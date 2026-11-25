@@ -3,6 +3,7 @@ package profiledisplay
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"slices"
 	"strings"
 )
@@ -47,6 +48,14 @@ func profileCredentials(value any, credentials []string) []string {
 			case hysteria && strings.EqualFold(key, "obfs"), matchesCredentialField(key, profileCredentialFields):
 				for _, secret := range StringValues(field) {
 					credentials = appendCredentialForms(credentials, secret)
+					if strings.EqualFold(key, "password") {
+						// Hysteria2 and other combined credentials can repeat
+						// the username or password alone in a display value.
+						if user, password, combined := strings.Cut(secret, ":"); combined {
+							credentials = appendCredentialForms(credentials, user)
+							credentials = appendCredentialForms(credentials, password)
+						}
+					}
 				}
 			}
 			credentials = profileCredentials(field, credentials)
@@ -75,6 +84,9 @@ func headerCredentials(headers map[string]any, credentials []string) []string {
 		for _, value := range StringValues(field) {
 			credentials = append(credentials, value)
 			credentials = appendAuthorizationForms(credentials, value)
+			if strings.EqualFold(key, "Cookie") {
+				credentials = appendCookieForms(credentials, value)
+			}
 		}
 	}
 	return credentials
@@ -92,6 +104,15 @@ func appendAuthorizationForms(forms []string, value string) []string {
 		if user, password, found := strings.Cut(decodedCredential(parts[1]), ":"); found {
 			forms = append(forms, user, password)
 		}
+	}
+	return forms
+}
+
+// Cookie values can repeat outside the header that carries them.
+func appendCookieForms(forms []string, value string) []string {
+	cookies, _ := http.ParseCookie(value)
+	for _, cookie := range cookies {
+		forms = append(forms, profileStringForms(cookie.Value)...)
 	}
 	return forms
 }
