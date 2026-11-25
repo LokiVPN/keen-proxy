@@ -18,6 +18,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
+	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/geodata"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
@@ -120,17 +121,35 @@ func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 		}
 	}
 	const wireGuard = `{"endpoint":{"type":"wireguard","address":["10.1.0.2/32"],"private_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","peers":[{"address":"192.0.2.10","port":51820,"public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=","allowed_ips":["0.0.0.0/0"]}],"detour":"direct"}}`
-	for _, raw := range []string{wireGuard, profile + `,"detour":"block"}`, profile + `,"detour":"failover-home"}`,
-		profile + `,"bind_interface":"synthetic-device"}`, profile + `,"inet4_bind_address":"192.0.2.10"}`} {
+	for _, raw := range []string{
+		wireGuard,
+		profile + `,"detour":"block"}`,
+		profile + `,"detour":"failover-home"}`,
+		profile + `,"detour":"home"}`,
+		profile + `,"domain_resolver":"validation-dns"}`,
+		profile + `,"DOMAIN_RESOLVER":{"SERVER":"validation-dns","strategy":"ipv4_only"}}`,
+		`{"outbounds":[` + profile + `,"domain_resolver":"validation-dns"}],"dns":{"servers":[{"type":"local","tag":"validation-dns"}]}}`,
+		`{"type":"hysteria2","realm":{"stun_domain_resolver":{"server":"validation-dns"}}}`,
+		`{"type":"hysteria2","realm":{"http_client":{"detour":"home"}}}`,
+		`{"type":"chain","outbounds":["home"]}`,
+		profile + `,"bind_interface":"synthetic-device"}`,
+		profile + `,"inet4_bind_address":"192.0.2.10"}`,
+	} {
 		refused := check(raw)
 		if refused.Code != http.StatusUnprocessableEntity || !strings.Contains(refused.Body.String(), "includes unsupported routing options") ||
-			strings.Contains(refused.Body.String(), "synthetic-device") || d.applies != 0 {
+			strings.Contains(refused.Body.String(), "synthetic-device") || strings.Contains(refused.Body.String(), "validation-dns") || d.applies != 0 {
 			t.Errorf("Check did not refuse explicit routing before Apply: HTTP %d", refused.Code)
 		}
 	}
-	checked := check(profile + `,"tag":"Office","detour":"home"}`)
+	if engine.BuildVariant == "full" {
+		withHeaders := check(`{"type":"http","server":"vpn.example.test","server_port":8080,"tag":"Office","headers":{"domain_resolver":"ordinary-header","detour":"ordinary-header"}}`)
+		if withHeaders.Code != http.StatusOK {
+			t.Fatalf("an independent profile with HTTP headers failed Check: HTTP %d", withHeaders.Code)
+		}
+	}
+	checked := check(profile + `,"tag":"Office"}`)
 	if checked.Code != http.StatusOK {
-		t.Fatalf("a valid manual connection dependency failed Check: HTTP %d", checked.Code)
+		t.Fatalf("an independent SOCKS profile failed Check: HTTP %d", checked.Code)
 	}
 	token := func(w *httptest.ResponseRecorder) string {
 		t.Helper()

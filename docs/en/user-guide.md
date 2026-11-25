@@ -54,7 +54,7 @@ Choose **Check** to validate the profile on the router and review its type, serv
 
 If an identifier conflicts with a routing tag, choose another one. After a manual input error, correct the highlighted field and re-enter credentials before checking again.
 
-The wizard accepts a detour to a saved manual connection. KeenProxy supplies the built-in routes and controls interface binding.
+Import a self-contained profile. KeenProxy configures routing, DNS resolution and interface binding. If the wizard leaves the name or identifier blank, enter one of your own.
 
 Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Profiles can also be set in the [YAML configuration](getting-started.md).
 

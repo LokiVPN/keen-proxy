@@ -76,7 +76,7 @@ func wizardSuggestedName(draft connectionimport.Draft) string {
 		}
 		count++
 	}
-	return cmp.Or(strings.Join(strings.Fields(name), " "), draft.Summary.Protocol)
+	return strings.Join(strings.Fields(name), " ")
 }
 
 func (p pages) renderConnectionWizard(w http.ResponseWriter, r *http.Request, status int, cfg *model.Config, loc wizardLocation, view connectionWizardPage) {
@@ -122,7 +122,7 @@ func (p pages) renderWizardChoices(w http.ResponseWriter, r *http.Request, statu
 	}
 	choices := make([]wizardChoice, 0, len(draft.candidates))
 	for i, candidate := range draft.candidates {
-		name := wizardSuggestedName(candidate)
+		name := cmp.Or(wizardSuggestedName(candidate), candidate.Summary.Protocol)
 		if server := candidate.Summary.Server; server != "" {
 			name += " · " + server
 		}

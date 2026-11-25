@@ -1,38 +1,46 @@
 package connectionimport
 
 import (
+	"maps"
 	"net/url"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
-// importedIdentity prepares an untrusted label for the wizard. The wizard
-// checks the final name and ID again after choosing a unique identifier.
-func importedIdentity(draft Draft, label string, secrets []string) Draft {
-	draft = credentialDraft(draft, secrets)
+// importedIdentity keeps the payload values on the server and retains only a
+// redacted label as the candidate for the wizard's final identity check.
+func importedIdentity(draft Draft, label string, values, nonSummaryValues []string) Draft {
+	draft.Summary = redactSummary(draft.Summary, nonSummaryValues)
+	draft.secrets = values
 	const labelLimit = 160
-	name := subscription.ImportedConnectionLabel(label, labelLimit, secrets)
-	// Slugging can join words with the same separators used by a credential.
-	if name == "" || subscription.ContainsDisplaySecret(Slug(name), secrets) {
-		name = strings.TrimSpace(draft.Summary.Protocol + " " + draft.Summary.Server)
-	}
+	name := subscription.ImportedConnectionLabel(label, labelLimit, values)
 	draft.Connection.Name = strings.Join(strings.Fields(name), " ")
+	if draft.ContainsCredential(draft.Connection.Name) {
+		draft.Connection.Name = ""
+	}
 	return draft
 }
 
 func credentialDraft(draft Draft, secrets []string) Draft {
 	draft.secrets = secrets
-	if draft.ContainsCredential(draft.Summary.Server) {
-		draft.Summary.Server = ""
-	}
-	if draft.ContainsCredential(draft.Summary.SNI) {
-		draft.Summary.SNI = ""
-	}
+	draft.Summary = redactSummary(draft.Summary, secrets)
 	return draft
 }
 
-// ContainsCredential checks the final values without exposing the secret list
+func redactSummary(summary Summary, values []string) Summary {
+	if subscription.ContainsDisplaySecret(summary.Server, values) {
+		summary.Server = ""
+	}
+	if subscription.ContainsDisplaySecret(summary.SNI, values) {
+		summary.SNI = ""
+	}
+	return summary
+}
+
+// ContainsCredential checks the final values without exposing the inventory
 // or parsing the draft again.
 func (d Draft) ContainsCredential(values ...string) bool {
 	for _, value := range values {
@@ -43,77 +51,85 @@ func (d Draft) ContainsCredential(values ...string) bool {
 	return false
 }
 
-var profileKeySeparators = strings.NewReplacer("-", "", "_", "")
-
-func normalizedProfileKey(key string) string {
-	return strings.ToLower(profileKeySeparators.Replace(key))
-}
-
-func credentialField(key string) bool {
-	key = normalizedProfileKey(key)
-	for _, suffix := range []string{"password", "passwd", "passphrase", "uuid", "token", "key", "psk", "secret"} {
-		if strings.HasSuffix(key, suffix) {
-			return true
+// profileValues walks the full imported profile, including nested objects and
+// arrays. The selected import label is removed before entering this walk.
+func profileValues(values []string, profile any, minimum int) []string {
+	switch value := profile.(type) {
+	case string:
+		values = appendProfileValue(values, value, minimum)
+	case map[string]any:
+		for _, field := range value {
+			values = profileValues(values, field, minimum)
+		}
+	case []any:
+		for _, item := range value {
+			values = profileValues(values, item, minimum)
+		}
+	case []string:
+		for _, item := range value {
+			values = appendProfileValue(values, item, minimum)
 		}
 	}
-	switch key {
-	case "username", "auth", "authstr", "shortid":
-		return true
-	default:
-		return false
-	}
+	return values
 }
 
-func profileSecrets(profile map[string]any) []string {
-	var secrets []string
-	var collect func(any, bool)
-	collect = func(value any, sensitive bool) {
-		switch v := value.(type) {
-		case string:
-			if sensitive && v != "" {
-				secrets = append(secrets, v)
-			}
-		case map[string]any:
-			for key, field := range v {
-				collect(field, sensitive || credentialField(key))
-			}
-		case []any:
-			for _, item := range v {
-				collect(item, sensitive)
-			}
-		case []map[string]any:
-			for _, item := range v {
-				collect(item, sensitive)
-			}
-		case []string:
-			for _, item := range v {
-				collect(item, sensitive)
+func appendProfileValue(values []string, value string, minimum int) []string {
+	if utf8.RuneCountInString(value) < minimum {
+		return values
+	}
+	values = append(values, value)
+	// Multiword payloads can contain a standalone value, for example the
+	// credentials after an HTTP authentication scheme.
+	trimmed := strings.TrimSpace(value)
+	if strings.IndexFunc(trimmed, unicode.IsSpace) >= 0 {
+		for word := range strings.FieldsSeq(trimmed) {
+			if utf8.RuneCountInString(word) >= 3 {
+				values = append(values, word)
 			}
 		}
 	}
-	collect(profile, false)
-	return secrets
+	return values
 }
 
-func linkSecrets(link string, secrets []string) []string {
+// nonSummaryProfile leaves out the exact fields projected as type, server
+// and SNI. Occurrences elsewhere in the payload still protect the summary.
+func nonSummaryProfile(profile map[string]any, endpoint bool) map[string]any {
+	rest := maps.Clone(profile)
+	delete(rest, "type")
+	delete(rest, "server")
+	if tls, ok := rest["tls"].(map[string]any); ok {
+		tls = maps.Clone(tls)
+		delete(tls, "server_name")
+		rest["tls"] = tls
+	}
+	if peers, ok := rest["peers"].([]any); endpoint && ok && len(peers) == 1 {
+		if peer, ok := peers[0].(map[string]any); ok {
+			peer = maps.Clone(peer)
+			delete(peer, "address")
+			rest["peers"] = []any{peer}
+		}
+	}
+	return rest
+}
+
+func linkValues(link string) (values, nonSummary []string) {
 	u, err := url.Parse(link)
 	if err != nil {
-		return secrets
+		return nil, nil
 	}
 	if u.User != nil {
 		password, _ := u.User.Password()
-		secrets = append(secrets, u.User.Username(), password)
+		values = appendProfileValue(values, u.User.Username(), 1)
+		values = appendProfileValue(values, password, 1)
+		nonSummary = append(nonSummary, values...)
 	}
-	// Read named credentials from the saved link even when a protocol's
-	// adapter ignores that option. Query text still belongs to the payload.
-	for field := range strings.FieldsFuncSeq(u.RawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
-		key, value, ok := strings.Cut(field, "=")
-		key, keyErr := url.QueryUnescape(key)
-		if ok && keyErr == nil && credentialField(key) {
-			if value, err := url.QueryUnescape(value); err == nil {
-				secrets = append(secrets, value)
+	for key, list := range u.Query() {
+		for _, value := range list {
+			values = appendProfileValue(values, value, 1)
+			if key != "sni" && key != "peer" {
+				nonSummary = appendProfileValue(nonSummary, value, 3)
 			}
 		}
 	}
-	return secrets
+	return values, nonSummary
 }

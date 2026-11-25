@@ -81,7 +81,7 @@ func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id st
 		return errors.New("missing connection to validate")
 	}
 	changed := cfg.Connections[i]
-	if err := connectionimport.ValidateRoutingOptions(changed, cfg); err != nil {
+	if err := connectionimport.ValidateRoutingOptions(changed); err != nil {
 		return err
 	}
 	if err := api.ValidateProfileFields(changed); err != nil {

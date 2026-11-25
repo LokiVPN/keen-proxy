@@ -73,7 +73,10 @@ func Manual(f url.Values) (Draft, error) {
 		Connection: model.Connection{Type: model.ConnSingBox, Outbound: out},
 		Summary:    outboundSummary(out),
 	}
-	return credentialDraft(draft, profileSecrets(out)), nil
+	values := profileValues(
+		[]string{f.Get("username"), f.Get("password"), f.Get("shortId")}, nonSummaryProfile(out, false), 3,
+	)
+	return credentialDraft(draft, values), nil
 }
 
 var (

@@ -187,6 +187,41 @@ func TestParseConnectionLink(t *testing.T) {
 	}
 }
 
+func TestImportedIdentityTreatsProfileValuesAsPrivate(t *testing.T) {
+	for _, tt := range []struct {
+		name, raw, filename, server string
+		values                      []string
+	}{
+		{"JSON leaves", `{"type":"http","server":"proxy.example","server_port":8080,"tag":"Office","headers":{"Proxy-Authorization":["Basic fixture-header"],"X-Nested":["fixture-value","xy"]}}`,
+			"", "proxy.example:8080", []string{"http", "proxy.example", "Basic fixture-header", "fixture-header", "fixture-value"}},
+		{"link options", "trojan://q@proxy.example:443?arbitrary=fixture-option&another=z#Office",
+			"", "proxy.example:443", []string{"q", "fixture-option", "z"}},
+		{"WireGuard assignments", strings.Replace(wireGuardConf, "[Peer]", "DNS=192.0.2.53, fixture.example\nMTU=1400\n[Peer]", 1),
+			"Office.conf", "[2001:db8::1]:51820", []string{wireGuardKey, "fixture.example", "1400"}},
+		{"AmneziaWG assignments", strings.Replace(wireGuardConf, "[Peer]", "Jc=0\nDNS=192.0.2.53\n[Peer]", 1),
+			"Office.conf", "[2001:db8::1]:51820", []string{wireGuardKey, "192.0.2.53"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			drafts, err := Parse(tt.raw, tt.filename)
+			if err != nil || len(drafts) != 1 {
+				t.Fatalf("import failed: %v", err)
+			}
+			d := drafts[0]
+			if d.Connection.Name != "Office" || d.Summary.Server != tt.server {
+				t.Fatal("import lost the safe label or server summary")
+			}
+			for _, value := range tt.values {
+				if !d.ContainsCredential("label-" + value + "-suffix") {
+					t.Error("identity check missed an imported profile value")
+				}
+			}
+			if d.ContainsCredential("Office") || tt.name == "JSON leaves" && d.ContainsCredential("xy") {
+				t.Fatal("identity check treated the label or a short JSON value as profile data")
+			}
+		})
+	}
+}
+
 func TestBuildManualProtocols(t *testing.T) {
 	fields := url.Values{
 		"server": {"vpn.example.test"}, "port": {"443"}, "uuid": {"00000000-0000-4000-8000-000000000000"},

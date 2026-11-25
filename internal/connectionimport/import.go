@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"maps"
 	"path"
 	"strings"
 	"unicode"
@@ -84,7 +85,14 @@ func importLink(text, fallback string) (Draft, error) {
 		Connection: model.Connection{Type: model.ConnLink, Link: strings.Clone(text)},
 		Summary:    outboundSummary(out),
 	}
-	return importedIdentity(draft, cmp.Or(links.Name(text), fallback), linkSecrets(text, profileSecrets(out))), nil
+	values, nonSummary := linkValues(text)
+	nonSummary = profileValues(nonSummary, nonSummaryProfile(out, false), 1)
+	// The adapter assigns the outbound type from the URL scheme. Its fixed
+	// label can still be used as a fallback for a share link.
+	payload := maps.Clone(out)
+	delete(payload, "type")
+	values = profileValues(values, payload, 1)
+	return importedIdentity(draft, cmp.Or(links.Name(text), fallback), values, nonSummary), nil
 }
 
 func importAmnezia(uri string) ([]Draft, error) {
@@ -131,12 +139,13 @@ func importJSON(text, fallback string) (Draft, error) {
 		draft.Connection.Outbound = profile.options
 		draft.Summary = outboundSummary(profile.options)
 	}
-	return importedIdentity(draft, cmp.Or(name, fallback), profileSecrets(profile.options)), nil
+	values := profileValues(nil, profile.options, 3)
+	nonSummary := profileValues(nil, nonSummaryProfile(profile.options, profile.endpoint), 3)
+	return importedIdentity(draft, cmp.Or(name, fallback), values, nonSummary), nil
 }
 
 func oneJSONProfile(root map[string]json.RawMessage, raw json.RawMessage) (jsonProfile, error) {
 	var profile jsonProfile
-	var wrapped bool
 	add := func(data json.RawMessage, endpoint bool) error {
 		var options map[string]any
 		if err := json.Unmarshal(data, &options); err != nil {
@@ -155,29 +164,10 @@ func oneJSONProfile(root map[string]json.RawMessage, raw json.RawMessage) (jsonP
 		profile = jsonProfile{options: options, endpoint: endpoint}
 		return nil
 	}
-	for _, field := range []string{"outbound", "endpoint"} {
-		if single, ok := root[field]; ok {
-			wrapped = true
-			if err := add(single, field == "endpoint"); err != nil {
-				return jsonProfile{}, err
-			}
-		}
-		if plural, ok := root[field+"s"]; ok {
-			wrapped = true
-			var list []json.RawMessage
-			if err := json.Unmarshal(plural, &list); err != nil || list == nil {
-				return jsonProfile{}, ErrInvalid
-			}
-			for _, item := range list {
-				if err := add(item, field == "endpoint"); err != nil {
-					return jsonProfile{}, err
-				}
-			}
-		}
-	}
-	if !wrapped {
+	// A standalone profile can have an outbounds option of its own.
+	if kindJSON, ok := root["type"]; ok {
 		var kind string
-		_ = json.Unmarshal(root["type"], &kind)
+		_ = json.Unmarshal(kindJSON, &kind)
 		switch kind {
 		case "wireguard", "tailscale", "openvpn", "openconnect":
 			if err := add(raw, true); err != nil {
@@ -186,6 +176,25 @@ func oneJSONProfile(root map[string]json.RawMessage, raw json.RawMessage) (jsonP
 		default:
 			if err := add(raw, false); err != nil {
 				return jsonProfile{}, err
+			}
+		}
+	} else {
+		for _, field := range []string{"outbound", "endpoint"} {
+			if single, ok := root[field]; ok {
+				if err := add(single, field == "endpoint"); err != nil {
+					return jsonProfile{}, err
+				}
+			}
+			if plural, ok := root[field+"s"]; ok {
+				var list []json.RawMessage
+				if err := json.Unmarshal(plural, &list); err != nil || list == nil {
+					return jsonProfile{}, ErrInvalid
+				}
+				for _, item := range list {
+					if err := add(item, field == "endpoint"); err != nil {
+						return jsonProfile{}, err
+					}
+				}
 			}
 		}
 	}
