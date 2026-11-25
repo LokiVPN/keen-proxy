@@ -5,6 +5,12 @@
 </nav>
 {{end}}
 
+{{define "page-help"}}
+<a class="help" href="https://github.com/LokiVPN/keen-proxy/blob/master/docs/{{.Lang}}/user-guide.md#{{if .Setup}}first-run{{else if eq .ActiveTab "/"}}overview{{else if eq .ActiveTab "/routing"}}routing{{else if eq .ActiveTab "/devices"}}devices{{else if eq .ActiveTab "/connections"}}connections{{else}}diagnostics{{end}}" aria-label="{{.Text.setup_help}}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .4c0 1.7-2.5 2-2.5 3.6M12 16h.01"/></svg>
+</a>
+{{end}}
+
 {{define "view-note"}}
 <div class="note view-note">
   <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="10.5" width="13" height="9.5" rx="1.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>

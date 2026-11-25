@@ -1,5 +1,5 @@
 {{define "connections"}}{{template "page-start" .}}
-      <h1>KeenProxy</h1>
+      <div class="title-row"><h1>KeenProxy</h1>{{template "page-help" .}}</div>
       {{template "tabs" .}}
       {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
       {{if .Message}}<p class="note" role="alert">{{.Message}}</p>{{end}}

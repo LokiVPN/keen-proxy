@@ -1,9 +1,7 @@
 {{define "setup"}}{{template "page-start" .}}
       <div class="title-row">
         <h1>{{.Title}}</h1>
-        <a class="help" href="https://github.com/LokiVPN/keen-proxy/blob/master/docs/{{.Lang}}/user-guide.md#first-run" aria-label="{{.Text.setup_help}}">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .4c0 1.7-2.5 2-2.5 3.6M12 16h.01"/></svg>
-        </a>
+        {{template "page-help" .}}
       </div>
       <p class="lead">{{if .Setup.Replacing}}{{.Text.setup_replace_intro}}{{else if .Setup.KeepRouting}}{{.Text.setup_add_intro}}{{else}}{{.Text.setup_intro}}{{end}}</p>
       {{$checked := or .Setup.Result .Setup.Input}}
@@ -32,7 +30,7 @@
         <dl class="facts">
           {{if .Expiry}}<dt>{{$.Text.setup_expiry}}</dt><dd>{{.Expiry}}</dd>{{end}}
           {{if .Traffic}}<dt>{{$.Text.setup_traffic}}</dt><dd>{{.Traffic}}</dd>{{end}}
-          <dt>{{$.Text.setup_servers}}</dt><dd class="clip">{{.Servers}}</dd>
+          <dt>{{$.Text.setup_servers}}</dt><dd class="setup-servers">{{.Servers}}</dd>
           <dt>{{$.Text.setup_routing}}</dt>
           <dd>
             {{if .RouteName}}<strong class="clip">{{.RouteName}}</strong>{{end}}

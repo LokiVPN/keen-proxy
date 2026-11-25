@@ -1,6 +1,7 @@
 {{define "overview"}}{{template "page-start" .}}
       <div class="title-row overview-title">
         <h1>KeenProxy</h1>
+        {{template "page-help" .}}
         <form class="overview-switch" method="post" action="/overview/pause">
           <input type="hidden" name="rev" value="{{.Overview.Rev}}">
           <label class="tg">
