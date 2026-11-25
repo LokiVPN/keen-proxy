@@ -223,6 +223,71 @@ func TestConnectionDetailRendersUserspaceEndpointsWithoutEngineValidation(t *tes
 	}
 }
 
+func TestConnectionCheckAndSaveReleaseUserspaceStacks(t *testing.T) {
+	const privateKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+	const publicKey = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="
+	d := &detailRuntimeDaemon{wizardRuntimeDaemon: wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
+		{ID: "wg", Type: model.ConnWireGuard, WireGuard: &model.WireGuard{
+			PrivateKey: privateKey, Address: []string{"192.0.2.2/32"},
+			Peer: model.WGPeer{Endpoint: "198.51.100.2:51820", PublicKey: publicKey},
+		}},
+		{ID: "awg", Type: model.ConnAmneziaWG, AmneziaWG: "[Interface]\nPrivateKey = " + privateKey +
+			"\nAddress = 192.0.2.3/32\nJc = 3\nJmin = 10\nJmax = 20\n[Peer]\nPublicKey = " + publicKey +
+			"\nEndpoint = 198.51.100.3:51820\nAllowedIPs = 0.0.0.0/0\n"},
+		{ID: "spare", Type: model.ConnLink, Link: "socks5://spare.example:1080"},
+	}}}}
+	d.cfg.Defaults()
+	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	post := func(path string, form url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for _, c := range cookies {
+			r.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	previewField := regexp.MustCompile(`name="preview" value="([^"]+)"`)
+	for range 3 {
+		rev := ui.Revision(d.Config())
+		before := runtime.NumGoroutine()
+		checked := post("/connections/id/spare/replace/check", url.Values{
+			"rev": {rev}, "method": {"paste"}, "profile": {"socks5://checked.example.test:1080"},
+		})
+		preview := previewField.FindStringSubmatch(checked.Body.String())
+		if checked.Code != http.StatusOK || preview == nil {
+			t.Fatalf("wizard Check returned HTTP %d without a preview", checked.Code)
+		}
+		if after := runtime.NumGoroutine(); after > before {
+			t.Errorf("wizard Check retained %d goroutines", after-before)
+		}
+		before = runtime.NumGoroutine()
+		saved := post("/connections/new/save", url.Values{
+			"rev": {rev}, "preview": {html.UnescapeString(preview[1])}, "replace": {"spare"}, "name": {"Reserve"},
+		}, checked.Result().Cookies()...)
+		if saved.Code != http.StatusSeeOther {
+			t.Fatalf("wizard Save returned HTTP %d", saved.Code)
+		}
+		if after := runtime.NumGoroutine(); after > before {
+			t.Errorf("wizard Save retained %d goroutines", after-before)
+		}
+		before = runtime.NumGoroutine()
+		detail := post("/connections/id/spare", url.Values{
+			"rev": {ui.Revision(d.Config())}, "enabled": {"0", "1"}, "fallback": {"wg"},
+		})
+		if detail.Code != http.StatusSeeOther {
+			t.Fatalf("detail Save returned HTTP %d", detail.Code)
+		}
+		if after := runtime.NumGoroutine(); after > before {
+			t.Errorf("detail Save retained %d goroutines", after-before)
+		}
+	}
+	if d.applies != 6 {
+		t.Fatalf("expected both Saves to apply each round, got %d", d.applies)
+	}
+}
+
 type connectionValidationSpy struct {
 	uiDeps
 	engineChecks int

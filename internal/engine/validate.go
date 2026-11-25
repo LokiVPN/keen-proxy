@@ -7,8 +7,13 @@ import (
 	"fmt"
 
 	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common"
 	sjson "github.com/sagernet/sing/common/json"
+	"github.com/sagernet/sing/service"
 
 	"github.com/ordo-systems/keen-proxy/internal/awg"
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -29,12 +34,16 @@ func ValidateRuntimeProfiles(ctx context.Context, config []byte) error {
 	return validateProfiles(ctx, config, true)
 }
 
-func validateProfiles(ctx context.Context, config []byte, runtimeGraph bool) error {
+func validateProfiles(ctx context.Context, config []byte, runtimeGraph bool) (err error) {
+	ctx = Context(service.ExtendContext(ctx))
 	options, err := decodeOptions(ctx, config)
 	if err != nil {
 		return err
 	}
-	instance, err := box.New(box.Options{Context: Context(ctx), Options: options})
+	registry := &validationEndpoints{EndpointRegistry: service.FromContext[adapter.EndpointRegistry](ctx)}
+	ctx = service.ContextWith[adapter.EndpointRegistry](ctx, registry)
+	defer func() { err = errors.Join(err, registry.close()) }()
+	instance, err := box.New(box.Options{Context: ctx, Options: options})
 	if err != nil {
 		return err
 	}
@@ -42,6 +51,30 @@ func validateProfiles(ctx context.Context, config []byte, runtimeGraph bool) err
 		return errors.Join(validateRuntimeDependencies(instance), instance.Close())
 	}
 	return instance.Close()
+}
+
+// validationEndpoints owns the stacks allocated by WireGuard and AmneziaWG
+// constructors. An unstarted box has not registered the endpoint cleanups,
+// and a partially constructed box may fail before returning an instance.
+type validationEndpoints struct {
+	adapter.EndpointRegistry
+	stacks []adapter.Endpoint
+}
+
+func (r *validationEndpoints) Create(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag, kind string, options any) (adapter.Endpoint, error) {
+	endpoint, err := r.EndpointRegistry.Create(ctx, router, logger, tag, kind, options)
+	if err == nil && kind == C.TypeWireGuard {
+		r.stacks = append(r.stacks, endpoint)
+	}
+	return endpoint, err
+}
+
+func (r *validationEndpoints) close() error {
+	var err error
+	for _, endpoint := range r.stacks {
+		err = errors.Join(err, common.Close(endpoint))
+	}
+	return err
 }
 
 // RuntimeOutboundTags returns the configured and generated tags consumed by
