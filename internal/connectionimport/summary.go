@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/net/idna"
 
+	"github.com/ordo-systems/keen-proxy/internal/profiledisplay"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
@@ -29,7 +30,7 @@ var protocolLabel = map[string]string{
 
 func profileSummary(profile map[string]any, endpoint bool) Summary {
 	summary, rawServer, sni := profileSummaryValues(profile, endpoint)
-	return summary.hideRepeatedCredentials(rawServer, sni, profileCredentials(profile, nil))
+	return summary.hideRepeatedCredentials(rawServer, sni, profiledisplay.Credentials(profile))
 }
 
 func profileSummaryValues(profile map[string]any, endpoint bool) (Summary, string, string) {

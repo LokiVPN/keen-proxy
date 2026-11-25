@@ -9,6 +9,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/awg"
 	"github.com/ordo-systems/keen-proxy/internal/links"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/profiledisplay"
 )
 
 // Facts is the public display projection of a saved profile. The original
@@ -30,9 +31,9 @@ func ConnectionFacts(conn model.Connection) Facts {
 			host, port, _ := net.SplitHostPort(wg.Peer.Endpoint)
 			leaves := profileDisplayStrings(wg)
 			facts.Server = displayAddress(host, port)
-			facts.TypeHidden = repeatsProfileString(leaves, nil, facts.Protocol)
-			facts.TransportHidden = repeatsProfileString(leaves, nil, facts.Transport)
-			facts.ServerHidden = facts.Server != "" && repeatsProfileString(leaves, []string{"Peer", "Endpoint"}, facts.Server, wg.Peer.Endpoint, host)
+			facts.TypeHidden = profiledisplay.Repeats(leaves, nil, facts.Protocol)
+			facts.TransportHidden = profiledisplay.Repeats(leaves, nil, facts.Transport)
+			facts.ServerHidden = facts.Server != "" && profiledisplay.Repeats(leaves, []string{"Peer", "Endpoint"}, facts.Server, wg.Peer.Endpoint, host)
 			if facts.ServerHidden {
 				facts.Server = ""
 			}
@@ -75,7 +76,7 @@ func savedProfileFacts(profile map[string]any, endpoint bool, protocol string) F
 	if facts.Security != "" {
 		typ += " · " + facts.Security
 	}
-	facts.TypeHidden = repeatsProfileString(leaves, []string{"type"}, typ, kind)
+	facts.TypeHidden = profiledisplay.Repeats(leaves, []string{"type"}, typ, kind)
 	switch kind {
 	case "direct", "block", "selector", "urltest", "chain":
 		facts.RoutingType = kind
@@ -88,11 +89,11 @@ func savedProfileFacts(profile map[string]any, endpoint bool, protocol string) F
 			host, _ = peer["address"].(string)
 		}
 	}
-	facts.ServerHidden = facts.Server != "" && repeatsProfileString(leaves, serverPath, facts.Server, rawServer, host)
+	facts.ServerHidden = facts.Server != "" && profiledisplay.Repeats(leaves, serverPath, facts.Server, rawServer, host)
 	if facts.ServerHidden {
 		facts.Server = ""
 	}
-	facts.SNIHidden = facts.SNI != "" && repeatsProfileString(leaves, []string{"tls", "server_name"}, facts.SNI, rawSNI)
+	facts.SNIHidden = facts.SNI != "" && profiledisplay.Repeats(leaves, []string{"tls", "server_name"}, facts.SNI, rawSNI)
 	if facts.SNIHidden {
 		facts.SNI = ""
 	}
@@ -103,22 +104,22 @@ func savedProfileFacts(profile map[string]any, endpoint bool, protocol string) F
 		facts.Transport = "UDP"
 	}
 	if facts.Transport != "" {
-		facts.TransportHidden = repeatsProfileString(leaves, []string{"transport", "type"}, facts.Transport, mode)
+		facts.TransportHidden = profiledisplay.Repeats(leaves, []string{"transport", "type"}, facts.Transport, mode)
 	}
 	if endpoint {
-		facts.setAddresses(credentialStrings(profile["address"]), leaves, "address")
+		facts.setAddresses(profiledisplay.StringValues(profile["address"]), leaves, "address")
 	}
 	return facts
 }
 
-func (f *Facts) setAddresses(addresses []string, leaves []profileString, field string) {
+func (f *Facts) setAddresses(addresses []string, leaves []profiledisplay.StringLeaf, field string) {
 	for _, address := range addresses {
 		if prefix, err := netip.ParsePrefix(address); err == nil {
 			f.Addresses = append(f.Addresses, prefix.String())
-			f.AddressesHidden = f.AddressesHidden || repeatsProfileString(leaves, []string{field}, address, prefix.String())
+			f.AddressesHidden = f.AddressesHidden || profiledisplay.Repeats(leaves, []string{field}, address, prefix.String())
 		}
 	}
-	f.AddressesHidden = f.AddressesHidden || repeatsProfileString(leaves, []string{field}, strings.Join(f.Addresses, ", "))
+	f.AddressesHidden = f.AddressesHidden || profiledisplay.Repeats(leaves, []string{field}, strings.Join(f.Addresses, ", "))
 	if f.AddressesHidden {
 		f.Addresses = nil
 	}

@@ -21,6 +21,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/ordo-systems/keen-proxy/internal/links"
+	"github.com/ordo-systems/keen-proxy/internal/profiledisplay"
 )
 
 const maxNodes = 256
@@ -56,7 +57,7 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 		if !shareLinkPattern.MatchString(line) {
 			continue
 		}
-		node, ok := parseNode(line, sensitive)
+		node, ok := parseNode(line, sensitive, len(result.Nodes)+1)
 		if !ok {
 			result.Skipped++
 			continue
@@ -88,12 +89,17 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 	return result
 }
 
-func parseNode(link string, sensitive displayRedactor) (Node, bool) {
-	id := nodeID(link)
+func parseNode(link string, sensitive displayRedactor, position int) (Node, bool) {
+	profile, err := links.Parse(link)
+	if err != nil {
+		return Node{}, false
+	}
+	id := nodeID(profile)
 	if id == "" {
 		return Node{}, false
 	}
-	name := displayText(links.Name(link), nodeNameLimit, sensitive)
+	original := links.Name(link)
+	name := displayNodeName(profile, original, original, sensitive, position)
 	if name == "" {
 		protocol, _, _ := strings.Cut(link, "://")
 		name = strings.ToUpper(protocol) + " " + id[:8]
@@ -101,11 +107,7 @@ func parseNode(link string, sensitive displayRedactor) (Node, bool) {
 	return Node{ID: id, Name: name, Link: strings.Clone(link)}, true
 }
 
-func nodeID(link string) string {
-	outbound, err := links.Parse(link)
-	if err != nil {
-		return ""
-	}
+func nodeID(outbound links.Outbound) string {
 	canonical, err := json.Marshal(outbound)
 	if err != nil {
 		return ""
@@ -116,6 +118,18 @@ func nodeID(link string) string {
 	hash.Write([]byte("keenproxy-subscription-node-v1\x00"))
 	hash.Write(canonical)
 	return hex.EncodeToString(hash.Sum(nil)[:16])
+}
+
+// displayNodeName checks the original label, any restored spelling, and the
+// bounded display form. Checking before truncation also protects partial keys.
+func displayNodeName(profile links.Outbound, original, supplied string, sensitive displayRedactor, position int) string {
+	name := displayText(supplied, nodeNameLimit, sensitive)
+	credentials := profiledisplay.Credentials(profile)
+	if ContainsDisplaySecret(original, credentials) || ContainsDisplaySecret(supplied, credentials) || ContainsDisplaySecret(name, credentials) ||
+		profiledisplay.RepeatsCredential(credentials, decodeDisplayEscapes(original), decodeDisplayEscapes(supplied), name) {
+		return fmt.Sprintf("Node %d", position)
+	}
+	return name
 }
 
 func decodeShareListBody(body string) string {

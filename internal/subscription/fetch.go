@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/ordo-systems/keen-proxy/internal/links"
 )
 
 const (
@@ -83,7 +85,13 @@ func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nod
 	metadata.SupportURL = metadataURL(metadata.SupportURL, sensitive)
 	metadata.ProfileURL = metadataURL(metadata.ProfileURL, sensitive)
 	for i := range nodes {
-		nodes[i].Name = displayText(nodes[i].Name, nodeNameLimit, sensitive)
+		node := &nodes[i]
+		profile, err := links.Parse(node.Link)
+		if err != nil {
+			node.Name = fmt.Sprintf("Node %d", i+1)
+			continue
+		}
+		node.Name = displayNodeName(profile, links.Name(node.Link), node.Name, sensitive, i+1)
 	}
 	return func(entry string) string { return displayRoutingCategory(entry, sensitive) }
 }

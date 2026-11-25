@@ -1,4 +1,4 @@
-package connectionimport
+package profiledisplay
 
 import (
 	"encoding/base64"
@@ -18,7 +18,10 @@ var authorizationHeaders = []string{
 	"Authorization", "Proxy-Authorization", "X-API-Key", "X-Auth-Token", "Cookie",
 }
 
-// profileCredentials reads credential fields only for the summary projection.
+// Credentials collects configured and decoded credential spellings for display checks.
+func Credentials(profile any) []string { return profileCredentials(profile, nil) }
+
+// profileCredentials collects recognized dial credentials from nested options.
 // Case folding covers the field spellings accepted by sing-box's decoder.
 func profileCredentials(value any, credentials []string) []string {
 	switch node := value.(type) {
@@ -42,7 +45,7 @@ func profileCredentials(value any, credentials []string) []string {
 				credentials = append(credentials, decodedProfileBytes(field))
 				fallthrough
 			case hysteria && strings.EqualFold(key, "obfs"), matchesCredentialField(key, profileCredentialFields):
-				for _, secret := range credentialStrings(field) {
+				for _, secret := range StringValues(field) {
 					credentials = appendCredentialForms(credentials, secret)
 				}
 			}
@@ -69,7 +72,7 @@ func headerCredentials(headers map[string]any, credentials []string) []string {
 		if !matchesCredentialField(key, authorizationHeaders) {
 			continue
 		}
-		for _, value := range credentialStrings(field) {
+		for _, value := range StringValues(field) {
 			credentials = append(credentials, value)
 			credentials = appendAuthorizationForms(credentials, value)
 		}
@@ -120,7 +123,8 @@ func decodedCredential(value string) string {
 	return ""
 }
 
-func credentialStrings(value any) []string {
+// StringValues accepts scalar or array options from JSON-shaped profiles.
+func StringValues(value any) []string {
 	switch field := value.(type) {
 	case string:
 		return []string{field}

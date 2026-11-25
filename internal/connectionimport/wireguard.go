@@ -9,6 +9,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/awg"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/profiledisplay"
 )
 
 var (
@@ -65,7 +66,7 @@ func amneziaDraft(raw string) (Draft, error) {
 	summary := Summary{Protocol: "AmneziaWG", Server: server}
 	return Draft{
 		Connection: model.Connection{Type: model.ConnAmneziaWG, AmneziaWG: raw},
-		Summary:    summary.hideRepeatedCredentials(rawServer, "", profileCredentials(endpoint, nil)),
+		Summary:    summary.hideRepeatedCredentials(rawServer, "", profiledisplay.Credentials(endpoint)),
 	}, nil
 }
 

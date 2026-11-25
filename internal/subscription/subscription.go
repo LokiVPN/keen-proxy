@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ordo-systems/keen-proxy/internal/links"
 	"golang.org/x/net/idna"
 )
 
@@ -54,7 +55,8 @@ type Node struct {
 
 // MatchesLink checks the persisted ID against the link's normalized dial options.
 func (n Node) MatchesLink() bool {
-	return n.ID != "" && n.ID == nodeID(n.Link)
+	profile, err := links.Parse(n.Link)
+	return err == nil && n.ID != "" && n.ID == nodeID(profile)
 }
 
 // Metadata carries provider information for display and a bounded refresh hint.
