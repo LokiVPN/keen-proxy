@@ -63,7 +63,14 @@ func (p pages) connectionWizardCheck(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, connectionimport.ErrTooLarge) {
 			status = http.StatusRequestEntityTooLarge
 		}
-		p.renderConnectionWizard(w, r, status, cfg, loc, connectionWizardPage{Error: wizardImportError(localized(r), err)})
+		var field connectionimport.ManualField
+		var view connectionWizardPage
+		if loc.method == "manual" && errors.As(err, &field) {
+			view.manualError = string(field)
+		} else {
+			view.Error = wizardImportError(localized(r), err)
+		}
+		p.renderConnectionWizard(w, r, status, cfg, loc, view)
 		return
 	}
 	draft := connectionDraft{
@@ -147,7 +154,7 @@ func (p pages) reviewWizardProfile(w http.ResponseWriter, r *http.Request, cfg *
 	}
 	candidate := withWizardConnection(cfg, profile.Connection, draft.location.replace, id, name)
 	if err := p.deps.ValidateConnection(r.Context(), candidate, id); err != nil {
-		p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, "wizard_validation")
+		p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, wizardValidationKey(err))
 		return
 	}
 	draft.session = p.wizardSession(w, r, true)
@@ -173,7 +180,13 @@ func (p pages) connectionWizardSave(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
 	if err := p.deps.ValidateConnection(ctx, candidate, input.ID); err != nil {
-		p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, "wizard_validation")
+		key := wizardValidationKey(err)
+		if key == "wizard_tag_conflict" && draft.location.replace == "" {
+			input.IDError = key
+			p.renderWizardReview(w, r, http.StatusUnprocessableEntity, cfg, draft, input, "")
+		} else {
+			p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, key)
+		}
 		return
 	}
 	var unsaved *model.AppliedUnsavedError
@@ -187,6 +200,13 @@ func (p pages) connectionWizardSave(w http.ResponseWriter, r *http.Request) {
 	default:
 		redirectWithFlash(w, r, "/connections", "flash_saved")
 	}
+}
+
+func wizardValidationKey(err error) string {
+	if errors.Is(err, model.ErrConnectionTagConflict) {
+		return "wizard_tag_conflict"
+	}
+	return "wizard_validation"
 }
 
 func (p pages) takeWizardDraft(w http.ResponseWriter, r *http.Request, choosing bool) (connectionDraft, bool) {
@@ -206,22 +226,32 @@ func (p pages) wizardForm(w http.ResponseWriter, r *http.Request, limit int64) (
 		p.opts.AccessError(w, r, http.StatusForbidden)
 		return nil, wizardLocation{}
 	}
+	loc := wizardLocationFor(r.URL.Query())
+	segment := r.PathValue("id")
+	if segment != "" {
+		loc.replace = connectionIDFromSegment(segment)
+		if loc.replace == "" {
+			p.notFound(w, r)
+			return nil, loc
+		}
+	}
 	if r.ContentLength > limit {
-		p.wizardError(w, r, http.StatusRequestEntityTooLarge, p.deps.Config(), wizardLocation{}, "wizard_too_large")
-		return nil, wizardLocation{}
+		p.wizardError(w, r, http.StatusRequestEntityTooLarge, p.deps.Config(), loc, "wizard_too_large")
+		return nil, loc
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := r.ParseMultipartForm(limit); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		var maxBytes *http.MaxBytesError
 		if errors.As(err, &maxBytes) {
-			p.wizardError(w, r, http.StatusRequestEntityTooLarge, p.deps.Config(), wizardLocation{}, "wizard_too_large")
+			p.wizardError(w, r, http.StatusRequestEntityTooLarge, p.deps.Config(), loc, "wizard_too_large")
 		} else {
-			p.wizardError(w, r, http.StatusBadRequest, p.deps.Config(), wizardLocation{}, "wizard_invalid")
+			p.wizardError(w, r, http.StatusBadRequest, p.deps.Config(), loc, "wizard_invalid")
 		}
-		return nil, wizardLocation{}
+		return nil, loc
 	}
-	loc := wizardLocationFor(r.PostForm)
-	if replace, ok := r.PostForm["replace"]; ok {
+	selection := wizardLocationFor(r.PostForm)
+	loc.method, loc.protocol = selection.method, selection.protocol
+	if replace, ok := r.PostForm["replace"]; ok && segment == "" {
 		if len(replace) != 1 {
 			p.wizardError(w, r, http.StatusBadRequest, p.deps.Config(), loc, "wizard_invalid")
 			return nil, loc

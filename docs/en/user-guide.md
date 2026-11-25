@@ -52,6 +52,8 @@ Choose **Add connection**. **Paste** detects a share link, standalone Amnezia `v
 
 Choose **Check** to validate the profile on the router and review its type, server and SNI. Edit the name and identifier, then choose **Save** to apply the connection and return to the list. An identifier starts with a lowercase Latin letter or digit and uses up to 32 lowercase Latin letters, digits, hyphens or underscores. It must be unique and available for manual connections. If the checked draft expires or settings change in another window, check your input again. Replacing a profile reuses its identifier and all routing and reserve references.
 
+If an identifier conflicts with a routing tag, choose another one. After a manual input error, correct the highlighted field and re-enter credentials before checking again.
+
 Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Profiles can also be set in the [YAML configuration](getting-started.md).
 
 Groups, devices, networks, and DNS settings keep their references to a disabled connection. Traffic follows its configured enabled fallback chain; with no enabled fallback it is blocked, not silently routed directly or passed to the next rule. An explicitly configured **Direct** fallback remains intentional. DNS keeps its separate strict/direct failure policy: disabling a connection must not create a direct DNS path in strict mode.

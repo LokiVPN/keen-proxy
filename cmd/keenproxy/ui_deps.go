@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
+	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
@@ -19,6 +21,7 @@ type managementDaemon interface {
 	api.Daemon
 	PreviewSubscriptionDetails(context.Context, subscription.Source) daemon.SubscriptionPreviewDetails
 	ApplyIfCurrent(context.Context, *model.Config, string) error
+	CompileConnectionDraft(*model.Config) (compile.Output, error)
 	ApplySubscriptionPreview(context.Context, *model.Config, string, subscription.PreviewRef) error
 	RoutingStatus() daemon.RoutingStatus
 	ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, daemon.ProviderRulesState)
@@ -60,21 +63,42 @@ func (d uiDeps) Apply(ctx context.Context, cfg *model.Config, revision string) e
 	return d.daemon.ApplyIfCurrent(ctx, cfg, revision)
 }
 
-func (uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id string) error {
+func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	// Compile a replacement even when its saved switch is off. Apply receives
-	// the original switch state and all existing references.
+	i := slices.IndexFunc(cfg.Connections, func(c model.Connection) bool { return c.ID == id })
+	if i < 0 {
+		return errors.New("missing connection to validate")
+	}
+	changed := cfg.Connections[i]
+	if err := api.ValidateProfileFields(changed); err != nil {
+		return err
+	}
+	if err := d.validateConnectionGraph(ctx, cfg); err != nil || !changed.Disabled {
+		return err
+	}
+	// Also validate the edited payload with its switch on. The real
+	// candidate above keeps the disabled relay and other dormant profiles.
 	validation := *cfg
 	validation.Connections = slices.Clone(cfg.Connections)
-	for i := range validation.Connections {
-		if validation.Connections[i].ID == id {
-			validation.Connections[i].Disabled = false
-			break
+	validation.Connections[i].Disabled = false
+	return d.validateConnectionGraph(ctx, &validation)
+}
+
+func (d uiDeps) validateConnectionGraph(ctx context.Context, cfg *model.Config) error {
+	compiled, err := d.daemon.CompileConnectionDraft(cfg)
+	if err == nil {
+		var raw []byte
+		raw, err = compile.RuntimeValidationConfig(compiled)
+		if err == nil {
+			err = engine.ValidateRuntimeProfiles(ctx, raw)
 		}
 	}
-	return api.ValidateEngineProfiles(ctx, &validation)
+	if err != nil && !errors.Is(err, model.ErrConnectionTagConflict) {
+		return errors.New("core rejected the connection configuration")
+	}
+	return err
 }
 
 func (d uiDeps) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error {

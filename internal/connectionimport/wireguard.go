@@ -36,7 +36,7 @@ var knownWGOptions = map[string]UnsupportedWGOption{
 	"preup": "PreUp", "predown": "PreDown", "postup": "PostUp", "postdown": "PostDown",
 }
 
-func importConf(raw, text string) (Draft, error) {
+func importConf(raw, text, filename string) (Draft, error) {
 	if awgSetting.MatchString(text) {
 		for rawLine := range strings.SplitSeq(text, "\n") {
 			line := confLine(rawLine)
@@ -46,13 +46,13 @@ func importConf(raw, text string) (Draft, error) {
 				return Draft{}, knownWGOptions[name]
 			}
 		}
-		return amneziaDraft(model.Connection{Type: model.ConnAmneziaWG, AmneziaWG: raw})
+		return amneziaDraft(model.Connection{Type: model.ConnAmneziaWG, AmneziaWG: raw, Name: filename})
 	}
 	wg, err := parseWireGuard(text)
 	if err != nil {
 		return Draft{}, err
 	}
-	return wireGuardDraft(wg), nil
+	return importedIdentity(wireGuardDraft(wg), filename, []string{wg.PrivateKey, wg.Peer.PublicKey, wg.Peer.PresharedKey}), nil
 }
 
 func amneziaDraft(c model.Connection) (Draft, error) {
@@ -61,7 +61,8 @@ func amneziaDraft(c model.Connection) (Draft, error) {
 		return Draft{}, ErrInvalid
 	}
 	peer := endpoint["peers"].([]map[string]any)[0]
-	return Draft{Connection: c, Summary: Summary{Protocol: "AmneziaWG", Server: profileAddress(peer, "address", "port")}}, nil
+	draft := Draft{Connection: c, Summary: Summary{Protocol: "AmneziaWG", Server: profileAddress(peer, "address", "port")}}
+	return importedIdentity(draft, c.Name, profileSecrets(endpoint)), nil
 }
 
 func wireGuardDraft(wg *model.WireGuard) Draft {
@@ -121,8 +122,9 @@ func setWGField(wg *model.WireGuard, section, key, value string) error {
 	case "[interface]privatekey":
 		wg.PrivateKey = strings.Clone(value)
 	case "[interface]address":
-		wg.Address = splitWGList(value, func(r rune) bool { return r == ',' })
+		wg.Address = append(wg.Address, splitWGList(value, func(r rune) bool { return r == ',' })...)
 	case "[interface]dns":
+		// Check every assignment in order. DNS remains profile metadata.
 		if awg.ValidateDNSMetadata(value) != nil {
 			return ErrInvalidDNS
 		}
@@ -143,7 +145,7 @@ func setWGField(wg *model.WireGuard, section, key, value string) error {
 		}
 		wg.Peer.Endpoint = strings.Clone(value)
 	case "[peer]allowedips":
-		wg.Peer.AllowedIPs = splitWGList(value, func(r rune) bool { return r == ',' })
+		wg.Peer.AllowedIPs = append(wg.Peer.AllowedIPs, splitWGList(value, func(r rune) bool { return r == ',' })...)
 	case "[peer]persistentkeepalive":
 		n, err := strconv.ParseUint(value, 10, 16)
 		if err != nil {

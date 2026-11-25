@@ -955,11 +955,25 @@ func (d *Daemon) applyCoreLocked(out compile.Output) (bool, error) {
 }
 
 func (d *Daemon) compileRuntimeLocked() (compile.Output, error) {
-	return compile.Compile(compile.Input{
-		Config: d.cfg, Neighbors: d.neighbors, RuleSetDir: d.opt.RuleSetDir,
+	return compile.Compile(d.runtimeCompileInputLocked(d.cfg))
+}
+
+func (d *Daemon) runtimeCompileInputLocked(cfg *model.Config) compile.Input {
+	return compile.Input{
+		Config: cfg, Neighbors: d.neighbors, RuleSetDir: d.opt.RuleSetDir,
 		Subscriptions: d.subscriptionCompileInputLocked(),
 		ProviderRules: d.providerRulesLocked(),
-	})
+	}
+}
+
+// CompileConnectionDraft uses the current runtime snapshots to compile an
+// edited config without activation or writes. Snapshot payloads are immutable.
+func (d *Daemon) CompileConnectionDraft(cfg *model.Config) (compile.Output, error) {
+	d.mu.Lock()
+	input := d.runtimeCompileInputLocked(cfg)
+	input.Neighbors = maps.Clone(input.Neighbors)
+	d.mu.Unlock()
+	return compile.Compile(input)
 }
 
 // compileLocked compiles configuration and writes local rule-sets while d.mu

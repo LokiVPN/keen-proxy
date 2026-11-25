@@ -332,6 +332,7 @@ wizard_id_hint: "Use up to 32 lowercase Latin letters, digits, hyphens or unders
 wizard_name_required: "Enter a connection name."
 wizard_id_format: "Enter an identifier using the format below."
 wizard_id_taken: "This identifier is already used or reserved."
+wizard_tag_conflict: "This identifier conflicts with a routing tag. Use a different name or identifier."
 wizard_check_again: "Check the connection again before saving."
 wizard_validation: "Could not validate the connection. Check the protocol, required fields and keys."
 wizard_apply_error: "Could not apply the connection. Try saving again."

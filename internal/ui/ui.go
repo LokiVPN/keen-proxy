@@ -63,6 +63,7 @@ func New(deps Deps, opts Options) http.Handler {
 	mux.HandleFunc("POST /connections", p.connectionsPost)
 	mux.HandleFunc("GET /connections/new", p.connectionWizardGet)
 	mux.HandleFunc("GET /connections/id/{id}/replace", p.connectionWizardGet)
+	mux.HandleFunc("POST /connections/id/{id}/replace/check", p.connectionWizardCheck)
 	mux.HandleFunc("POST /connections/new/check", p.connectionWizardCheck)
 	mux.HandleFunc("POST /connections/new/save", p.connectionWizardSave)
 	mux.HandleFunc("GET /fragments/connections/{source}", p.connectionsFragment)

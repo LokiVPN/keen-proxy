@@ -9,10 +9,12 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ordo-systems/keen-proxy/internal/amnezia"
 	"github.com/ordo-systems/keen-proxy/internal/connectionimport"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 type wizardLocation struct {
@@ -22,10 +24,13 @@ type wizardLocation struct {
 type connectionWizardPage struct {
 	Entry, Revision, Method, Protocol, Replace string
 	Error, ChoiceToken                         string
+	CheckAction, ProtocolError                 string
 	Choices                                    []wizardChoice
 	Review                                     *wizardReview
 	Fields, Advanced                           []wizardField
 	Protocols                                  []wizardOption
+	AdvancedOpen                               bool
+	manualError                                string
 }
 
 type wizardReview struct {
@@ -79,15 +84,27 @@ func (p pages) renderConnectionWizard(w http.ResponseWriter, r *http.Request, st
 	data.SignedIn, data.ViewOnly = true, p.role(r) == RoleView
 	data.Title = data.Text["wizard_title"]
 	view.Entry = "/connections/new"
+	view.CheckAction = view.Entry + "/check"
 	if loc.replace != "" && connectionIndex(cfg, loc.replace) >= 0 {
 		data.Title = data.Text["wizard_replace"]
 		view.Entry = connectionDetailPath(loc.replace) + "/replace"
+		view.CheckAction = view.Entry + "/check"
 		view.Replace = connectionIDSegment(loc.replace)
 	}
 	view.Method, view.Protocol, view.Revision = cmp.Or(loc.method, "paste"), loc.protocol, Revision(cfg)
+	if view.Method != "paste" {
+		query := url.Values{"method": {view.Method}}
+		if view.Method == "manual" {
+			query.Set("protocol", view.Protocol)
+		}
+		view.CheckAction += "?" + query.Encode()
+	}
 	if view.Method == "manual" {
 		view.Protocols = wizardProtocols
 		view.Fields, view.Advanced = wizardManualFields(view.Protocol, data.Text)
+		if view.Review == nil && r.Method == http.MethodPost && (view.manualError != "" || view.Error != "") {
+			restoreWizardManual(&view, r.PostForm, data.Text)
+		}
 	}
 	data.ConnectionWizard = &view
 	render(w, r, status, "connection-wizard", data)
@@ -130,15 +147,12 @@ func (p pages) renderWizardReview(w http.ResponseWriter, r *http.Request, status
 
 func wizardImportError(text map[string]string, err error) string {
 	var wgOption connectionimport.UnsupportedWGOption
-	var field connectionimport.ManualField
 	switch {
 	case errors.As(err, &wgOption):
 		if wgOption == "" {
 			return text["wizard_wg_unsupported"]
 		}
 		return fmt.Sprintf(text["wizard_wg_option"], string(wgOption))
-	case errors.As(err, &field):
-		return fmt.Sprintf(text["wizard_manual_error"], text["wizard_field_"+string(field)])
 	case errors.Is(err, connectionimport.ErrTooLarge):
 		return text["wizard_too_large"]
 	case errors.Is(err, connectionimport.ErrMultiple):
@@ -162,16 +176,54 @@ func wizardImportError(text map[string]string, err error) string {
 
 type wizardField struct {
 	Key, Label, Type, Mode, Value, Placeholder string
+	Error                                      string
 	Wide                                       bool
 	Options                                    []wizardOption
+}
+
+var wizardSecretFields = []string{"uuid", "password", "privateKey", "peerKey", "psk", "publicKey", "shortId"}
+
+// restoreWizardManual retains only bounded display values for fields that
+// belong to the selected protocol. Credential controls start empty.
+func restoreWizardManual(view *connectionWizardPage, form url.Values, text map[string]string) {
+	var secrets []string
+	for _, key := range wizardSecretFields {
+		secrets = append(secrets, form[key]...)
+	}
+	secrets = append(secrets, form["username"]...)
+	message := fmt.Sprintf(text["wizard_manual_error"], text["wizard_field_"+view.manualError])
+	if view.manualError == "protocol" {
+		view.ProtocolError = message
+	}
+	for _, fields := range [][]wizardField{view.Fields, view.Advanced} {
+		for i := range fields {
+			field := &fields[i]
+			if field.Key == view.manualError {
+				field.Error = message
+			}
+			if field.Type == "password" || field.Key == "username" || len(form[field.Key]) != 1 {
+				continue
+			}
+			value := form.Get(field.Key)
+			if len(field.Options) != 0 && !slices.ContainsFunc(field.Options, func(option wizardOption) bool { return option.Value == value }) {
+				continue
+			}
+			if len(value) <= 1024 && utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n@") &&
+				!strings.Contains(value, "://") && !subscription.ContainsDisplaySecret(value, secrets) {
+				field.Value = value
+			}
+		}
+	}
+	view.AdvancedOpen = slices.ContainsFunc(view.Advanced, func(field wizardField) bool { return field.Error != "" })
 }
 
 func wizardManualFields(protocol string, text map[string]string) ([]wizardField, []wizardField) {
 	field := func(key string) wizardField {
 		f := wizardField{Key: key, Label: text["wizard_field_"+key], Type: "text"}
-		switch key {
-		case "uuid", "password", "privateKey", "peerKey", "psk", "publicKey", "shortId":
+		if slices.Contains(wizardSecretFields, key) {
 			f.Type = "password"
+		}
+		switch key {
 		case "port", "mtu", "keepalive":
 			f.Mode = "numeric"
 		}

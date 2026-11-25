@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,7 @@ func TestWizardValidationCompilesDisabledReplacement(t *testing.T) {
 		ID: "retired", Type: model.ConnSingBox, Disabled: true,
 		Outbound: map[string]any{"type": "socks", "server": "vpn.example.test", "server_port": 1080},
 	}}
-	deps := uiDeps{}
+	deps := uiDeps{daemon: &wizardRuntimeDaemon{}}
 	if err := deps.ValidateConnection(context.Background(), cfg, "retired"); err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +41,107 @@ func TestWizardValidationCompilesDisabledReplacement(t *testing.T) {
 	err := deps.ValidateConnection(context.Background(), cfg, "retired")
 	if err == nil || strings.Contains(err.Error(), sensitive) || !cfg.Connections[0].Disabled {
 		t.Fatal("profile validation failed to reject the disabled candidate privately without changing its switch")
+	}
+}
+
+func TestWizardValidationAcceptsUnchangedDormantProfile(t *testing.T) {
+	cfg := &model.Config{Connections: []model.Connection{
+		{ID: "retired", Disabled: true, Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "vless", "server": "old.example.test", "server_port": 443,
+		}},
+		{ID: "new", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "server": "vpn.example.test", "server_port": 1080,
+		}},
+	}}
+	cfg.Defaults()
+	deps := uiDeps{daemon: &wizardRuntimeDaemon{}}
+	if err := deps.ValidateConnection(context.Background(), cfg, "new"); err != nil {
+		t.Fatalf("dormant profile blocked an unrelated change: %v", err)
+	}
+	if err := deps.ValidateConnection(context.Background(), cfg, "retired"); err == nil {
+		t.Fatal("replacing the dormant entry skipped its own field checks")
+	}
+}
+
+type wizardRuntimeDaemon struct {
+	managementDaemon
+	cfg     *model.Config
+	applies int
+}
+
+func (d *wizardRuntimeDaemon) Config() *model.Config { return d.cfg.Clone() }
+
+func (d *wizardRuntimeDaemon) ApplyIfCurrent(_ context.Context, cfg *model.Config, rev string) error {
+	if rev != ui.Revision(d.Config()) {
+		return model.ErrConfigChanged
+	}
+	d.applies++
+	d.cfg = cfg.Clone()
+	return nil
+}
+
+func (*wizardRuntimeDaemon) CompileConnectionDraft(cfg *model.Config) (compile.Output, error) {
+	return compile.Compile(compile.Input{Config: cfg})
+}
+
+func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
+	d := &wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
+		{ID: "home", Type: model.ConnLink, Link: "socks5://home.example:1080", Fallback: model.TargetDirect},
+	}}}
+	d.cfg.Defaults()
+	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	post := func(path string, form url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for _, c := range cookies {
+			r.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	check := func(profile string) *httptest.ResponseRecorder {
+		return post("/connections/new/check", url.Values{"rev": {ui.Revision(d.Config())}, "method": {"paste"}, "profile": {profile}})
+	}
+	const profile = `{"type":"socks","server":"vpn.example.test","server_port":1080`
+	w := check(profile + `,"tag":"Failover Home"}`)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "conflicts with a routing tag") {
+		t.Errorf("Check accepted the generated selector's tag: HTTP %d", w.Code)
+	}
+	const missing = "synthetic-absent-detour"
+	for _, raw := range []string{
+		profile + `,"detour":"` + missing + `"}`,
+		profile + `,"tag":"Cycle","detour":"cycle"}`,
+	} {
+		w := check(raw)
+		if w.Code != http.StatusUnprocessableEntity || strings.Contains(w.Body.String(), missing) {
+			t.Errorf("invalid graph was accepted or its error was exposed: HTTP %d", w.Code)
+		}
+	}
+	checked := check(profile + `,"tag":"Office","detour":"failover-home"}`)
+	if checked.Code != http.StatusOK {
+		t.Fatalf("a valid generated-selector dependency failed Check: HTTP %d", checked.Code)
+	}
+	token := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		m := regexp.MustCompile(`name="preview" value="([^"]+)"`).FindStringSubmatch(w.Body.String())
+		if m == nil {
+			t.Fatal("a valid draft was not available")
+		}
+		return html.UnescapeString(m[1])
+	}
+	cookies := checked.Result().Cookies()
+	form := url.Values{
+		"rev": {ui.Revision(d.Config())}, "preview": {token(checked)}, "name": {"Office"}, "id": {"failover-home"},
+	}
+	w = post("/connections/new/save", form, cookies...)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "conflicts with a routing tag") || d.applies != 0 {
+		t.Fatalf("Save attempted Apply with the selector's tag: HTTP %d", w.Code)
+	}
+	form.Set("id", "office")
+	form.Set("preview", token(w))
+	if saved := post("/connections/new/save", form, cookies...); saved.Code != http.StatusSeeOther || d.applies != 1 {
+		t.Fatalf("corrected ID failed Save: HTTP %d", saved.Code)
 	}
 }
 

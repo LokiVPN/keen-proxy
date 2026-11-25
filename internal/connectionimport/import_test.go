@@ -45,6 +45,29 @@ func TestParseWireGuard(t *testing.T) {
 	}
 }
 
+func TestWireGuardAccumulatesRepeatedListAssignments(t *testing.T) {
+	conf := strings.Replace(wireGuardConf, "10.1.0.2/32, 2001:db8:1::2/128",
+		"10.1.0.2/32\nAddress = 2001:db8:1::2/128\nDNS = 1.1.1.1\nDNS = corp.example, 2001:db8::53", 1)
+	conf += "AllowedIPs=0.0.0.0/0\nAllowedIPs=::/0\n"
+	drafts, err := Parse(conf, "")
+	if err != nil || len(drafts) != 1 {
+		t.Fatalf("could not import repeated list assignments: %v", err)
+	}
+	wg := drafts[0].Connection.WireGuard
+	if !reflect.DeepEqual(wg.Address, []string{"10.1.0.2/32", "2001:db8:1::2/128"}) ||
+		!reflect.DeepEqual(wg.Peer.AllowedIPs, []string{"0.0.0.0/0", "::/0"}) {
+		t.Fatal("WireGuard import discarded an address family")
+	}
+	encoded, err := json.Marshal(wg)
+	if err != nil || strings.Contains(string(encoded), "corp.example") || strings.Contains(string(encoded), "1.1.1.1") {
+		t.Fatal("profile DNS escaped into the tunnel configuration")
+	}
+	bad := strings.Replace(conf, "DNS = 1.1.1.1", "DNS = 999.1.1.1", 1)
+	if _, err := Parse(bad, ""); !errors.Is(err, ErrInvalidDNS) {
+		t.Fatal("an invalid first DNS assignment was ignored")
+	}
+}
+
 func TestRejectWireGuardSettings(t *testing.T) {
 	for _, tt := range []struct{ line, option string }{
 		{"PostUp = secret-command", "PostUp"},

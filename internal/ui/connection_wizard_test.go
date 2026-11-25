@@ -7,11 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"html"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +116,67 @@ func TestConnectionWizardCheckSaveAndFlash(t *testing.T) {
 	replayed := wizardPost(h, "/connections/new/save", save, w.Result().Cookies()...)
 	if replayed.Code != http.StatusConflict || f.applies != 1 {
 		t.Fatal("a consumed token applied again")
+	}
+}
+
+func TestConnectionWizardSanitizesImportedNamesThroughView(t *testing.T) {
+	const password = "synthetic-fixture-password"
+	const token = "synthetic-fixture-token"
+	base := "trojan://" + password + "@vpn.example.test:443"
+	jsonTag := `{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"` + password +
+		`","tag":"Office ` + password + `","tls":{"enabled":true}}`
+	wgWithTag := `{"endpoint":{"type":"wireguard","private_key":"` + wizardWGKey + `","tag":"key ` + wizardWGKey + `"}}`
+	for _, tt := range []struct{ name, profile, suggestion, secret string }{
+		{"uuid fragment", wizardLink + "#Work-" + wizardUUID, "VLESS vpn.example.test:443", wizardUUID},
+		{"encoded password", base + "#Work%2520synthetic%252dfixture%252dpassword", "Trojan vpn.example.test:443", password},
+		{"password in generated ID", base + "#synthetic%20fixture%20password", "Trojan vpn.example.test:443", password},
+		{"JSON tag", jsonTag, "Trojan vpn.example.test:443", password},
+		{"private key", wgWithTag, "WireGuard", wizardWGKey},
+		{"query token", base + "?token=" + token + "#Work-" + token, "Trojan vpn.example.test:443", token},
+		{"unrelated URL", base + "#Office%20https%3A%2F%2Fprovider.example%2F" + token, "Office", token},
+		{"credential-like token", base + "#Office%20token%3D" + token, "Trojan vpn.example.test:443", token},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newWizardFixture()
+			opts := setupTestOptions(RoleManage)
+			role := RoleManage
+			opts.Role = func(*http.Request) Role { return role }
+			h := New(f, opts)
+			checked, form := wizardCheck(t, h, "/connections/new", tt.profile)
+			name := html.UnescapeString(formField(t, checked.Body.String(), "name"))
+			id := formField(t, checked.Body.String(), "id")
+			if name != tt.suggestion || strings.Contains(checked.Body.String(), tt.secret) {
+				t.Error("check exposed an untrusted label or failed to suggest a safe name")
+			}
+			form.Set("name", name)
+			form.Set("id", id)
+			if saved := wizardPost(h, "/connections/new/save", form, checked.Result().Cookies()...); saved.Code != http.StatusSeeOther {
+				t.Fatalf("default save returned %d", saved.Code)
+			}
+			role = RoleView
+			page := setupRequest(h, "/connections", nil)
+			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), tt.suggestion) || strings.Contains(page.Body.String(), tt.secret) ||
+				strings.Contains(id, tt.secret) || f.cfg.Connections[0].Name != tt.suggestion {
+				t.Fatal("the unsafe suggestion reached the saved identity or view")
+			}
+		})
+	}
+}
+
+func TestConnectionWizardSavesBothWireGuardAddressFamilies(t *testing.T) {
+	f := newWizardFixture()
+	h := New(f, setupTestOptions(RoleManage))
+	conf := strings.Replace(wizardConf, "[Peer]", "Address=2001:db8::2/128\nDNS=1.1.1.1\nDNS=8.8.8.8\n[Peer]", 1)
+	conf += "AllowedIPs=0.0.0.0/0\nAllowedIPs=::/0\n"
+	checked, save := wizardCheck(t, h, "/connections/new", conf)
+	save.Set("id", "dual-stack")
+	if w := wizardPost(h, "/connections/new/save", save, checked.Result().Cookies()...); w.Code != http.StatusSeeOther {
+		t.Fatalf("could not save the WireGuard profile: HTTP %d", w.Code)
+	}
+	wg := f.cfg.Connections[0].WireGuard
+	if !slices.Equal(wg.Address, []string{"10.1.0.2/32", "2001:db8::2/128"}) ||
+		!slices.Equal(wg.Peer.AllowedIPs, []string{"0.0.0.0/0", "::/0"}) {
+		t.Fatal("save did not retain both WireGuard address families")
 	}
 }
 
@@ -329,6 +393,100 @@ func TestConnectionWizardManualForms(t *testing.T) {
 				t.Fatal("manual profile protocol changed on save")
 			}
 		})
+	}
+}
+
+func TestConnectionWizardManualErrorPreservesSafeFields(t *testing.T) {
+	f := newWizardFixture()
+	h := New(f, setupTestOptions(RoleManage))
+	form := url.Values{
+		"rev": {Revision(f.Config())}, "method": {"manual"}, "protocol": {"vless"},
+		"server": {"vpn.example.test"}, "port": {"443x"}, "security": {"tls"}, "sni": {"cover.example.test"},
+		"flow": {"xtls-rprx-vision"}, "fingerprint": {"firefox"}, "uuid": {wizardUUID}, "publicKey": {"synthetic-key"},
+	}
+	bad := wizardPost(h, "/connections/new/check", form)
+	body := bad.Body.String()
+	for _, want := range []string{
+		`value="vpn.example.test"`, `value="443x"`, `value="tls" selected`, `value="cover.example.test"`,
+		`value="firefox"`, `aria-describedby="wizard-port-error"`, `id="wizard-port-error"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("manual correction lacks %s", want)
+		}
+	}
+	if bad.Code != http.StatusUnprocessableEntity || strings.Contains(body, wizardUUID) || strings.Contains(body, "synthetic-key") || f.applies != 0 {
+		t.Fatal("manual correction disclosed a credential or changed settings")
+	}
+	form.Set("port", "443")
+	checked := wizardPost(h, "/connections/new/check", form)
+	if checked.Code != http.StatusOK || !strings.Contains(checked.Body.String(), "VLESS · TLS") {
+		t.Fatal("the corrected form should check with the selected TLS mode")
+	}
+}
+
+func TestConnectionWizardOversizedUploadKeepsReplaceEntry(t *testing.T) {
+	f := newWizardFixture()
+	const id = ".."
+	f.cfg.Connections = []model.Connection{{ID: id, Name: "Home", Type: model.ConnLink, Link: "socks5://old.example:1080"}}
+	h := New(f, setupTestOptions(RoleManage))
+	entry := connectionDetailPath(id) + "/replace"
+	checkForm := regexp.MustCompile(`<form class="wizard-input" method="post" action="([^"]+)"`)
+	checkAction := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		match := checkForm.FindStringSubmatch(w.Body.String())
+		if match == nil {
+			t.Fatal("replacement upload form missing")
+		}
+		return html.UnescapeString(match[1])
+	}
+	upload := func(action, rev, payload string, chunked bool) *httptest.ResponseRecorder {
+		t.Helper()
+		var body bytes.Buffer
+		m := multipart.NewWriter(&body)
+		if err := m.WriteField("rev", rev); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.WriteField("method", "file"); err != nil {
+			t.Fatal(err)
+		}
+		file, err := m.CreateFormFile("file", "client.conf")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, action, &body)
+		req.Header.Set("Content-Type", m.FormDataContentType())
+		if chunked {
+			req.ContentLength = -1
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	get := setupRequest(h, entry+"?method=file", nil)
+	rev := formField(t, get.Body.String(), "rev")
+	action := checkAction(get)
+	for _, chunked := range []bool{false, true} {
+		oversized := upload(action, rev, strings.Repeat(" ", 3<<20), chunked)
+		if oversized.Code != http.StatusRequestEntityTooLarge || !strings.Contains(oversized.Body.String(), "Replace connection") ||
+			!strings.Contains(oversized.Body.String(), `type="file"`) || f.applies != 0 {
+			t.Fatalf("large upload returned HTTP %d and lost the replacement (chunked %v)", oversized.Code, chunked)
+		}
+		action = checkAction(oversized)
+	}
+	checked := upload(action, rev, wizardConf, false)
+	if checked.Code != http.StatusOK || !strings.Contains(checked.Body.String(), `value=".." readonly`) {
+		t.Fatal("the smaller file was not checked as a replacement")
+	}
+	form := url.Values{"rev": {rev}, "name": {"Home"}, "preview": {formField(t, checked.Body.String(), "preview")}}
+	saved := wizardPost(h, "/connections/new/save", form, checked.Result().Cookies()...)
+	if saved.Code != http.StatusSeeOther || len(f.cfg.Connections) != 1 || f.cfg.Connections[0].ID != id || f.cfg.Connections[0].Type != model.ConnWireGuard {
+		t.Fatalf("retry did not replace the original connection: HTTP %d", saved.Code)
 	}
 }
 

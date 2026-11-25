@@ -27,7 +27,7 @@
         {{if eq $wizard.Method "manual"}}
           {{template "wizard-protocol" .}}
         {{end}}
-        <form class="wizard-input" method="post" action="/connections/new/check"
+        <form class="wizard-input" method="post" action="{{$wizard.CheckAction}}"
           {{if ne $wizard.Method "manual"}}enctype="multipart/form-data"{{end}} autocomplete="off" data-guard novalidate>
           {{template "wizard-context" $wizard}}
           <fieldset class="wizard-fields"{{if $disabled}} disabled{{end}}>
@@ -52,7 +52,7 @@
               {{range $wizard.Fields}}{{template "wizard-field" .}}{{end}}
             </div>
             {{if $wizard.Advanced}}
-            <details class="wizard-more">
+            <details class="wizard-more"{{if $wizard.AdvancedOpen}} open{{end}}>
               <summary>{{.Text.wizard_advanced}}</summary>
               <div class="wizard-grid">
                 {{range $wizard.Advanced}}{{template "wizard-field" .}}{{end}}
@@ -82,11 +82,12 @@
         <fieldset class="wizard-fields"{{if or .ViewOnly (not .ConnectionWizard.Revision)}} disabled{{end}}>
           <div class="fld">
             <label for="wizard-protocol">{{.Text.wizard_field_protocol}}</label>
-            <select id="wizard-protocol" name="protocol" data-autosubmit>
+            <select id="wizard-protocol" name="protocol" data-autosubmit{{if .ConnectionWizard.ProtocolError}} aria-invalid="true" aria-describedby="wizard-protocol-error"{{end}}>
               {{range .ConnectionWizard.Protocols}}
               <option value="{{.Value}}"{{if eq .Value $.ConnectionWizard.Protocol}} selected{{end}}>{{.Label}}</option>
               {{end}}
             </select>
+            {{if .ConnectionWizard.ProtocolError}}<p class="wizard-field-error" role="alert" id="wizard-protocol-error">{{.ConnectionWizard.ProtocolError}}</p>{{end}}
           </div>
           <button class="btn soft wizard-select-submit" type="submit">{{.Text.wizard_choose}}</button>
         </fieldset>
@@ -97,18 +98,20 @@
       <div class="fld{{if .Wide}} wizard-wide{{end}}" data-wizard-field="{{.Key}}">
         <label for="wizard-{{.Key}}">{{.Label}}</label>
         {{if .Options}}
-        <select id="wizard-{{.Key}}" name="{{.Key}}">
-          {{range .Options}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
+        <select id="wizard-{{.Key}}" name="{{.Key}}"{{if .Error}} aria-invalid="true" aria-describedby="wizard-{{.Key}}-error"{{end}}>
+          {{range .Options}}<option value="{{.Value}}"{{if eq .Value $.Value}} selected{{end}}>{{.Label}}</option>{{end}}
         </select>
         {{else}}
         <input id="wizard-{{.Key}}" name="{{.Key}}" type="{{.Type}}" spellcheck="false"
-          {{if .Mode}}inputmode="{{.Mode}}"{{end}}{{if .Value}} value="{{.Value}}"{{end}}{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>
+          {{if .Mode}}inputmode="{{.Mode}}"{{end}}{{if .Value}} value="{{.Value}}"{{end}}{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}
+          {{if .Error}}aria-invalid="true" aria-describedby="wizard-{{.Key}}-error"{{end}}>
         {{end}}
+        {{if .Error}}<p class="wizard-field-error" role="alert" id="wizard-{{.Key}}-error">{{.Error}}</p>{{end}}
       </div>
 {{end}}
 
 {{define "wizard-choices"}}
-      <form class="wizard-input" method="post" action="/connections/new/check" data-guard>
+      <form class="wizard-input" method="post" action="{{.ConnectionWizard.CheckAction}}" data-guard>
         {{template "wizard-context" .ConnectionWizard}}
         <input type="hidden" name="preview" value="{{.ConnectionWizard.ChoiceToken}}">
         <fieldset class="wizard-fields"{{if .ViewOnly}} disabled{{end}}>

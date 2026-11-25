@@ -16,8 +16,10 @@ import (
 // and engine construction without starting the engine. Errors omit raw
 // parser details that may contain credentials.
 func ValidateEngineProfiles(ctx context.Context, cfg *model.Config) error {
-	if err := validateProfileFields(cfg); err != nil {
-		return err
+	for _, connection := range cfg.Connections {
+		if err := ValidateProfileFields(connection); err != nil {
+			return err
+		}
 	}
 	raw, err := compile.ConnectionValidationConfig(cfg)
 	if err == nil {
@@ -80,14 +82,12 @@ func validateOutboundFields(out map[string]any) error {
 	}
 	return nil
 }
-func validateProfileFields(cfg *model.Config) error {
-	for _, connection := range cfg.Connections {
-		if err := validateWGKeys(connection.WireGuard); err != nil {
-			return err
-		}
-		if err := validateOutboundFields(connection.Outbound); err != nil {
-			return err
-		}
+
+// ValidateProfileFields checks required fields the engine parser may accept
+// without sufficient parameters. A profile editor checks only its own input.
+func ValidateProfileFields(connection model.Connection) error {
+	if err := validateWGKeys(connection.WireGuard); err != nil {
+		return err
 	}
-	return nil
+	return validateOutboundFields(connection.Outbound)
 }

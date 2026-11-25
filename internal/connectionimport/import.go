@@ -3,6 +3,7 @@
 package connectionimport
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"path"
@@ -49,27 +50,28 @@ func Parse(raw, filename string) ([]Draft, error) {
 		return importAmnezia("vpn://" + body)
 	}
 
+	base := path.Base(strings.ReplaceAll(filename, "\\", "/"))
+	fallback := ""
+	if filename != "" {
+		fallback = strings.TrimSuffix(base, path.Ext(base))
+	}
 	var draft Draft
 	var err error
 	switch {
 	case strings.EqualFold(path.Ext(filename), ".conf") || interfaceSection.MatchString(text):
-		draft, err = importConf(raw, text)
+		draft, err = importConf(raw, text, fallback)
 	case strings.HasPrefix(text, "{"):
-		draft, err = importJSON(text)
+		draft, err = importJSON(text, fallback)
 	default:
-		draft, err = importLink(text)
+		draft, err = importLink(text, fallback)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if draft.Connection.Name == "" && filename != "" {
-		base := path.Base(strings.ReplaceAll(filename, "\\", "/"))
-		draft.Connection.Name = strings.TrimSuffix(base, path.Ext(base))
-	}
 	return []Draft{draft}, nil
 }
 
-func importLink(text string) (Draft, error) {
+func importLink(text, fallback string) (Draft, error) {
 	if strings.IndexFunc(text, unicode.IsSpace) >= 0 {
 		return Draft{}, ErrInvalid
 	}
@@ -77,10 +79,11 @@ func importLink(text string) (Draft, error) {
 	if err != nil {
 		return Draft{}, ErrInvalid
 	}
-	return Draft{
-		Connection: model.Connection{Type: model.ConnLink, Link: strings.Clone(text), Name: strings.Clone(links.Name(text))},
+	draft := Draft{
+		Connection: model.Connection{Type: model.ConnLink, Link: strings.Clone(text)},
 		Summary:    outboundSummary(out),
-	}, nil
+	}
+	return importedIdentity(draft, cmp.Or(links.Name(text), fallback), linkSecrets(text, profileSecrets(out))), nil
 }
 
 func importAmnezia(uri string) ([]Draft, error) {
@@ -107,7 +110,7 @@ type jsonProfile struct {
 // importJSON accepts an individual profile or the profile containers of a
 // sing-box file. Global inbounds, routing, DNS and experimental settings are
 // never copied. Built-in actions do not count as connection profiles.
-func importJSON(text string) (Draft, error) {
+func importJSON(text, fallback string) (Draft, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &root); err != nil {
 		return Draft{}, ErrInvalid
@@ -118,13 +121,16 @@ func importJSON(text string) (Draft, error) {
 	}
 	name, _ := profile.options["tag"].(string)
 	delete(profile.options, "tag")
-	c := model.Connection{Type: model.ConnSingBox, Name: name}
+	var draft Draft
+	draft.Connection.Type = model.ConnSingBox
 	if profile.endpoint {
-		c.Endpoint = profile.options
-		return Draft{Connection: c, Summary: endpointSummary(c.Endpoint)}, nil
+		draft.Connection.Endpoint = profile.options
+		draft.Summary = endpointSummary(profile.options)
+	} else {
+		draft.Connection.Outbound = profile.options
+		draft.Summary = outboundSummary(profile.options)
 	}
-	c.Outbound = profile.options
-	return Draft{Connection: c, Summary: outboundSummary(c.Outbound)}, nil
+	return importedIdentity(draft, cmp.Or(name, fallback), profileSecrets(profile.options)), nil
 }
 
 func oneJSONProfile(root map[string]json.RawMessage, raw json.RawMessage) (jsonProfile, error) {

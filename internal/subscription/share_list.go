@@ -229,6 +229,54 @@ func displayText(value string, limit int, sensitive displayRedactor) string {
 	return strings.Clone(strings.TrimSpace(value))
 }
 
+// ImportedConnectionLabel applies the provider-text bounds and normalization
+// to untrusted import labels, where URL-like text has no display purpose.
+func ImportedConnectionLabel(value string, limit int, secrets []string) string {
+	// Drop an oversized label before scanning it for credentials. Trimming
+	// first could leave part of a credential visible.
+	if len(value) > 8<<10 || (strings.HasPrefix(value, "base64:") && ContainsDisplaySecret(value, secrets)) {
+		return ""
+	}
+	return providerText(value, limit, displayRedactor{importLabel: true, secrets: secrets})
+}
+
+// ContainsDisplaySecret detects literal and encoded copies of credentials
+// before the projection or an ID suggestion can expose a partial value.
+func ContainsDisplaySecret(value string, secrets []string) bool {
+	if value == "" || len(secrets) == 0 {
+		return false
+	}
+	comparison := displayURLComparison(decodeDisplayEscapes(value))
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		if strings.Contains(value, secret) {
+			return true
+		}
+		normalized := displayURLComparison(decodeDisplayEscapes(secret))
+		if normalized != "" && strings.Contains(comparison, normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+var credentialLabel = regexp.MustCompile(`\b(?:password|passwd|token|access[_ -]?token|uuid|(?:private|(?:pre[_ -]?)?shared|api)[_ -]?key|secret)[[:space:]]*[:=]|\bbearer[[:space:]]+|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b|\b[0-9a-f]{32,}\b`)
+var linkLabel = regexp.MustCompile(`(?:[a-z][a-z0-9+.-]*:[/\\]|\b(?:https?|ftp|mailto|file|vless|vmess|trojan|ss|hysteria2|hy2|tuic|anytls|socks5?|tt|vpn):|[/\\]{2}|@|(?:[a-z0-9-]+\.)+[a-z]{2,}\b|[a-z0-9+/_-]{40,}={1,2})`)
+
+func importLabelText(value string, secrets []string) string {
+	if ContainsDisplaySecret(value, secrets) || credentialLabel.MatchString(displayURLComparison(decodeDisplayEscapes(value))) {
+		return ""
+	}
+	return displayRun.ReplaceAllStringFunc(value, func(run string) string {
+		if linkLabel.MatchString(displayURLComparison(decodeDisplayEscapes(run))) {
+			return ""
+		}
+		return run
+	})
+}
+
 func metadataURL(value string, sensitive displayRedactor) string {
 	if len(value) > 2048 {
 		return ""
@@ -243,10 +291,12 @@ func metadataURL(value string, sensitive displayRedactor) string {
 // displayRedactor protects the request URI, hosts reached by the fetch, and
 // HWID sent with it before provider data enters the display projection.
 type displayRedactor struct {
-	hosts      map[string]struct{}
-	paths      map[string][]string
-	requestURI string
-	hwid       string
+	hosts       map[string]struct{}
+	paths       map[string][]string
+	requestURI  string
+	hwid        string
+	importLabel bool
+	secrets     []string
 	// A legacy snapshot has no record of the final same-origin request path.
 	blockSameHostLinks bool
 }
@@ -285,6 +335,9 @@ func requestPath(u *url.URL) string {
 }
 
 func (r displayRedactor) replace(value string) string {
+	if r.importLabel {
+		return importLabelText(value, r.secrets)
+	}
 	if len(r.hosts) > 0 {
 		value = displayRun.ReplaceAllStringFunc(value, func(run string) string {
 			comparison := displayURLComparison(decodeDisplayEscapes(run))

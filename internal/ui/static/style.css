@@ -542,7 +542,7 @@
 .wizard-review { margin-top: 40px; }
 .wizard-review .prov h2 { max-width: 100%; }
 .wizard-review input[readonly] { background: var(--disabled-bg); }
-.wizard-review input[aria-invalid="true"] { border-color: var(--warn-t); }
+:is(.wizard-review, .wizard-input, .wizard-select) [aria-invalid="true"] { border-color: var(--warn-t); }
 .kp .wizard-field-error { margin-top: 6px; color: var(--warn-t); }
 .wizard-drop {
   position: relative;
