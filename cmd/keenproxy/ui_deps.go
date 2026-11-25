@@ -103,15 +103,73 @@ func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id st
 	return d.validateConnectionGraph(ctx, &validation)
 }
 
-func (d uiDeps) ValidateConnectionSettings(ctx context.Context, cfg *model.Config) error {
-	if err := cfg.Validate(); err != nil {
-		return errors.New("invalid connection settings")
+// ConnectionReserveTargets uses the union of the two switch positions. The
+// picker stays stable while the operator edits either control.
+func (d uiDeps) ConnectionReserveTargets(ctx context.Context, cfg *model.Config, id string) []string {
+	i := slices.IndexFunc(cfg.Connections, func(c model.Connection) bool { return c.ID == id })
+	if i < 0 {
+		return nil
 	}
-	raw, err := d.daemon.CompileConnectionSettings(cfg)
+	draft := *cfg
+	draft.Connections = slices.Clone(cfg.Connections)
+	current := &draft.Connections[i]
+	targets := cfg.ConnectionFallbackTargets(id)
+	allowed := make(map[string]bool, len(targets))
+	var affected []string
+	for _, conn := range cfg.Connections {
+		if slices.Contains(cfg.Chain(conn.ID), id) {
+			affected = append(affected, compile.FailoverTagPrefix+conn.ID)
+		}
+	}
+	for _, disabled := range []bool{current.Disabled, !current.Disabled} {
+		if ctx.Err() != nil || len(allowed) == len(targets) {
+			break
+		}
+		current.Disabled = disabled
+		// No reserve can remove the generated selector or introduce a block
+		// stub. Evaluate that shape separately from nonempty reserves.
+		if !allowed[""] {
+			current.Fallback = ""
+			raw, err := d.daemon.CompileConnectionSettings(&draft)
+			if err == nil && engine.ValidateStaticOutboundGraph(ctx, raw) == nil {
+				allowed[""] = true
+			}
+		}
+		if len(targets) > 1 {
+			current.Fallback = model.TargetDirect
+			raw, err := d.daemon.CompileConnectionSettings(&draft)
+			if err == nil {
+				for _, target := range engine.StaticReserveChoices(ctx, raw, affected, targets[1:], cfg.ActiveChain) {
+					allowed[target] = true
+				}
+			}
+		}
+	}
+	return slices.DeleteFunc(targets, func(target string) bool { return !allowed[target] })
+}
+
+func (d uiDeps) CheckConnectionSettings(ctx context.Context, cfg *model.Config) error {
+	_, err := d.connectionSettingsGraph(ctx, cfg)
+	return safeWizardCoreError(err)
+}
+
+func (d uiDeps) ValidateConnectionSettings(ctx context.Context, cfg *model.Config) error {
+	raw, err := d.connectionSettingsGraph(ctx, cfg)
 	if err == nil {
 		err = engine.ValidateRuntimeProfiles(ctx, raw)
 	}
 	return safeWizardCoreError(err)
+}
+
+func (d uiDeps) connectionSettingsGraph(ctx context.Context, cfg *model.Config) ([]byte, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, errors.New("invalid connection settings")
+	}
+	raw, err := d.daemon.CompileConnectionSettings(cfg)
+	if err == nil {
+		err = engine.ValidateStaticOutboundGraph(ctx, raw)
+	}
+	return raw, err
 }
 
 // Check the edited raw profile in isolation before constructing a core that

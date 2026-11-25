@@ -508,6 +508,8 @@
 .kp .detail-small-button { min-height: 32px; min-width: 0; padding-inline: 16px; }
 .detail-error { display: block; overflow-wrap: anywhere; }
 .detail-error ul { margin: 8px 0 0; padding-left: 20px; }
+#connection-reserve[aria-invalid="true"] { border-color: var(--warn-t); }
+.kp .detail-field-error { margin-top: 6px; color: var(--warn-t); }
 .detail-hint {
   display: -webkit-box;
   max-width: 560px;

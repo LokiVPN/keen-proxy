@@ -72,18 +72,19 @@ func (p pages) readConnectionSettings(w http.ResponseWriter, r *http.Request, cf
 		return nil
 	}
 	settings := cfg.Connections[i]
+	settings.Disabled = off
 	values := r.PostForm["fallback"]
 	if len(values) != 1 {
-		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, nil, "detail_invalid_reserve", nil)
+		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, &settings, "detail_invalid_reserve", nil)
 		return nil
 	}
 	segment, err := url.PathUnescape(values[0])
 	target := connectionIDFromSegment(segment)
-	if err != nil || !slices.Contains(cfg.ConnectionFallbackTargets(settings.ID), target) {
-		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, nil, "detail_invalid_reserve", nil)
+	if err != nil || (target != "" && target != model.TargetDirect && connectionIndex(cfg, target) < 0) {
+		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, &settings, "detail_invalid_reserve", nil)
 		return nil
 	}
-	settings.Disabled, settings.Fallback = off, target
+	settings.Fallback = target
 	return &settings
 }
 
@@ -118,9 +119,16 @@ func (p pages) connectionDetailProbe(w http.ResponseWriter, r *http.Request) {
 	if settings == nil {
 		return
 	}
+	draft := *cfg
+	draft.Connections = slices.Clone(cfg.Connections)
+	draft.Connections[i] = *settings
+	if err := p.deps.CheckConnectionSettings(r.Context(), &draft); err != nil {
+		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, settings, "detail_invalid_reserve", nil)
+		return
+	}
 	conn := cfg.Connections[i]
 	if conn.Disabled {
-		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, settings, "detail_probe_error", nil)
+		p.renderConnectionDetail(w, r, http.StatusOK, cfg, settings, "detail_probe_disabled", nil)
 		return
 	}
 	switch err := p.deps.CheckConnection(r.Context(), conn.ID, r.PostForm.Get("rev")); {
@@ -170,7 +178,7 @@ func (p pages) connectionDetailFragment(name string) http.HandlerFunc {
 		}
 		data := p.opts.pageData(r)
 		if health.TrafficGroup && name != "connection-health" {
-			data.ConnectionTrafficLinks = detailTrafficLinks(p.deps.Config(), health.TrafficMembers)
+			data.ConnectionTraffic = detailTrafficMembers(p.deps.Config(), id, health.TrafficMembers, data.Text)
 			render(w, r, http.StatusOK, "connection-traffic-members", data)
 			return
 		}

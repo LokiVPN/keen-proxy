@@ -366,6 +366,10 @@ type connectionDetailTestDeps struct {
 
 func (f connectionDetailTestDeps) Config() *model.Config { return f.d.Config() }
 
+func (f connectionDetailTestDeps) ConnectionReserveTargets(_ context.Context, cfg *model.Config, id string) []string {
+	return cfg.ConnectionFallbackTargets(id)
+}
+
 func (f connectionDetailTestDeps) ValidateConnectionSettings(_ context.Context, cfg *model.Config) error {
 	return cfg.Validate()
 }

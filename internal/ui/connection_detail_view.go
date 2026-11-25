@@ -18,15 +18,15 @@ import (
 )
 
 type connectionDetailPage struct {
-	Path, Fragment, Rev, Name        string
-	Enabled, CanProbe, Reveal, Dirty bool
-	RevealURL, Reserve, ReserveHint  string
-	ReserveTiming                    string
-	Options                          []connectionOption
-	Chain                            []connectionChainMember
-	Facts, Parameters                []connectionDetailField
-	References                       []connectionReference
-	TrafficGroup                     bool
+	Path, Fragment, Rev, Name                       string
+	Enabled, Reveal, Dirty                          bool
+	RevealURL, Reserve, ReserveHint                 string
+	ReserveTiming, ReserveError, UnavailableReserve string
+	Options                                         []connectionOption
+	Chain                                           []connectionChainMember
+	Facts, Parameters                               []connectionDetailField
+	References                                      []connectionReference
+	TrafficGroup                                    bool
 }
 
 type connectionChainMember struct {
@@ -41,6 +41,11 @@ type connectionDetailField struct {
 
 type connectionReference struct {
 	Label, URL string
+}
+
+type connectionTrafficView struct {
+	Members []connectionReference
+	BuiltIn bool
 }
 
 type connectionHealthView struct {
@@ -85,7 +90,7 @@ func (p pages) renderConnectionDetail(w http.ResponseWriter, r *http.Request, co
 	data.ConnectionHealth = detailHealth(health, data.Text)
 	active := -1
 	if health.TrafficGroup {
-		data.ConnectionTrafficLinks = detailTrafficLinks(cfg, health.TrafficMembers)
+		data.ConnectionTraffic = detailTrafficMembers(cfg, conn.ID, health.TrafficMembers, data.Text)
 	} else {
 		var series []stats.Point
 		active, series = p.deps.ConnectionTraffic(conn.ID)
@@ -93,6 +98,9 @@ func (p pages) renderConnectionDetail(w http.ResponseWriter, r *http.Request, co
 		data.Traffic = trafficChart(series, time.Now(), data.Lang, "detail_chart_label")
 	}
 	data.ConnectionDetail = p.makeConnectionDetail(r.Context(), cfg, i, draft, health, active, reveal, allHosts, guard, data.Text)
+	if message == "detail_invalid_reserve" || message == "detail_invalid_runtime" {
+		data.ConnectionDetail.ReserveError, data.Message = data.Message, ""
+	}
 	render(w, r, code, "connection-detail", data)
 }
 
@@ -108,17 +116,18 @@ func (p pages) makeConnectionDetail(ctx context.Context, cfg *model.Config, inde
 		refs = connectionReferences(cfg, conn.ID, text)
 	}
 	profile := connectionimport.ConnectionFacts(conn)
+	options, unavailable := p.detailFallbackOptions(ctx, cfg, settings, text)
 	return &connectionDetailPage{
 		Path: connectionDetailPath(conn.ID), Fragment: connectionDetailFragmentPath(conn.ID), Rev: Revision(cfg),
-		Name: name, Enabled: !settings.Disabled, CanProbe: !conn.Disabled, Reveal: reveal,
+		Name: name, Enabled: !settings.Disabled, Reveal: reveal,
 		Dirty:     settings.Disabled != conn.Disabled || settings.Fallback != conn.Fallback,
 		RevealURL: detailURL(conn.ID, !reveal, allHosts, "connection-parameters"),
 		Reserve:   connectionIDSegment(settings.Fallback), ReserveHint: fmt.Sprintf(text["detail_reserve_hint"], name),
 		ReserveTiming: fmt.Sprintf(text["detail_reserve_timing"], cfg.Failover.DownAfter, cfg.Failover.UpAfter),
-		Options:       p.detailFallbackOptions(ctx, cfg, index, settings, text),
-		Chain:         detailChain(cfg, settings, text),
-		Facts:         detailFacts(profile, health.Class, active, refs, text),
-		Parameters:    detailParameters(conn, profile, reveal, text), References: guard,
+		Options:       options, UnavailableReserve: unavailable,
+		Chain:      detailChain(cfg, settings, text),
+		Facts:      detailFacts(profile, health.Class, active, refs, text),
+		Parameters: detailParameters(conn, profile, reveal, text), References: guard,
 		TrafficGroup: health.TrafficGroup,
 	}
 }
@@ -144,34 +153,66 @@ func detailURL(id string, reveal, allHosts bool, anchor string) string {
 	return path + "#" + anchor
 }
 
-func (p pages) detailFallbackOptions(ctx context.Context, cfg *model.Config, index int, settings model.Connection, text map[string]string) []connectionOption {
-	targets := cfg.ConnectionFallbackTargets(settings.ID)
+func (p pages) detailFallbackOptions(ctx context.Context, cfg *model.Config, settings model.Connection, text map[string]string) ([]connectionOption, string) {
+	targets := p.deps.ConnectionReserveTargets(ctx, cfg, settings.ID)
 	labels := manualReserveLabels(cfg, text)
 	labels[""] = text["detail_reserve_none"]
-	candidate := *cfg
-	candidate.Connections = slices.Clone(cfg.Connections)
-	candidate.Connections[index] = settings
 	options := make([]connectionOption, 0, len(targets))
 	for _, target := range targets {
-		candidate.Connections[index].Fallback = target
-		invalid := p.deps.ValidateConnectionSettings(ctx, &candidate) != nil
-		if !invalid || target == settings.Fallback {
-			options = append(options, connectionOption{Target: connectionIDSegment(target), Label: labels[target], Disabled: invalid})
-		}
+		options = append(options, connectionOption{Target: connectionIDSegment(target), Label: labels[target]})
 	}
-	return options
+	if !slices.Contains(targets, settings.Fallback) {
+		// Keep an unavailable legacy or submitted selection in the form
+		// without offering it as a new reserve choice.
+		return options, labels[settings.Fallback]
+	}
+	return options, ""
 }
 
-func detailTrafficLinks(cfg *model.Config, members []string) []connectionReference {
-	var links []connectionReference
+func detailTrafficMembers(cfg *model.Config, id string, tags []string, text map[string]string) connectionTrafficView {
+	var declared []string
 	if cfg != nil {
-		for _, tag := range members {
-			if name := connectionName(cfg, tag); name != "" {
-				links = append(links, connectionReference{Label: name, URL: connectionDetailPath(tag)})
+		if i := connectionIndex(cfg, id); i >= 0 && cfg.Connections[i].Outbound["type"] == "selector" {
+			switch members := cfg.Connections[i].Outbound["outbounds"].(type) {
+			case []string:
+				declared = members
+			case []any:
+				for _, member := range members {
+					if tag, ok := member.(string); ok {
+						declared = append(declared, tag)
+					}
+				}
 			}
 		}
 	}
-	return links
+	var view connectionTrafficView
+	seen := make(map[string]bool, len(declared)+len(tags))
+	for _, tag := range slices.Concat(declared, tags) {
+		if seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		var member connectionReference
+		switch tag {
+		case model.TargetDirect:
+			member.Label = text["connections_direct"]
+			view.BuiltIn = true
+		case model.TargetBlock:
+			member.Label = text["detail_type_block"]
+			view.BuiltIn = true
+		default:
+			if cfg != nil {
+				if name := connectionName(cfg, tag); name != "" {
+					member = connectionReference{Label: name, URL: connectionDetailPath(tag)}
+				}
+			}
+			if member.Label == "" {
+				member.Label = text["detail_member_no_page"]
+			}
+		}
+		view.Members = append(view.Members, member)
+	}
+	return view
 }
 
 // detailChain includes the edited profile first, then the configured chain of
@@ -182,6 +223,9 @@ func detailChain(cfg *model.Config, conn model.Connection, text map[string]strin
 		return chain
 	}
 	for _, id := range cfg.Chain(conn.Fallback) {
+		if id == conn.ID {
+			break
+		}
 		if id == model.TargetDirect {
 			chain = append(chain, connectionChainMember{Name: text["connections_direct"]})
 		} else if i := connectionIndex(cfg, id); i >= 0 {
@@ -279,16 +323,23 @@ func detailParameters(conn model.Connection, facts connectionimport.Facts, revea
 	addresses := strings.Join(facts.Addresses, ", ")
 	if conn.Type == model.ConnWireGuard && conn.WireGuard != nil {
 		wg := conn.WireGuard
+		endpoint := facts.Server
+		if reveal && facts.ServerHidden {
+			endpoint = wg.Peer.Endpoint
+		}
+		if reveal && facts.AddressesHidden {
+			addresses = strings.Join(wg.Address, ", ")
+		}
 		add("wizard_field_privateKey", wg.PrivateKey, true, false)
-		add("wizard_field_address", addresses, false, false)
-		add("wizard_field_endpoint", facts.Server, false, false)
+		add("wizard_field_address", addresses, facts.AddressesHidden, false)
+		add("wizard_field_endpoint", endpoint, facts.ServerHidden, false)
 		add("wizard_field_peerKey", wg.Peer.PublicKey, true, false)
 		if wg.Peer.PresharedKey != "" {
 			add("wizard_field_psk", wg.Peer.PresharedKey, true, false)
 		}
 		return fields
 	}
-	add("wizard_field_address", addresses, false, false)
+	add("wizard_field_address", addresses, facts.AddressesHidden, false)
 	var raw string
 	if reveal {
 		raw = connectionParameterText(conn)

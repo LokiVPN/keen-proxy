@@ -28,6 +28,11 @@ var protocolLabel = map[string]string{
 }
 
 func profileSummary(profile map[string]any, endpoint bool) Summary {
+	summary, rawServer, sni := profileSummaryValues(profile, endpoint)
+	return summary.hideRepeatedCredentials(rawServer, sni, profileCredentials(profile, nil))
+}
+
+func profileSummaryValues(profile map[string]any, endpoint bool) (Summary, string, string) {
 	rawServer, server := profileAddress(profile, "server", "server_port")
 	if peers, ok := profile["peers"].([]any); endpoint && ok && len(peers) == 1 {
 		if peer, ok := peers[0].(map[string]any); ok {
@@ -46,7 +51,7 @@ func profileSummary(profile map[string]any, endpoint bool) Summary {
 		sni, _ = tls["server_name"].(string)
 		summary.SNI = displayHost(sni)
 	}
-	return summary.hideRepeatedCredentials(rawServer, sni, profileCredentials(profile, nil))
+	return summary, rawServer, sni
 }
 
 // Compare the input and the display form of each host so canonicalization

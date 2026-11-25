@@ -72,7 +72,7 @@ func TestConnectionDetailFactsKeepOpaqueParametersPrivate(t *testing.T) {
 		Outbound: map[string]any{
 			"type": "trojan", "server": "server.example", "server_port": 443, "password": "synthetic-pw",
 			"tls":       map[string]any{"enabled": true, "server_name": "sni.example"},
-			"transport": map[string]any{"type": "ws", "headers": map[string]any{"Host": "server.example", "Cookie": "session=opaque-test-value"}},
+			"transport": map[string]any{"type": "ws", "headers": map[string]any{"Host": "ws.example", "Cookie": "session=opaque-test-value"}},
 		},
 	}
 	f.health.Class = stats.TargetMixed
@@ -98,20 +98,37 @@ func TestConnectionDetailFactsKeepOpaqueParametersPrivate(t *testing.T) {
 
 func TestConnectionDetailMasksDecodedCredentials(t *testing.T) {
 	const secret = "display-secret-fixture"
+	var byteArray []any
+	for _, b := range []byte(secret) {
+		byteArray = append(byteArray, float64(b))
+	}
 	for _, tc := range []struct {
 		name, kind string
 		options    map[string]any
 	}{
 		{"hysteria", "hysteria", map[string]any{"AUTH": base64.StdEncoding.EncodeToString([]byte(secret))}},
+		{"hysteria byte array", "hysteria", map[string]any{"AUTH": byteArray}},
 		{"basic header", "http", map[string]any{"headers": map[string]any{
 			"authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("fixture-user:"+secret)),
 		}}},
+		{"legacy Basic bytes", "http", map[string]any{"headers": map[string]any{
+			"Proxy-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("\xe9:"+secret)),
+		}}},
+		{"duplicate display values", "trojan", nil},
+		{"public-looking field", "trojan", map[string]any{"transport": map[string]any{"type": "ws", "headers": map[string]any{
+			"Host": secret + ".example", "X-Name": base64.RawURLEncoding.EncodeToString([]byte(secret)),
+		}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newDetailFixture(t)
 			profile := tc.options
+			sni := secret + ".sni.example"
+			if profile == nil {
+				profile = make(map[string]any)
+				sni = secret + ".example"
+			}
 			profile["type"], profile["server"], profile["server_port"] = tc.kind, secret+".example", 443
-			profile["tls"] = map[string]any{"enabled": true, "server_name": secret + ".sni.example"}
+			profile["tls"] = map[string]any{"enabled": true, "server_name": sni}
 			f.cfg.Connections[0] = model.Connection{ID: "old", Name: "Office", Type: model.ConnSingBox, Outbound: profile}
 			for _, role := range []Role{RoleManage, RoleView} {
 				h := New(f, setupTestOptions(role))
@@ -123,6 +140,28 @@ func TestConnectionDetailMasksDecodedCredentials(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConnectionDetailSelectorListsBuiltInMembers(t *testing.T) {
+	f := newDetailFixture(t)
+	f.cfg.Connections[1] = model.Connection{ID: "backup", Name: "Selector", Type: model.ConnSingBox,
+		Outbound: map[string]any{"type": "selector", "outbounds": []string{"old", model.TargetDirect, model.TargetBlock}}}
+	f.health.TrafficGroup, f.health.TrafficMembers = true, []string{"old", model.TargetDirect, model.TargetBlock}
+	h := New(f, setupTestOptions(RoleView))
+	for _, path := range []string{"/connections/id/backup", "/fragments/connection/backup/speed", "/fragments/connection/backup/hosts"} {
+		w := setupRequest(h, path, nil)
+		requireDetailStatus(t, w, http.StatusOK)
+		body := w.Body.String()
+		for _, want := range []string{`href="/connections/id/old"`, "<li>Direct</li>", "<li>Block</li>",
+			"Traffic through built-in members is not attributed to a connection page."} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s omitted %q", path, want)
+			}
+		}
+		if strings.Contains(body, `href="/connections/id/direct"`) || strings.Contains(body, `href="/connections/id/block"`) {
+			t.Error("built-in member unnecessarily links to a missing page")
+		}
 	}
 }
 
@@ -371,6 +410,14 @@ type detailFixture struct {
 
 func newDetailFixture(t *testing.T) *detailFixture {
 	return &detailFixture{connectionsFixture: newConnectionsFixture(t)}
+}
+
+func (*detailFixture) ConnectionReserveTargets(_ context.Context, cfg *model.Config, id string) []string {
+	return cfg.ConnectionFallbackTargets(id)
+}
+
+func (*detailFixture) CheckConnectionSettings(_ context.Context, cfg *model.Config) error {
+	return cfg.Validate()
 }
 
 func (*detailFixture) ValidateConnectionSettings(_ context.Context, cfg *model.Config) error {

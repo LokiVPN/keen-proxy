@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -70,8 +72,8 @@ func TestConnectionDeletionRecognizesSavedProfileReferences(t *testing.T) {
 	}
 }
 
-func TestConnectionDetailRejectsCompiledReserveCycles(t *testing.T) {
-	d := &detailRuntimeDaemon{wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
+func TestConnectionDetailUsesStaticChoicesForBothSwitchStates(t *testing.T) {
+	d := &detailRuntimeDaemon{wizardRuntimeDaemon: wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
 		{ID: "primary", Type: model.ConnLink, Link: "socks5://primary.example:1080", Disabled: true, Fallback: model.TargetDirect},
 		{ID: "dependent", Type: model.ConnSingBox, Outbound: map[string]any{
 			"type": "socks", "server": "server.example", "server_port": 1080, "detour": "primary",
@@ -80,6 +82,10 @@ func TestConnectionDetailRejectsCompiledReserveCycles(t *testing.T) {
 			"type": "selector", "outbounds": []string{"dependent"},
 		}},
 		{ID: "safe", Type: model.ConnLink, Link: "socks5://backup.example:1080"},
+		{ID: "always-cyclic", Type: model.ConnLink, Link: "socks5://cyclic.example:1080", Fallback: "primary"},
+		{ID: "always-raw-cyclic", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "server": "raw.example", "server_port": 1080, "detour": "failover-primary",
+		}},
 	}}}}
 	d.cfg.Defaults()
 	deps := uiDeps{daemon: d}
@@ -94,40 +100,126 @@ func TestConnectionDetailRejectsCompiledReserveCycles(t *testing.T) {
 		t.Fatalf("connection page returned %d", w.Code)
 	}
 	for _, id := range []string{"dependent", "indirect"} {
-		if strings.Contains(w.Body.String(), `<option value="`+id+`"`) {
-			t.Errorf("reserve picker offered a compiled dependency cycle through %s", id)
+		if !strings.Contains(w.Body.String(), `<option value="`+id+`">`) {
+			t.Errorf("reserve that becomes acyclic when enabled is unavailable: %s", id)
 		}
 	}
-	if !strings.Contains(w.Body.String(), `<option value="safe"`) {
-		t.Error("reserve picker omitted an independent valid choice")
+	if !strings.Contains(w.Body.String(), `<option value="safe">`) ||
+		strings.Contains(w.Body.String(), `<option value="always-cyclic"`) ||
+		strings.Contains(w.Body.String(), `<option value="always-raw-cyclic"`) {
+		t.Error("reserve picker did not distinguish an independent option from an unavoidable cycle")
 	}
-	post := func(fallback string, enabled ...string) int {
+	post := func(action, fallback string, enabled ...string) *httptest.ResponseRecorder {
 		form := url.Values{"rev": {ui.Revision(d.Config())}, "enabled": enabled, "fallback": {fallback}}
-		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		r := httptest.NewRequest(http.MethodPost, path+action, strings.NewReader(form.Encode()))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
-		return w.Code
+		return w
 	}
-	if code := post("dependent", "0"); code != http.StatusUnprocessableEntity || d.applies != 0 {
-		t.Fatalf("forged cycle returned %d with %d Applies", code, d.applies)
-	}
-	if code := post("safe", "0"); code != http.StatusSeeOther || d.applies != 1 {
-		t.Fatalf("valid reserve returned %d with %d Applies", code, d.applies)
+	w = post("/probe", "indirect", "0", "1")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `<option value="indirect" selected>`) ||
+		!strings.Contains(w.Body.String(), `name="enabled" value="1" checked>`) || d.probes != 0 || d.applies != 0 {
+		t.Error("Check could not validate staged enabling without probing the disabled applied profile")
 	}
 	// Changing both fields is valid when turning on the primary replaces its
 	// relay stub with the real independent outbound.
-	if code := post("dependent", "0", "1"); code != http.StatusSeeOther || d.applies != 2 {
+	if code := post("", "indirect", "0", "1").Code; code != http.StatusSeeOther || d.applies != 1 {
 		t.Fatalf("acyclic enabling edit returned %d with %d Applies", code, d.applies)
 	}
-	if code := post("dependent", "0"); code != http.StatusUnprocessableEntity || d.applies != 2 {
-		t.Fatal("keeping the reserve while disabling the profile bypassed the staged graph check")
+
+	for _, action := range []string{"/probe", "/probe", ""} {
+		w := post(action, "dependent", "0")
+		body := w.Body.String()
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Errorf("invalid staged combination on %q returned HTTP %d", action, w.Code)
+		}
+		if !strings.Contains(body, `<option value="dependent" selected>`) ||
+			!strings.Contains(body, `name="enabled" value="1">`) ||
+			!strings.Contains(body, `aria-describedby="connection-reserve-error"`) ||
+			!strings.Contains(body, `id="connection-reserve-error"`) {
+			t.Error("invalid submission lost a staged value or the field-local error")
+		}
+	}
+	if d.applies != 1 || d.probes != 0 || d.cfg.Connections[0].Disabled || d.cfg.Connections[0].Fallback != "indirect" {
+		t.Error("invalid staged switch and reserve reached a probe or Apply")
+	}
+	w = post("/probe", "always-raw-cyclic", "0", "1")
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `<option value="always-raw-cyclic" selected hidden>`) ||
+		!strings.Contains(w.Body.String(), `aria-describedby="connection-reserve-error"`) || d.probes != 0 {
+		t.Error("a submitted raw cycle that was never offered lost its draft or reached a probe")
+	}
+	if code := post("", "safe", "0").Code; code != http.StatusSeeOther || d.applies != 2 {
+		t.Fatalf("valid reserve returned %d with %d Applies", code, d.applies)
 	}
 }
 
-type detailRuntimeDaemon struct{ wizardRuntimeDaemon }
+func TestConnectionDetailRendersUserspaceEndpointsWithoutEngineValidation(t *testing.T) {
+	const privateKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+	const publicKey = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="
+	d := &detailRuntimeDaemon{wizardRuntimeDaemon: wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
+		{ID: "wg", Type: model.ConnWireGuard, WireGuard: &model.WireGuard{
+			PrivateKey: privateKey, Address: []string{"192.0.2.2/32"},
+			Peer: model.WGPeer{Endpoint: "198.51.100.2:51820", PublicKey: publicKey},
+		}},
+		{ID: "awg", Type: model.ConnAmneziaWG, AmneziaWG: "[Interface]\nPrivateKey = " + privateKey +
+			"\nAddress = 192.0.2.3/32\nJc = 3\nJmin = 10\nJmax = 20\n[Peer]\nPublicKey = " + publicKey +
+			"\nEndpoint = 198.51.100.3:51820\nAllowedIPs = 0.0.0.0/0\n"},
+		{ID: "spare", Type: model.ConnLink, Link: "socks5://spare.example:1080"},
+	}}}}
+	for i := range 6 {
+		d.cfg.Connections = append(d.cfg.Connections, model.Connection{
+			ID: "spare-" + strconv.Itoa(i), Type: model.ConnLink, Link: "socks5://another.example:1080",
+		})
+	}
+	d.cfg.Defaults()
+	if err := d.cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	deps := &connectionValidationSpy{uiDeps: uiDeps{daemon: d}}
+	before := runtime.NumGoroutine()
+	for _, role := range []ui.Role{ui.RoleManage, ui.RoleView} {
+		h := ui.New(deps, ui.Options{Role: func(*http.Request) ui.Role { return role }})
+		for range 3 {
+			for _, id := range []string{"wg", "awg"} {
+				prior := d.graphCompiles
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/connections/id/"+id, nil))
+				if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `<option value="spare">`) {
+					t.Fatalf("%s detail returned HTTP %d or no valid reserve", id, w.Code)
+				}
+				if compiles := d.graphCompiles - prior; compiles > 4 {
+					t.Errorf("%s detail compiled %d graph projections for one page", id, compiles)
+				}
+			}
+		}
+	}
+	if deps.engineChecks != 0 {
+		t.Errorf("detail rendering requested engine validation %d times", deps.engineChecks)
+	}
+	if after := runtime.NumGoroutine(); after > before {
+		t.Errorf("detail rendering increased goroutines from %d to %d", before, after)
+	}
+}
 
-func (*detailRuntimeDaemon) CompileConnectionSettings(cfg *model.Config) ([]byte, error) {
+type connectionValidationSpy struct {
+	uiDeps
+	engineChecks int
+}
+
+func (d *connectionValidationSpy) ValidateConnectionSettings(_ context.Context, cfg *model.Config) error {
+	// Intercept the constructor path so the RED run leaves no stack workers.
+	d.engineChecks++
+	return cfg.Validate()
+}
+
+type detailRuntimeDaemon struct {
+	wizardRuntimeDaemon
+	probes, graphCompiles int
+}
+
+func (d *detailRuntimeDaemon) CompileConnectionSettings(cfg *model.Config) ([]byte, error) {
+	d.graphCompiles++
 	return compile.ConnectionSettingsConfig(compile.Input{Config: cfg})
 }
 
@@ -138,6 +230,11 @@ func (*detailRuntimeDaemon) ConnectionHealth(string) (daemon.ConnectionObservati
 func (*detailRuntimeDaemon) ConnectionTraffic(string) (int, []stats.Point) { return 0, nil }
 
 func (*detailRuntimeDaemon) Hosts(string, string, int) ([]stats.Host, int) { return nil, 0 }
+
+func (d *detailRuntimeDaemon) CheckConnectionIfCurrent(context.Context, string, string) error {
+	d.probes++
+	return nil
+}
 
 func TestWizardValidationAcceptsUnchangedDormantProfile(t *testing.T) {
 	cfg := &model.Config{Connections: []model.Connection{

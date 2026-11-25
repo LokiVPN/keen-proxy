@@ -28,27 +28,31 @@ func ValidateImportedProfileRouting(ctx context.Context, config []byte) error {
 // raw profiles, including selectors and dialers nested within other options.
 func ProfileReferencesOutbound(ctx context.Context, config []byte, tags []string) (bool, error) {
 	return anyProfileField(ctx, config, func(value reflect.Value) bool {
-		for i := range value.NumField() {
-			field := value.Type().Field(i)
-			if !field.IsExported() || field.Tag.Get("reference") != "outbound" {
-				continue
+		return visitOutboundReferences(value, func(tag string) bool { return slices.Contains(tags, tag) })
+	})
+}
+
+func visitOutboundReferences(value reflect.Value, visit func(string) bool) bool {
+	for i := range value.NumField() {
+		field := value.Type().Field(i)
+		if !field.IsExported() || field.Tag.Get("reference") != "outbound" {
+			continue
+		}
+		f := value.Field(i)
+		switch f.Kind() {
+		case reflect.String:
+			if visit(f.String()) {
+				return true
 			}
-			f := value.Field(i)
-			switch f.Kind() {
-			case reflect.String:
-				if slices.Contains(tags, f.String()) {
+		case reflect.Slice:
+			for j := range f.Len() {
+				if visit(f.Index(j).String()) {
 					return true
-				}
-			case reflect.Slice:
-				for j := range f.Len() {
-					if slices.Contains(tags, f.Index(j).String()) {
-						return true
-					}
 				}
 			}
 		}
-		return false
-	})
+	}
+	return false
 }
 
 func anyProfileField(ctx context.Context, config []byte, match func(reflect.Value) bool) (bool, error) {

@@ -87,6 +87,10 @@ func validateRuntimeDependencies(instance *box.Box) error {
 	for _, endpoint := range instance.Endpoint().Endpoints() {
 		graph[endpoint.Tag()] = endpoint.Dependencies()
 	}
+	return validateOutboundGraph(graph)
+}
+
+func validateOutboundGraph(graph map[string][]string) error {
 	type visitState uint8
 	const (
 		visiting visitState = iota + 1

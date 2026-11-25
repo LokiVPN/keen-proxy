@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
-	"unicode/utf8"
 )
 
 var profileCredentialFields = []string{
@@ -40,10 +39,7 @@ func profileCredentials(value any, credentials []string) []string {
 			case hysteria && strings.EqualFold(key, "auth"):
 				// Hysteria v1 decodes auth as a byte slice, including the
 				// JSON byte-array form. Compare what its client actually uses.
-				var auth []byte
-				if raw, err := json.Marshal(field); err == nil && json.Unmarshal(raw, &auth) == nil {
-					credentials = append(credentials, string(auth))
-				}
+				credentials = append(credentials, decodedProfileBytes(field))
 				fallthrough
 			case hysteria && strings.EqualFold(key, "obfs"), matchesCredentialField(key, profileCredentialFields):
 				for _, secret := range credentialStrings(field) {
@@ -75,35 +71,52 @@ func headerCredentials(headers map[string]any, credentials []string) []string {
 		}
 		for _, value := range credentialStrings(field) {
 			credentials = append(credentials, value)
-			// The credential in a scheme-prefixed header can appear alone.
-			if parts := strings.Fields(value); len(parts) == 2 {
-				credentials = appendCredentialForms(credentials, parts[1])
-				if strings.EqualFold(parts[0], "Basic") {
-					if decoded := decodedCredential(parts[1]); decoded != "" {
-						if user, password, ok := strings.Cut(decoded, ":"); ok {
-							credentials = append(credentials, user, password)
-						}
-					}
-				}
-			}
+			credentials = appendAuthorizationForms(credentials, value)
 		}
 	}
 	return credentials
+}
+
+func appendAuthorizationForms(forms []string, value string) []string {
+	parts := strings.Fields(value)
+	if len(parts) != 2 {
+		return forms
+	}
+	forms = appendCredentialForms(forms, parts[1])
+	if strings.EqualFold(parts[0], "Basic") {
+		// Go strings preserve bytes, so split even when the username or
+		// password in a legacy Basic header is not valid UTF-8.
+		if user, password, found := strings.Cut(decodedCredential(parts[1], false), ":"); found {
+			forms = append(forms, user, password)
+		}
+	}
+	return forms
+}
+
+func decodedProfileBytes(field any) string {
+	var data []byte
+	if raw, err := json.Marshal(field); err == nil && json.Unmarshal(raw, &data) == nil {
+		return string(data)
+	}
+	return ""
 }
 
 // Keep the configured spelling and the textual bytes it may represent. Link
 // parsers supply URL-decoded options; the display comparison handles escapes.
 func appendCredentialForms(credentials []string, value string) []string {
 	credentials = append(credentials, value)
-	if decoded := decodedCredential(value); decoded != "" {
+	if decoded := decodedCredential(value, false); decoded != "" {
 		credentials = append(credentials, decoded)
 	}
 	return credentials
 }
 
-func decodedCredential(value string) string {
+func decodedCredential(value string, strict bool) string {
 	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		if raw, err := encoding.DecodeString(value); err == nil && utf8.Valid(raw) {
+		if strict {
+			encoding = encoding.Strict()
+		}
+		if raw, err := encoding.DecodeString(value); err == nil {
 			return string(raw)
 		}
 	}

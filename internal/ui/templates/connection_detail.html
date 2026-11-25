@@ -27,7 +27,7 @@
       {{end}}
       <div class="prov detail-status">
         <div class="prov" data-fragment="{{$detail.Fragment}}/health">{{template "connection-health" .}}</div>
-        <button class="btn soft detail-small-button" type="submit" formaction="{{$detail.Path}}/probe"{{if or .ViewOnly (not $detail.CanProbe)}} disabled{{end}}>{{.Text.detail_probe}}</button>
+        <button class="btn soft detail-small-button" type="submit" formaction="{{$detail.Path}}/probe"{{if .ViewOnly}} disabled{{end}}>{{.Text.detail_probe}}</button>
       </div>
       <dl class="facts detail-facts">
         {{range $detail.Facts}}
@@ -40,10 +40,12 @@
         <p class="hint detail-hint">{{$detail.ReserveHint}}</p>
         <div class="fld connections-select">
           <label for="connection-reserve">{{.Text.connections_reserve}}</label>
-          <select id="connection-reserve" name="fallback"{{if .ViewOnly}} disabled{{end}}>
-            {{range $detail.Options}}<option value="{{.Target}}"{{if eq .Target $detail.Reserve}} selected{{end}}{{if .Disabled}} disabled{{end}}>{{.Label}}</option>{{end}}
+          <select id="connection-reserve" name="fallback"{{if .ViewOnly}} disabled{{end}}{{if $detail.ReserveError}} aria-invalid="true" aria-describedby="connection-reserve-error"{{end}}>
+            {{if $detail.UnavailableReserve}}<option value="{{$detail.Reserve}}" selected hidden>{{$detail.UnavailableReserve}}</option>{{end}}
+            {{range $detail.Options}}<option value="{{.Target}}"{{if eq .Target $detail.Reserve}} selected{{end}}>{{.Label}}</option>{{end}}
           </select>
         </div>
+        {{if $detail.ReserveError}}<p id="connection-reserve-error" class="detail-field-error" role="alert">{{$detail.ReserveError}}</p>{{end}}
         <ol class="detail-chain" aria-label="{{.Text.detail_reserve_chain}}">
           {{range $i, $member := $detail.Chain}}
           <li>
@@ -117,11 +119,12 @@
 
 {{define "connection-traffic-members"}}
   <p class="muted">{{.Text.detail_member_traffic_hint}}</p>
-  {{if .ConnectionTrafficLinks}}
+  {{if .ConnectionTraffic.Members}}
   <ul>
-    {{range .ConnectionTrafficLinks}}<li><a class="clip" title="{{.Label}}" href="{{.URL}}">{{.Label}}</a></li>{{end}}
+    {{range .ConnectionTraffic.Members}}<li>{{if .URL}}<a class="clip" title="{{.Label}}" href="{{.URL}}">{{.Label}}</a>{{else}}{{.Label}}{{end}}</li>{{end}}
   </ul>
   {{end}}
+  {{if .ConnectionTraffic.BuiltIn}}<p class="muted">{{.Text.detail_builtin_traffic}}</p>{{end}}
 {{end}}
 
 {{define "connection-hosts"}}
