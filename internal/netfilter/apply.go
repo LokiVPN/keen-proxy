@@ -51,7 +51,26 @@ func NewFirewall() *Firewall {
 // Apply loads owned chains and installs jumps idempotently, restoring rules
 // after an NDM firewall rebuild when needed.
 func (f *Firewall) Apply(ctx context.Context, p Plan) error {
-	rules := p.Render()
+	if err := f.restore(ctx, p.Render()); err != nil {
+		return err
+	}
+	return f.installJumps(ctx, p.Jumps())
+}
+
+// Protect guards the sources of the previous plan after a failed rollback.
+// It uses only the filter table and reuses the jumps a normal Apply replaces.
+func (f *Firewall) Protect(ctx context.Context, p Plan) error {
+	if err := f.restore(ctx, p.renderProtection()); err != nil {
+		return err
+	}
+	return f.installJumps(ctx, []Jump{
+		{"filter", "FORWARD", ChainQUIC},
+		{"filter", "INPUT", ChainDNSGuard},
+		{"filter", "FORWARD", ChainDNSGuard},
+	})
+}
+
+func (f *Firewall) restore(ctx context.Context, rules string) error {
 	wait := true
 	err := f.Run.Run(ctx, rules, f.Restore, "-w", "--noflush")
 	if restoreRejectsWait(err) {
@@ -62,7 +81,11 @@ func (f *Firewall) Apply(ctx context.Context, p Plan) error {
 	if err != nil {
 		return describeRestoreFailure(err, rules, wait)
 	}
-	for _, j := range p.Jumps() {
+	return nil
+}
+
+func (f *Firewall) installJumps(ctx context.Context, jumps []Jump) error {
+	for _, j := range jumps {
 		if f.Run.Run(ctx, "", f.IPTables, "-w", "-t", j.Table, "-C", j.From, "-j", j.To) == nil {
 			continue
 		}

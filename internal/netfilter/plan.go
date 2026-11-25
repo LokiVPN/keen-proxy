@@ -163,6 +163,39 @@ func (p Plan) Render() string {
 	return b.String()
 }
 
+// renderProtection blocks public forwarding and DNS for covered clients if
+// the previous interception plan could not be restored. LAN management and
+// explicitly exempt devices and DNS sources keep their existing access.
+func (p Plan) renderProtection() string {
+	var b strings.Builder
+	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	w("*filter")
+	w(":%s - [0:0]", ChainQUIC)
+	w(":%s - [0:0]", ChainDNSGuard)
+	in := "-i " + p.LAN
+	for _, addr := range p.Excluded {
+		w("-A %s %s -s %s -j RETURN", ChainQUIC, in, host(addr))
+		w("-A %s %s -s %s -j RETURN", ChainDNSGuard, in, host(addr))
+	}
+	for _, dst := range p.Bypass {
+		w("-A %s -d %s -j RETURN", ChainQUIC, dst)
+	}
+	for _, addr := range p.DNSBypassSources {
+		w("-A %s %s -s %s -j RETURN", ChainDNSGuard, in, host(addr))
+		for _, proto := range []string{"udp", "tcp"} {
+			w("-A %s %s -s %s -p %s --dport 53 -j RETURN", ChainQUIC, in, host(addr), proto)
+		}
+	}
+	for _, src := range p.Sources {
+		w("-A %s %s -s %s -j DROP", ChainQUIC, in, src)
+		for _, proto := range []string{"udp", "tcp"} {
+			w("-A %s %s -s %s -p %s --dport 53 -j DROP", ChainDNSGuard, in, src, proto)
+		}
+	}
+	w("COMMIT")
+	return b.String()
+}
+
 func host(a netip.Addr) string {
 	return netip.PrefixFrom(a, a.BitLen()).String()
 }

@@ -92,6 +92,7 @@ type Daemon struct {
 	plan         netfilter.Plan
 	planOn       bool
 	planPending  bool // installation failed after the plan and its dependencies were prepared
+	planGuarded  bool // rollback protection may still have filter jumps installed
 	neighbors    map[string]netip.Addr
 	deviceNames  map[string]cachedDeviceName
 	started      time.Time
@@ -360,6 +361,8 @@ func (d *Daemon) applyAdmissionLocked(ctx context.Context) error {
 	return ctx.Err()
 }
 
+const applyRuntimeTimeout = 30 * time.Second
+
 // applyConfigLocked is shared by draft Apply and saved recovery.
 func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save bool, candidates map[subscription.Source]subscriptionAttempt, checked *subscription.PreviewRef) error {
 	if err := d.applyAdmissionLocked(ctx); err != nil {
@@ -380,7 +383,12 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		}
 		checkedSource = checked.Source
 	}
+	// Admission, preflight and provider I/O can be canceled by the requester.
+	// Once mutation begins, the daemon owns both apply and rollback.
+	applyCtx, cancel := context.WithTimeout(context.Background(), applyRuntimeTimeout)
+	defer cancel()
 	prev := d.cfg
+	previousPlan := d.plan
 	changes := configChanges(prev, cfg)
 	activation := d.startupBlocked
 	neighbors := d.neighbors
@@ -393,7 +401,7 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	restoreBalanceSessions := d.eng.SubscriptionBalanceCheckpoint()
 	d.subscriptions.states = d.subscriptionDraftLocked(cfg, candidates, checkedSource)
 	d.discardReplacedSubscriptionHealthLocked(previousSubscriptions)
-	err := d.applyLocked(ctx, cfg)
+	err := d.applyLocked(applyCtx, cfg)
 	if err == nil {
 		err = d.saveChangedSubscriptionSnapshotsLocked(cfg, previousSubscriptions)
 	}
@@ -410,10 +418,17 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 			details += "; interception remains inactive"
 		} else if prev != nil {
 			d.log.Error("new configuration failed to apply, restoring previous configuration", "err", err)
-			if rbErr := d.applyLocked(ctx, prev); rbErr != nil {
+			rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), applyRuntimeTimeout)
+			rbErr := d.applyLocked(rollbackCtx, prev)
+			cancelRollback()
+			if rbErr != nil {
 				d.log.Error("rollback also failed", "err", rbErr)
 				details += "; rollback also failed: " + rbErr.Error()
 				rollbackRestore = journalRestoreFailure(rbErr)
+				if guardErr := d.protectPreviousPlan(previousPlan); guardErr != nil {
+					d.log.Error("protect previous interception sources", "err", guardErr)
+					details += "; previous sources could not be guarded: " + guardErr.Error()
+				}
 			} else {
 				details += "; previous configuration restored"
 			}
@@ -428,7 +443,8 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		return err
 	}
 	if activation != nil {
-		err := d.applyAdmissionLocked(ctx)
+		// Respect daemon shutdown when publishing the first activation.
+		err := d.applyAdmissionLocked(applyCtx)
 		if err == nil && save {
 			err = d.persistConfig(cfg, true)
 		}
@@ -690,6 +706,7 @@ func syncDir(dir string, log *slog.Logger) error {
 // applyLocked reconciles runtime state with cfg while d.mu is held.
 func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	prev := d.cfg
+	hadPlan := d.planOn || d.planPending || d.planGuarded
 	if d.startupBlocked != nil {
 		d.neighbors = d.readNeighbors(cfg)
 	}
@@ -756,15 +773,14 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	d.route = newRoute
 
 	// Interception mode changes require removing the complete previous chain set.
-	if d.planOn && d.plan.Mode != out.Plan.Mode {
+	if hadPlan && d.plan.Mode != out.Plan.Mode {
 		d.removeFirewall()
 	}
 	d.plan = out.Plan
 	if err := d.installFirewall(ctx); err != nil {
-		if d.startupBlocked == nil {
-			d.removeFirewall()
-			d.planPending = true
-		}
+		// Keep residual jumps while the caller attempts rollback. Detaching
+		// them here would return protected traffic straight to the router.
+		d.planOn = false
 		return fmt.Errorf("interception rules: %w", err)
 	}
 	if d.startupBlocked == nil {
@@ -813,7 +829,7 @@ func (d *Daemon) shutdown() {
 
 // stopInterceptionLocked detaches firewall and routing state before closing listeners.
 func (d *Daemon) stopInterceptionLocked() {
-	if d.planOn || d.planPending {
+	if d.planOn || d.planPending || d.planGuarded {
 		d.removeFirewall()
 	}
 	d.removeRouteLocked()
@@ -1051,7 +1067,7 @@ func (d *Daemon) removeFirewall() {
 	if err := d.opt.Firewall.Remove(ctx, d.plan); err != nil && !errors.Is(err, context.Canceled) {
 		d.log.Warn("remove rules", "err", err)
 	}
-	d.planOn, d.planPending = false, false
+	d.planOn, d.planPending, d.planGuarded = false, false, false
 }
 
 // Config returns a deep copy of the current configuration.

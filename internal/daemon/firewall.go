@@ -20,8 +20,20 @@ func (d *Daemon) installFirewall(ctx context.Context) error {
 		d.planPending = true
 		return err
 	}
-	d.planOn, d.planPending = true, false
+	d.planOn, d.planPending, d.planGuarded = true, false, false
 	return nil
+}
+
+// protectPreviousPlan uses the last known protected sources when a normal
+// rollback cannot restore its runtime dependencies or interception rules.
+func (d *Daemon) protectPreviousPlan(previous netfilter.Plan) error {
+	if len(previous.Sources) == 0 {
+		return nil
+	}
+	d.planOn, d.planGuarded = false, true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return d.opt.Firewall.Protect(ctx, previous)
 }
 
 func (d *Daemon) detachStartupJumps() error {
