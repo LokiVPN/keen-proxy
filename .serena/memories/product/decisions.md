@@ -1,5 +1,5 @@
 # Product decisions
-- Focus on Keenetic and Netcraze with Entware. Use embedded sing-box and a server-rendered interface that follows the KeeneticOS look (the Vue panel was removed). Maintain both English and Russian UI.
+- Focus on Keenetic and Netcraze with Entware. Use embedded sing-box and a server-rendered interface that follows the KeeneticOS look. Maintain both English and Russian UI.
 - Keep country groups distinct from domain and IP entries. Explicit group rules precede country rules within routed policies; global block rules run first. Invert the union of excluded countries.
 - Prefer readable TLS SNI and HTTP Host. Apply DNS-derived IP rules only when no readable hostname exists.
 - Keep DNS routes and direct fallback explicit. Encrypted DNS alone does not establish tunnel routing or prove leak prevention.

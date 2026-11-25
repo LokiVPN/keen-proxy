@@ -44,6 +44,8 @@ keenproxy --url -config /etc/keenproxy/config.yaml
 
 Use the same bootstrap command to update. Append `-s -- --version vX.Y.Z --lite` to `/bin/sh` to choose a release/variant; append `-s -- --uninstall` to stop and disable the native service and remove its binary/init script while retaining settings. Panel updates and scheduling work as described below.
 
+OpenWrt uses [SSH tunnel access](user-guide.md#ssh-tunnel) for the management pages. Once the tunnel is open, follow [First configuration](#first-configuration).
+
 Native release transactions require the checksummed `keenproxy.openwrt` asset. Older releases without it are not valid native installation or rollback targets; rejection leaves the running version unchanged. Release records and update preferences live persistently under `/usr/share/keenproxy/`; rule sets, logs, and derived state under `/var/lib/keenproxy/` are normally volatile on OpenWrt.
 
 Automatic detection preserves an existing managed Entware installation rather than migrating it on an OpenWrt host. `KEENPROXY_PLATFORM=openwrt` explicitly selects native installation; do not run native and Entware instances simultaneously. The remaining router-preparation and Entware shell commands below describe the Entware path only.
@@ -106,7 +108,7 @@ curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/boo
 
 The installer reads `BUILD_INFO.txt` from the latest published LokiVPN release, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. See [panel access](user-guide.md#access-the-panel).
 
-On a clean install, the bootstrap creates a placeholder `/opt/etc/keenproxy/config.yaml` and KeenProxy fills in defaults when it loads the file; new configurations are written with `schema_version: 2`. There is no panel token: the HTTP API under `/api` trusts loopback clients only. [KeeneticOS sign-in](development.md#keenetic-auth), on by default on Keenetic, admits signed-in accounts to the panel pages (administrators manage, read-only and manager accounts view); under `/api` a session reaches only the session check and sign-out. Disable it with `-keenetic-auth-origin=off`. If you lose access, or on OpenWrt, where it is the only way in, run `ssh -p 222 -L 8086:127.0.0.1:8086 root@ROUTER` (the Entware SSH server; omit `-p 222` on OpenWrt) and open `http://127.0.0.1:8086`; see [recovering panel access](troubleshooting.md#recover-access). The deprecated `api.token_file` and `api.no_token_from` settings are accepted and ignored. `keenproxy --url` displays the configured access URL again; if an older binary or unavailable LAN address prevents discovery, the installer reports that limitation without rolling back a successful installation.
+On a clean install, the bootstrap creates a starter `/opt/etc/keenproxy/config.yaml`. KeenProxy fills in defaults when it loads the file and writes new configurations with `schema_version: 2`. Use [First configuration](#first-configuration) to sign in and enable routing.
 
 Run the same command to update. A configuration this release cannot load is reset in memory when the service starts; the kept subscription then routes the home LAN with its provider rules. The file itself changes only at the first save, which keeps the original as `config.v1.yaml` (unless it holds only installer starter settings), so an older release can still read it if the update is rolled back before then. See [configuration schema 2 and rollback](development.md#config-schema). This release's installer also snapshots the configuration before installing and restores it if the update fails. The installer stages and validates the candidate before stopping the managed service. If the new service fails its startup check, it attempts to restore the previous files and restart the previous service. A manually started instance must be stopped before the installer can take over.
 
@@ -124,7 +126,7 @@ On Entware, the service tries to raise the daemon's open-file limit to at least 
 
 On a managed Entware or native OpenWrt installation, **Diagnostics → Updates** shows the installed version, the latest available stable release, and the previous installed version when recorded. Upgrade once with the command-line bootstrap if the current build predates panel updates. To make that older release a rollback target, first rerun the current bootstrap with the exact tag and build variant already installed, then upgrade. Native OpenWrt additionally requires that target release's procd asset.
 
-Update actions and schedule changes require an authorized management session in [KeeneticOS sign-in mode](development.md#keenetic-auth).
+Update actions and schedule changes require [management access](user-guide.md#access-the-panel). OpenWrt installations use the [SSH tunnel](user-guide.md#ssh-tunnel).
 
 Automatic installation is off by default. The panel still checks for releases. Enable automatic installation and save a time to install available releases during that minute in the router's local time, once per day while the service is running. Installation briefly restarts KeenProxy.
 
@@ -142,17 +144,22 @@ grep -Fx comment /proc/net/ip6_tables_matches
 
 Rerun the bootstrap once the match is listed. Check for it again after a router reboot.
 
-If the service starts in `management-only` mode, for example because TPROXY is unavailable, the panel can be reachable while the installer still considers interception unavailable. If the restored release also starts in this mode, fix and apply the interception settings from the LAN and then rerun the protected bootstrap with the working release. Applying the settings alone does not remove a guard left by the installer.
+If the service starts in `management-only` mode, the panel can open while traffic interception is unavailable. When TPROXY blocks startup, check readiness and retry the saved configuration from the router shell. If the protected bootstrap left a forwarding guard, rerun it with a working release and configuration to remove the guard. [Retry blocked TPROXY startup](troubleshooting.md#retry-blocked-tproxy-startup)
 
 **Roll back** reinstalls the previous published version and switches off automatic installation. It needs access to GitHub and keeps the existing configuration. The installer rejects an incompatible configuration before restarting the service. A schema 2 file is not readable by older releases: the rollback switches to the newest kept `config.v1*.yaml` and keeps the newer file as `config.v2*.yaml`. A fresh install of this release has no v1 backup, so rolling back to an older release is refused and changes nothing. Use the command-line installer to upgrade again. See [upgrading from v0.10](troubleshooting.md#upgrade-from-v010).
 
-## First configuration
+## First configuration { #first-configuration }
 
-To set up a LokiVPN subscription, open the panel and follow [First run](user-guide.md#first-run). For a manual setup, use the [routing guide](routing.md) and start with a small set of domains and one test device.
+1. On KeeneticOS, sign in to the router with a management account. Open **Management → Applications → KeenProxy** or use the address printed by the installer. On OpenWrt, open the browser at `http://127.0.0.1:8086` while the SSH tunnel is running. [Panel access and roles](user-guide.md#access-the-panel)
+2. Paste your LokiVPN subscription link, choose **Check**, then **Enable** to apply the detected home-network policy. A device-limit or expiry message links you to the account when the provider supplies an account page. [First run and manual setup](user-guide.md#first-run)
+3. Use **Overview** to confirm the main connection. Use **Routing** for rules and **Devices** for device access. **Connections** shows the subscription nodes and manual profiles. **Diagnostics** shows service readiness and provides checks, support reports, and updates. [Management pages](user-guide.md#overview)
+4. Test the intended traffic from a participating device and use **Diagnostics** if results differ from what you expect. A successful HTTP check covers that request. Check HTTPS and DNS separately if they are part of the issue.
 
-## Updates and recovery
+## Recover access { #recover-panel-access }
 
-Back up the current configuration and keep the old binary before updating. Read release compatibility and migration notes. Do not assume a successful HTTP probe establishes that all HTTPS traffic works.
+If the KeeneticOS session check fails, open the panel through an SSH tunnel to the router's loopback listener. Use the Entware SSH server on KeeneticOS and the system SSH server on OpenWrt. [SSH command and browser address](user-guide.md#ssh-tunnel)
+
+Keep a private configuration backup and access to your previous release before upgrading. [Installation and rollback](#update-from-the-panel) · [Sign-in troubleshooting](troubleshooting.md#recover-access)
 
 ## Uninstall
 

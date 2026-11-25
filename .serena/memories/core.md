@@ -1,5 +1,5 @@
 # KeenProxy project context
-- KeenProxy provides selective routing on Keenetic and Netcraze routers with Entware. It combines Go, embedded sing-box, and a server-rendered UI (pending; the Vue panel was removed).
+- KeenProxy provides selective routing on Keenetic and Netcraze routers with Entware. It combines Go, embedded sing-box, and server-rendered management pages.
 - Start with README.md and AGENTS.md. Use the versioned docs and source as authority for current behavior. Check the working tree before editing.
 - Configuration, traffic interception, DNS, and failover: `mem:backend/core`. API access rules and UI status: `mem:frontend/core`. Installer architectures, experimental OpenWrt, and router test boundaries: `mem:platform/core`.
 - DNS routes and config schema: `mem:features/dns_rules`. UI direction: `mem:product/design-direction`.

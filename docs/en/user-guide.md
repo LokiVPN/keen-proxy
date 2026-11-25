@@ -1,92 +1,125 @@
 # User guide
 
-!!! note "Server-rendered interface preview"
-    The panel opens [first-run setup](#first-run) on a fresh configuration. After setup, `/` opens the overview. The Connections tab shows saved subscriptions and manual connections. For settings beyond this preview, edit the [YAML file](getting-started.md) or use the loopback [control API](development.md#control-api). Other sections of this guide still describe parts of the previous panel.
+## Access the panel { #access-the-panel }
 
-The screenshots below are synthetic.
+1. From your local network, sign in to the KeeneticOS web interface in the browser you will use for KeenProxy.
+2. Open **Management → Applications** and choose **Open panel** on the KeenProxy card. If the card is unavailable, use the address printed by the installer. You can get it again with `keenproxy --url`. The default panel port is `8086`.
+3. Keep the same hostname as your KeeneticOS session. If you signed in by the router's LAN address, open KeenProxy at `http://ROUTER_LAN_IP:8086`. If you used `my.keenetic.net`, use the card or `http://my.keenetic.net:8086`.
 
-## Access the panel
+| Router account | Access |
+| --- | --- |
+| Administrator with web and CLI access | Manage settings, run checks, download support reports and control updates. |
+| Read-only or manager account with web access | View pages and status. Settings and management actions are disabled, and connection credentials stay hidden. |
+| Other accounts | KeenProxy shows **Access denied**. |
 
-After a successful installation or command-line update, the installer prints the panel URL. Browser sign-in uses KeeneticOS sessions (see [KeeneticOS sign-in](development.md#keenetic-auth)); the HTTP API itself accepts only local processes on the router. You can display the URL again with `keenproxy --url`, which reads the existing configuration without starting the daemon or changing its settings. For a non-default configuration:
+If your session expires, follow **Sign in to KeeneticOS** and reopen KeenProxy. **Sign out** ends the router session. KeenProxy follows your browser's preferred language (Russian or English) and your system's light or dark preference. On phones, swipe the tab bar sideways to see all five tabs.
 
-```sh
-keenproxy --url --config /path/to/config.yaml
-```
+If the sign-in check is unavailable or your installation runs on OpenWrt, use [SSH tunnel access](#ssh-tunnel).
 
-The URL follows `api.listen`; wildcard listeners (`0.0.0.0` or `::`) use the first private IPv4 address of the configured LAN interface, the same address KeeneticOS sign-in accepts. If that interface has none, no address is guessed. A loopback listener remains accessible only from the router or through a suitable SSH tunnel. See [installation and updates](getting-started.md#install-or-update-from-github).
-
-### Use an existing KeeneticOS session
-
-With [KeeneticOS sign-in enabled](development.md#keenetic-auth), sign in to the
-router with a management account and select **Open panel** on the KeenProxy
-card in **Applications**. Use the router's local IP address. When your session
-ends, the panel returns to a sign-in screen with a link to KeeneticOS.
+<a name="first-run"></a>
 
 ## First run { #first-run }
 
-Open KeenProxy with a router management account. Paste the HTTPS subscription link from your LokiVPN account, then choose **Check**. KeenProxy sends its stable device ID to the provider. This can use a slot on your subscription. The check shows the supported servers, provider message, and any usage, expiry, or routing information the provider supplies. Routing details describe the provider profile. KeenProxy evaluates its rules when you enable the subscription.
+1. Open KeenProxy with a management account. On a fresh setup it asks for a subscription link.
+2. Paste the HTTPS link from your LokiVPN account and choose **Check**. This may use one device slot. Review the server list and any expiry, usage, rules, or provider message returned. If the device limit is reached, remove an unused device in your account. If the subscription has expired, renew it. Check the link again after either change.
+3. Choose **Enable** to save the subscription and apply split routing to the detected home network. KeenProxy uses the provider profile when available. Without one, unmatched traffic uses the subscription. This setup requires a private IPv4 address on the configured LAN interface.
+4. Open **Overview** to confirm the selected connection and **Devices** to choose which devices use it. Test an intended site from one of those devices.
 
-On a router without a saved network policy, choose **Enable** to save the subscription and set split routing for the home network detected on the configured LAN interface. The network follows the provider profile. If the provider supplies no routing profile, unmatched traffic goes through the subscription. The first setup needs a private IPv4 address on that interface.
+To add a subscription to an existing setup, choose **Overview → Set up subscription**, check the link, then choose **Add subscription**. To update the current link, choose **Overview → Replace link**, check the replacement, and confirm **Replace link**. The replacement keeps the subscription identifier, reserve, and existing routing and device settings.
 
-If you already have network policies, choose **Set up subscription** on **Overview**. Check the link and choose **Add subscription** to make its servers available in the main connection menu while keeping your current routing policies.
+For a manual setup, open [Connections](#connections). From the initial setup screen, you can reach it by appending `/connections` to the panel address. Add a connection there. If the home network has no policy yet, configure it in [YAML](#configuration-and-backups). Then select the connection on **Overview**.
 
-On **Overview**, choose **Replace link** to reopen setup. Check the new link and confirm **Replace link** to update the saved subscription. The subscription keeps its ID and reserve, and your existing routing, devices, and paused state stay in place. View-only accounts can open the setup page with its controls disabled.
+<a name="overview"></a>
 
-## 1. Read the overview
+## Overview { #overview }
 
-**Overview** shows the main connection status, subscription usage and expiry when supplied by the provider, and the last and next scheduled updates. A warning appears when the subscription is due to expire within seven days. **Update now** queues a subscription refresh. If an update fails, the overview reports the failure alongside the latest known expiry. The device count shows how many detected LAN devices are covered by KeenProxy's current routing plan. The routing and device summaries link to their tabs.
+- **Enabled** pauses or resumes routing for the whole network. While paused, devices use their regular internet path. **Main connection** selects an automatic or balanced subscription target, a specific node, or a manual connection. Both controls apply immediately. With JavaScript disabled, use the accompanying **Save** button.
+- The status names the active connection or reserve and shows when a path is unavailable. **Subscription** shows the provider's expiry and usage, when supplied, and the last and next refresh. **Update now** queues a refresh for the subscription shown here.
+- **VPN traffic** covers the last 30 minutes. Raw groups that can use both direct and VPN members may include direct traffic in the chart. The device and routing summaries link to their tabs.
 
-When subscription nodes are unavailable, the status line shows the reserve connection in use, including a direct reserve. It shows **No connection** if the active path fails its check or only blocks traffic. This includes the built-in `block` fallback, named block outbounds, and selectors whose leaves only block traffic.
+<a name="routing"></a>
 
-The **VPN traffic** chart shows the last 30 minutes for targets that can send traffic through a tunnel. When a raw sing-box group contains both direct and tunnel members, the overview names the connection and the chart also includes any direct traffic sent by that group.
+## Routing { #routing }
 
-Use **Enabled** to pause or resume VPN routing for all devices. While paused, all devices connect directly. Under **Main connection**, choose automatic failover, a balancing mode, a specific subscription node, or a manual connection. The selection updates the home network and **All traffic through VPN** routing when it uses the previous main connection.
+Choose a mode and select **Save**.
 
-Changes apply as soon as you use the switch or select a connection. With JavaScript disabled, use **Save** next to the control. View-only accounts can read the overview with its configuration controls disabled.
+- **By subscription rules** follows the provider's rules and default route. Review the **Through VPN**, **Direct**, and **Block** sections. Switch off individual rules as needed. A disabled rule stays off after the subscription refreshes. Rules that are loading, missing, or unavailable have an explanation.
+- **All traffic through VPN** uses the main connection for traffic beyond the home network, subject to your exceptions.
+- **Only my sites** sends the listed sites through the main connection and sends unmatched traffic directly.
 
-## 2. Configure a connection
+In **My sites**, enter one domain, IP address, or subnet per line. Domains include their subdomains. Use the direct list for exceptions and keep each entry in just one list. Advanced routing groups and DNS settings are managed in YAML. [Routing and DNS](routing.md)
 
-Open **Connections**. The **Manual connections** table shows each profile's protocol, latest check result, and configured [reserve chain](routing.md#fallback-chains). Use **On** to enable or disable a profile. Choose **Save** to apply the switches and subscription reserves, or **Cancel** to return to the saved settings. Router accounts with view access can read the tables with the controls disabled.
+<a name="devices"></a>
 
-Choose **Add connection**. **Paste** detects a share link, standalone Amnezia `vpn://` export, WireGuard or AmneziaWG `.conf`, or sing-box JSON containing one connection profile. **From file** accepts the same formats up to 2 MiB. **Manual** offers WireGuard, VLESS, Shadowsocks, Trojan, Hysteria2 and SOCKS.
+## Devices { #devices }
 
-Choose **Check** to validate the profile on the router and review its type, server and SNI. The wizard shows **Hidden** when a summary field contains a connection credential. For a new connection the wizard suggests a numbered protocol name, such as `VLESS 2`, and an available identifier, such as `vless-2`. You can edit both before choosing **Save** to apply the connection and return to the list. An identifier starts with a lowercase Latin letter or digit and uses up to 32 lowercase Latin letters, digits, hyphens or underscores. It must be unique and available for manual connections. If the checked draft expires or settings change in another window, check your input again. Replacing a profile reuses its identifier and all routing and reserve references.
+KeenProxy shows devices discovered on the LAN and configured devices, including saved devices that are offline. Switch VPN routing on or off for individual devices, or choose **Enable for all** or **Disable for all**. Review any notice beside a device that has no applicable VPN route.
 
-If an identifier conflicts with a routing tag, choose another one. After a manual input error, correct the highlighted field and re-enter credentials before checking again.
+**New devices use the VPN right away** sets the default for new home-network devices. The switches displayed for existing devices keep their setting when you change this default. Choose **Save** to apply the list and default. **Cancel** returns to the saved settings.
 
-Import a standalone sing-box outbound or endpoint. Check refuses explicit tag references such as `detour` and `domain_resolver`, including references to tags declared in the same JSON. KeenProxy configures routing, DNS resolution and interface binding.
+<a name="connections"></a>
 
-Select a manual connection's name to open its details. Use **Enabled** and **Reserve**, then choose **Save**. The page shows the reserve chain. The list of available reserves stays the same as you change the switch. **Check** and **Save** validate the two settings together. If the combination would create a routing cycle, the error appears below **Reserve** and both edits stay on the form. **Check** also tests the saved profile's reachability through the configured failover URL when the saved profile is enabled.
-
-**Speed** and **Traffic by site** show recorded traffic for that connection, with up to 30 minutes of speed history. Raw selectors list their members and link to saved connection pages. Traffic through built-in **Direct** or **Block** members is attributed outside connection pages.
-
-The page masks credentials and hides facts that repeat other profile values, including encoded values. A managing account can choose **Show parameters** for the current page or **Replace parameters** to reopen the wizard for that connection. Replacing a profile keeps its traffic history. **Delete** lists any saved references that must be removed before deletion. Once deletion takes effect, a connection created later with the same identifier starts with empty traffic history.
-
-Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Profiles can also be set in the [YAML configuration](getting-started.md).
-
-Groups, devices, networks, and DNS settings keep their references to a disabled connection. Traffic follows its configured enabled fallback chain; with no enabled fallback it is blocked, not silently routed directly or passed to the next rule. An explicitly configured **Direct** fallback remains intentional. DNS keeps its separate strict/direct failure policy: disabling a connection must not create a direct DNS path in strict mode.
-
-In the YAML configuration, raw sing-box profiles keep their `detour` and selector references to the configured connection ID. When that connection is disabled, its runtime relay uses the same enabled fallback chain, or blocks if none is available; the saved raw profile is not rewritten.
+## Connections { #connections }
 
 ### Native subscriptions { #native-subscriptions }
 
-Set up or replace a subscription as described in [First run](#first-run). KeenProxy accepts HTTPS Xray share lists in plain text or Base64, up to 2 MiB and 256 distinct nodes. For a provider that requires a specific client, use its Xray share-list URL or enable KeenProxy in the provider settings.
+The subscription section shows nodes, their most recent HTTPS check, and any rule notices. Use **Update now** for that subscription, **Check** for one node, or **Check all nodes** for the catalog. The checks verify the server certificate. These actions keep staged changes on the form. Select **Save** to apply a reserve or a manual connection switch.
 
-The subscription's section on **Connections** shows the catalog status, the latest HTTPS result for each node, and any notice about the selected provider's routing rules. Choose **Check** for one node or **Check all nodes** for the catalog. KeenProxy queues the checks and updates the results as they arrive. Your staged reserve and switch edits stay on the form until you choose **Save** or **Cancel**. The successful duration includes connection setup. The probe uses the configured HTTPS check URL or its default endpoint and verifies the server certificate.
+In **Reserve if none of the nodes respond**, choose a manual connection, **Direct — without VPN**, or **None — block VPN traffic**. When a manual reserve is down or disabled, its own configured reserve chain decides where traffic goes. **No reserve configured** preserves an unset reserve. [Subscription reserves](routing.md#subscription-reserve)
 
-Under **Reserve if none of the nodes respond**, choose a manual connection, **Direct — without VPN**, or **None — block VPN traffic**, then choose **Save**. A manual reserve follows its configured chain if its own tunnel is disabled. **No reserve configured** preserves an existing unset reserve.
+Under **Main connection** on **Overview**, **Auto — switch nodes on failure** follows the provider order and stays with a working node after failover. **Current** indicates the selected node and can appear alongside **Unavailable** after a failed check. A pinned node remains selected and uses its configured reserve if the node disappears. **Balancing by rotation**, **by site**, and **by session** distribute new connections across eligible nodes. [Selection and balancing](routing.md#subscription-reserve)
 
-Choose a subscription target under **Main connection** on **Overview**.
+KeenProxy accepts HTTPS Xray share lists in plain text or Base64, up to 2 MiB and 256 distinct nodes. If a refresh fails, it retains the last validated list and shows the refresh status. Keep subscription links private.
 
-- A specific node stays fixed. The route blocks if the node disappears from the subscription, unless the subscription has a [reserve](routing.md#subscription-reserve), which then takes the traffic.
-- **Auto — switch nodes on failure** starts in provider order and switches after sustained failure of the active node. By default, checks run every 15 seconds and the failure window is 60 seconds. A working replacement stays selected when a preferred node recovers. **Current** identifies the selected node while **Unavailable** reports a failed check. A row can show both.
-- **Balancing by rotation** cycles through eligible nodes for successive new connections.
-- **Balancing by site** assigns each site to the same eligible node across devices. It uses the registrable domain when available and the destination IP otherwise.
-- **Balancing by session** keeps the same eligible node for each device IP and site pair, up to 1,024 pairs per subscription. The assignment expires after 30 minutes of inactivity or when that node stops being eligible.
+### Add or replace a manual connection { #manual-connections }
 
-The three balancing modes use nodes that passed their latest check and support the connection's transport. If no eligible node supports the transport, new connections use the subscription's [reserve](routing.md#subscription-reserve) when one is set, or are blocked.
+1. Choose **Add connection**. Use **Paste** for a share link, standalone Amnezia `vpn://` client export, WireGuard or AmneziaWG `.conf` text, or one sing-box outbound or endpoint in JSON. **From file** accepts these formats up to 2 MiB. **Manual** offers WireGuard, VLESS, Shadowsocks, Trojan, Hysteria2, and SOCKS.
+2. Choose **Check** and review the type, server, and other details. Credentials stay masked in the review. If an export contains several supported profiles, choose one. For standalone sing-box JSON, omit routing references such as `detour` and `domain_resolver`.
+3. For a new connection, review the suggested name and identifier and choose **Save**. Use a unique identifier of up to 32 lowercase letters, digits, hyphens, or underscores, starting with a letter or digit. If the form has expired or the router settings changed, check the profile again before saving.
 
-Choose **Update now** in a subscription's section on **Connections** to fetch its latest list and metadata. The button on **Overview** refreshes the subscription displayed there. A refresh from a current Connections form keeps staged reserve and switch edits for **Save**. If the fetch fails, KeenProxy retains its last validated list and reports the update status. Keep subscription URLs private. They are included in full YAML backups.
+Open a manual connection by name. Use **Enabled** and **Reserve**, then **Save**. **Check** tests the saved, enabled profile without applying unsaved settings. The page shows the reserve chain, speed, and traffic by site when available. Raw group profiles link to their traffic members.
+
+Choose **Show parameters** only when you need to read credentials on screen, or **Replace parameters** to reopen the wizard for the same identifier. Replacing keeps existing references. **Delete** lists saved references that must be removed before deletion. Disabling a profile keeps its credentials and references while its configured reserves handle traffic. With no enabled reserve, traffic for the disabled profile is blocked. [Fallback chains](routing.md#fallback-chains)
+
+<a name="diagnostics"></a>
+
+## Diagnostics { #diagnostics }
+
+- Read core, interception, DNS, configuration, country database, watchdog, and load status. Use the refresh link for a new status snapshot.
+- **Run check** measures HTTP, HTTPS with certificate verification, and a 64 KiB transfer separately. The check uses the current main VPN path without triggering a switch to its reserve. KeenProxy reports when the VPN path is skipped or routing is stopped or paused. Verify the affected app from a device before deciding the issue is resolved.
+- Under **Support report**, choose **Download ZIP** with a management account. The archive includes status, build details, and recent errors. Review the archive before sharing it. **Copy** copies the build identity. [Diagnostic ZIP contents](troubleshooting.md#download-the-diagnostic-zip)
+- Under **Updates**, check for a release, install it, or roll back to the recorded previous version. Confirm the version and wait for the service to come back. If you enable **Install automatically**, save a time in the router's time zone. [Update and rollback requirements](getting-started.md#update-from-the-panel)
+
+## Save changes { #save-changes }
+
+**Routing**, **Devices**, and the connection settings forms apply their changes when you select **Save**. **Overview** applies the main switch and main connection directly. If another window has changed the settings since you opened a form, review the current settings and save again. KeenProxy declines the stale submission.
+
+## Recover access through SSH { #ssh-tunnel }
+
+From a computer on your LAN, forward a local port to the panel's loopback listener on the router. Replace `ROUTER` with its SSH hostname or LAN address. This example uses the Entware SSH port and the default panel port.
+
+```sh
+ssh -N -p 222 -L 127.0.0.1:8086:127.0.0.1:8086 root@ROUTER
+```
+
+On OpenWrt, omit `-p 222` if SSH uses its default port. Keep the tunnel open and visit `http://127.0.0.1:8086`. The loopback address grants management access over the tunnel. The router listener must accept loopback connections. If its port differs, use that port on the router side of the forward. [Sign-in recovery and service configuration](troubleshooting.md#recover-access)
+
+## Configuration and backups { #configuration-and-backups }
+
+The Entware configuration is `/opt/etc/keenproxy/config.yaml`. Native OpenWrt uses `/etc/keenproxy/config.yaml`. Back it up privately before editing DNS, interfaces, the listener, or advanced rules. It contains subscription links and connection credentials. KeenProxy reads it at service startup. [Installation paths and service commands](getting-started.md) · [Loopback control API](development.md#control-api)
+
+### Soft memory limit { #soft-memory-limit }
+
+Use `system.memory_limit_mib` in YAML to set a soft Go memory recommendation for KeenProxy and its embedded engine. The value is a positive integer in MiB. A lower value may increase garbage collection and reduce throughput. Leave headroom for the firmware and other services. [Go memory-limit guide](https://go.dev/doc/gc-guide#Memory_limit)
+
+```yaml
+system:
+  memory_limit_mib: 400
+```
+
+Omit the key to use the inherited Go limit, including `GOMEMLIMIT=off`. With no inherited limit, KeenProxy uses 768 MiB. This recommendation can be exceeded and does not cap process RSS.
+
+## Connection compatibility { #connection-compatibility }
 
 ### AmneziaWG profiles (experimental lx build)
 
@@ -130,7 +163,7 @@ connections:
 
 Replace the placeholders and obfuscation values with those exported by your server. Before rolling back to an official-sing-box build, remove or replace AmneziaWG connections and save the configuration so the older engine can load it.
 
-### sing-box-lx compatibility
+### sing-box-lx compatibility { #sing-box-lx-compatibility }
 
 Both builds support XHTTP and native TrustTunnel alongside existing VLESS, REALITY and AWG. Paste server-exported links or a single raw sing-box outbound in the connection wizard. Choose **Check**, review the profile and choose **Save** to apply it.
 
@@ -172,90 +205,3 @@ Native TrustTunnel import rejects client-random authentication fields, subscript
 For a link listing several IP addresses on the same port, import selects the first IPv4 address in exported order, otherwise the first IP address. The remaining addresses are not retained as automatic fallbacks: if the selected endpoint fails, the embedded client does not try the other exported addresses.
 
 When certificate verification is enabled, `custom_sni` must match the exported `hostname` (case and a trailing dot are ignored). The native TLS schema cannot transmit one SNI while verifying a different hostname; such profiles are rejected rather than authenticating the wrong identity. This does not automatically disable verification.
-
-
-
-## 3. Add a routing group
-
-Open **Rules → Whitelist**. Create a group, name it, select its target connection (or **Direct**/**Block**), and add domains or addresses. For example, direct `work.example.com` to the Netherlands profile. Review imported entries before confirming; country selectors express broader policies.
-
-To move several domain or country groups together, select their checkboxes, choose a target in **Change route**, and review the preview. Groups hidden by a filter can still be selected. Choose **Save to draft**, then **Apply** when ready.
-
-Expand an entry to see its current DNS observations and expiration. A resolved address alone does not prove that application traffic followed the intended tunnel.
-
-Use the on/off switches to pause an entire group or an individual domain/IP rule without removing its value. Country/category groups also have group and per-selector switches. Disabled items remain visible; the active/total counts distinguish saved rules from effective rules. Turning a group off preserves its children's individual states, so turning it on again does not re-enable rules you had paused separately.
-
-An off group or rule is skipped, not blocked: the remaining rules and device policy determine the route. In particular, disabling a block rule stops that rule from blocking. Off domain rules do not contribute active DNS rule sets or initiate background resolution. A country/category group with no active selectors is inactive even in **All except** mode; it never becomes a match-all rule. Review the shared draft and **Apply** to change live behavior.
-
-In YAML, connection and group switches use `disabled: true`. Per-rule states are retained in `disabled_entries`, `disabled_countries`, and `disabled_categories`; the original entries/selectors remain present. Missing fields preserve the previous enabled behavior. Older releases reject unknown activation fields: prepare and validate a compatible configuration before downgrading. Removing the fields re-enables the corresponding items, so review the resulting routes first.
-
-![Domain groups, targets, and address observations](../assets/screenshots/en-rules.png)
-
-See [Country rules](routing.md#country-rules) for an illustrated setup, country exclusions, and rule precedence.
-
-## 4. Choose devices and networks
-
-Open **Devices**. The list includes devices discovered on the LAN and saved devices that are offline. A manually assigned name takes priority over a discovered name. You can identify an unnamed device by its MAC address.
-
-Turn on **VPN** for a device to use the selected routing rules. Turn it off to bypass KeenProxy interception. **Enable for all** skips devices that need a VPN target for the change and shows how many it skipped. **Disable for all** switches off every listed device. A device using a full tunnel, including one that inherits it from its network, keeps that mode until you edit its switch or a bulk action changes it.
-
-**New devices use the VPN right away** sets the default for the home network. When you select **Save**, KeenProxy records the displayed switches, including off states on skipped devices, so listed devices keep their states when the default changes. Save also checks each device’s current address for split routing. If an address has moved outside VPN coverage, review the marked devices before saving again.
-
-## 5. Review and Apply
-
-The change bar appears whenever the draft differs from the saved configuration. Review changes across screens, then choose **Apply** once. Wait for success. If validation/application fails, read the error and correct the draft. **Discard** restores the last saved snapshot.
-
-![A pending change with shared Apply and Discard controls](../assets/screenshots/en-apply.png)
-
-## 6. Verify the result
-
-Open **Diagnostics → State** to see whether the core and DNS listener are running, the interception mode, when configuration was applied, the country database, firewall repairs since startup, and CPU and RAM for the router and KeenProxy.
-
-Choose **Run check** to test HTTP, HTTPS with certificate verification, and a 64 KiB transfer through the applied main connection. When the core is stopped or routing is paused, the check reports that KeenProxy is not routing traffic and leaves the measurements empty. A connection group shows its currently selected outbound as **group → outbound**. When the main connection uses automatic node selection, the check tests the active node and shows **subscription → node**. While the automatic selector uses its reserve, the check is skipped and the result identifies that reserve. A group with several outbounds also skips the VPN check if it selects direct traffic, blocking, or a configured reserve. A VPN outbound must be reachable without a detour. Completed checks show the time of the measurement. The DNS row describes the listener. Use [a test from the affected device](network-flow.md#how-to-trace-one-request) to verify its DNS and traffic paths.
-
-### Export journals and diagnostics { #export-journals }
-
-With a management account, open **Diagnostics → Support report → Download ZIP**. See [what the download contains and what to review before sharing](troubleshooting.md#download-the-diagnostic-zip).
-
-Watchdog recovery events include the failed firewall check and the verification result. The ZIP retains safe structured evidence. See [watchdog diagnostics](troubleshooting.md#why-does-the-watchdog-restore-interception-rules).
-
-### Inspect one routing decision
-
-Open **Logs** and switch between **Routing**, **Audit**, and **System**. In **Routing**, **Group repeats** combines matching loaded records in 30-second windows. Expand a group to see its members or clear the checkbox for individual entries. Search and filters narrow the view. A routing record explains which outbound was selected. Check the application separately to confirm that the connection and transfer succeeded. New routing records in the browser demo are generated locally by the simulation.
-
-![Routing journal with synthetic records](../assets/screenshots/en-journal.png)
-
-## 7. Find settings and manage backups
-
-Open **Settings** with the gear icon. On narrow screens, choose a section from the dropdown. **DNS** opens by default. Use **YAML configuration** to manage backups. Use **Network and interception** for REDIRECT/TPROXY and interfaces, **Panel access** for the listener, and **Country databases** for GeoIP status. Use **Language and theme** for browser preferences. Routing and access changes use the shared **Apply** action. Changing the panel listener also requires a service restart. **Updates** has its own controls.
-
-Open **Settings → DNS** to choose the primary DNS server. The secondary is optional; clear its selection to remove it. Choose a provider and protocol from the list or select **Custom DNS server** and enter an IP address or a DoH, DoT, or UDP URL. The provider list includes Cloudflare, Google Public DNS, Quad9, AdGuard, Yandex DNS, Cisco OpenDNS, CleanBrowsing, and Control D. Each choice shows its filtering policy. KeenProxy tries the primary first and uses the secondary, if configured, when the primary is unavailable. The two servers must be different. **Advanced settings** contains any additional resolvers, bootstrap addresses, and the listening address. The DNS route and tunnel failure policy are configured separately. Imported YAML can also list just one server in `dns.upstreams`.
-
-If you clear **Secondary DNS** while additional servers are configured, the first additional server moves into that slot. The other servers keep their priority order. To keep only the primary, remove all additional servers before clearing the secondary, then choose **Apply**.
-
-If a LAN DNS forwarder's own queries are being redirected back to it, open **Advanced settings → Bypass DNS interception for source IPs**, add the forwarder's own IPv4 address (not its upstream's address), and choose **Apply**. To restore interception, remove the address and Apply again. See [DNS interception exceptions](routing.md#dns) for the YAML key and scope.
-
-The configuration is a YAML file on the router. You can back it up or edit it by hand over SSH; keep copies private because they contain connection credentials. KeenProxy reads the file when it starts.
-
-### Soft memory limit
-
-Open **Settings → System** only if the router is running short of memory. **Soft Go memory limit, MiB** is an optional recommendation for the Go runtime, covering KeenProxy and its embedded sing-box. Lowering it makes garbage collection more frequent, increases CPU usage, and may reduce connection speed. Leave it empty if the router has no memory problems.
-
-This is not a hard cap on process RSS and does not include all memory used by the operating system. Go may exceed the recommendation; leave room for the router firmware, network buffers, and other services. See the [Go memory-limit guide](https://go.dev/doc/gc-guide#Memory_limit).
-
-Use the shared **Apply** button to save and activate the value. A memory-only change does not require restarting the service or sing-box; the saved setting is also applied at startup. An empty field uses the Go limit set before daemon startup, including `GOMEMLIMIT`; if no limit was set, KeenProxy uses **768 MiB (805306368 bytes)**. An explicit value in the panel takes priority. Clearing the field and applying restores this default mode. An explicitly supplied `GOMEMLIMIT=off` is respected and keeps the inherited mode unlimited.
-
-For example, an explicit recommendation of 400 MiB is stored as:
-
-```yaml
-system:
-  memory_limit_mib: 400
-```
-
-Only positive whole MiB values are accepted. To remove the override, omit `memory_limit_mib`, rather than setting it to zero.
-
-## 8. Install or roll back a release
-
-**Diagnostics → Support report** shows the running release, build variant, architecture, and short commit hash. Choose **Copy** to copy the build identity. A local build may lack a release tag or commit hash. The diagnostics ZIP includes the same information in `status.json`.
-
-Open **Diagnostics → Updates** to check for releases, install an available update, or roll back to the previous version when recorded. Confirm the version on the next screen and wait for the service to reconnect. To schedule installation, enable **Install automatically**, choose a time in the router's time zone, and save. See [the update guide](getting-started.md#update-from-the-panel) for first-time setup and rollback requirements.

@@ -13,7 +13,7 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 ## Documentation
 
 - Install and configure the LokiVPN build. [English guide](docs/en/getting-started.md) · [Russian guide](docs/ru/getting-started.md)
-- Configure subscriptions and routing. [English user guide](docs/en/user-guide.md) · [Russian user guide](docs/ru/user-guide.md)
+- Sign in, set up a subscription, and use the management pages. [English user guide](docs/en/user-guide.md) · [Russian user guide](docs/ru/user-guide.md)
 - Run the experimental KeeneticOS integration in local fixtures. [WebUI prototype](docs/en/development.md#keeneticos-webui-prototype)
 - Use the loopback control API for configuration, status, statistics, journals, and TPROXY recovery. [English endpoint list](docs/en/development.md#control-api) · [Russian endpoint list](docs/ru/development.md#control-api)
 
@@ -24,11 +24,12 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 - Domain detection from TLS SNI or HTTP Host, with a bounded IPv4 DNS-answer cache as a fallback when the connection has no readable hostname.
 - WireGuard, AmneziaWG 2/3 single-peer `.conf` profiles, supported sing-box connection links, raw sing-box outbounds/endpoints, and embedded TrustTunnel.
 - Connection failover with recovery hysteresis and explicit direct fallback where configured.
-- Xray subscriptions with refresh, HTTPS node checks, failover, and balancing by site, by session, or round robin.
+- Xray subscriptions with optional provider routing rules, per-subscription refresh, HTTPS node checks, failover, and balancing by site, by session, or round robin.
 - A UDP/TCP DNS frontend, public resolver presets, DoH/DoT, and selectable DNS routing.
-- YAML configuration, a shared draft/Apply workflow, and a plain YAML file you can back up or edit over SSH.
-- Dark/light themes, responsive navigation, connection wizards, file import, and bulk group route changes.
-- Routing, audit, and system journals; connection statistics; and separate HTTP, verified HTTPS, and bounded transfer diagnostics. The panel can export a [diagnostic ZIP](docs/en/troubleshooting.md#download-the-diagnostic-zip).
+- KeeneticOS session sign-in with management and view-only roles. An SSH tunnel provides local recovery access and opens the pages on OpenWrt. [Panel access](docs/en/user-guide.md#access-the-panel)
+- Responsive server-rendered Overview, Routing, Devices, Connections, and Diagnostics pages in English and Russian, with light and dark themes.
+- First-run subscription setup, per-page Save, bulk device switches, connection import and replacement. Advanced settings and private backups use the YAML file.
+- Connection statistics and separate HTTP, verified HTTPS, and bounded transfer diagnostics. Download a [diagnostic ZIP](docs/en/troubleshooting.md#download-the-diagnostic-zip) from the panel. The loopback control API serves routing, audit, and system journals.
 - Release notifications, manual installation and rollback, and optional scheduled updates from the web panel. [Update guide](docs/en/getting-started.md#update-from-the-panel)
 
 ## How routing works
@@ -76,7 +77,7 @@ CI exposes independent **Memory regression**, **AWG stress (320 MiB)**, **AWG st
 
 ## Configuration and router installation
 
-The bilingual documentation source is in [docs/en/](docs/en/index.md) and [docs/ru/](docs/ru/index.md), including an illustrated user guide. See the [documentation build instructions](docs/en/development.md).
+The bilingual documentation source is in [docs/en/](docs/en/index.md) and [docs/ru/](docs/ru/index.md), including the user guide. See the [documentation build instructions](docs/en/development.md).
 
 Start with [examples/config.yaml](examples/config.yaml) and [examples/connections.yaml](examples/connections.yaml). Example keys, addresses, and credentials are placeholders and must be replaced. Keep real configuration files and support exports out of Git.
 
