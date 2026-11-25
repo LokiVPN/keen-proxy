@@ -109,7 +109,11 @@ func (p pages) renderWizardChoices(w http.ResponseWriter, r *http.Request, statu
 	text := localized(r)
 	for i, candidate := range draft.candidates {
 		name := fmt.Sprintf(text["wizard_protocol_name"], candidate.Summary.Protocol, i+1)
-		if server := candidate.Summary.Server; server != "" {
+		server := candidate.Summary.Server
+		if candidate.Summary.ServerHidden {
+			server = text["wizard_summary_hidden"]
+		}
+		if server != "" {
 			name += " · " + server
 		}
 		choices = append(choices, wizardChoice{Index: i, Name: name})

@@ -61,17 +61,20 @@ func amneziaDraft(raw string) (Draft, error) {
 		return Draft{}, ErrInvalid
 	}
 	peer := endpoint["peers"].([]map[string]any)[0]
+	rawServer, server := profileAddress(peer, "address", "port")
+	summary := Summary{Protocol: "AmneziaWG", Server: server}
 	return Draft{
 		Connection: model.Connection{Type: model.ConnAmneziaWG, AmneziaWG: raw},
-		Summary:    Summary{Protocol: "AmneziaWG", Server: profileAddress(peer, "address", "port")},
+		Summary:    summary.hideRepeatedCredentials(rawServer, "", profileCredentials(endpoint, nil)),
 	}, nil
 }
 
 func wireGuardDraft(wg *model.WireGuard) Draft {
 	host, port, _ := net.SplitHostPort(wg.Peer.Endpoint)
+	summary := Summary{Protocol: "WireGuard", Server: displayAddress(host, port)}
 	return Draft{
 		Connection: model.Connection{Type: model.ConnWireGuard, WireGuard: wg},
-		Summary:    Summary{Protocol: "WireGuard", Server: displayAddress(host, port)},
+		Summary:    summary.hideRepeatedCredentials(wg.Peer.Endpoint, "", []string{wg.PrivateKey, wg.Peer.PresharedKey}),
 	}
 }
 

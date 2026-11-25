@@ -168,6 +168,57 @@ func TestConnectionWizardSuggestsProtocolIdentityForImports(t *testing.T) {
 	}
 }
 
+func TestConnectionWizardHidesRepeatedSummaryCredentials(t *testing.T) {
+	for _, tt := range []struct{ name, profile, credential, server, sni string }{
+		{"password in SNI", `{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"private-sni.example.test",
+			"tls":{"enabled":true,"server_name":"private-sni.example.test"}}`,
+			"private-sni.example.test", "vpn.example.test:443", "Hidden"},
+		{"password within server", `{"type":"trojan","server":"prefix.private-host.example.test","server_port":443,"password":"private-host",
+			"tls":{"enabled":true,"server_name":"cover.example.test"}}`,
+			"private-host", "Hidden", "cover.example.test"},
+		{"UUID in link SNI", "vless://" + wizardUUID + "@vpn.example.test:443?security=tls&sni=" + wizardUUID + ".example.test",
+			wizardUUID, "vpn.example.test:443", "Hidden"},
+		{"IDNA-normalized SNI", `{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"t\u00e9.example.test",
+			"tls":{"enabled":true,"server_name":"t\u00e9.example.test"}}`,
+			"xn--", "vpn.example.test:443", "Hidden"},
+		{"Unicode-folded password field", `{"type":"http","server":"vpn.example.test","server_port":443,
+			"pa\u017f\u017fword":"private-folded","tls":{"enabled":true,"server_name":"private-folded.example.test"}}`,
+			"private-folded", "vpn.example.test:443", "Hidden"},
+		{"authorization token in SNI", `{"type":"http","server":"vpn.example.test","server_port":443,
+			"headers":{"Authorization":["Bearer private-bearer"]},"tls":{"enabled":true,"server_name":"private-bearer.example.test"}}`,
+			"private-bearer", "vpn.example.test:443", "Hidden"},
+		{"ordinary host header", `{"type":"http","server":"vpn.example.test","server_port":443,"password":"unrelated-secret",
+			"headers":{"Host":"cover.example.test"},"tls":{"enabled":true,"server_name":"cover.example.test"}}`,
+			"unrelated-secret", "vpn.example.test:443", "cover.example.test"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newWizardFixture()
+			h := New(f, setupTestOptions(RoleManage))
+			checked, _ := wizardCheck(t, h, "/connections/new", tt.profile)
+			body := checked.Body.String()
+			if strings.Contains(body, tt.credential) || f.applies != 0 {
+				t.Fatal("Check exposed a credential or applied the draft")
+			}
+			for row, want := range map[string]string{"Server": tt.server, "SNI": tt.sni} {
+				if !strings.Contains(body, `<dt>`+row+`</dt><dd class="clip">`+want+`</dd>`) {
+					t.Errorf("the %s summary row did not render %q", row, want)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectionWizardHidesSummaryTypeWhenItRepeatsACredential(t *testing.T) {
+	f := newWizardFixture()
+	h := New(f, setupTestOptions(RoleManage))
+	checked, _ := wizardCheck(t, h, "/connections/new",
+		`{"type":"trojan","server":"vpn.example.test","server_port":443,"password":"TLS","tls":{"enabled":true}}`)
+	body := checked.Body.String()
+	if !strings.Contains(body, "<dd>Hidden</dd>") || formField(t, body, "name") != "Trojan 1" || formField(t, body, "id") != "trojan" {
+		t.Fatal("Check did not hide the matching type row and retain the protocol identity")
+	}
+}
+
 func TestConnectionWizardSkipsConfiguredAndGeneratedIDs(t *testing.T) {
 	f := newWizardFixture()
 	f.cfg.Connections = []model.Connection{{ID: "trojan", Type: model.ConnLink, Link: "socks5://old.example:1080"}}

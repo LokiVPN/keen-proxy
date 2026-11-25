@@ -71,7 +71,7 @@ func Manual(f url.Values) (Draft, error) {
 	}
 	return Draft{
 		Connection: model.Connection{Type: model.ConnSingBox, Outbound: out},
-		Summary:    outboundSummary(out),
+		Summary:    profileSummary(out, false),
 	}, nil
 }
 

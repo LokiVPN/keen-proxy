@@ -140,9 +140,9 @@
         </div>
         <dl class="facts">
           <dt>{{$.Text.wizard_type}}</dt>
-          <dd>{{.Summary.Protocol}}{{if .Summary.Security}} · {{.Summary.Security}}{{end}}</dd>
-          <dt>{{$.Text.wizard_field_server}}</dt><dd class="clip">{{if .Summary.Server}}{{.Summary.Server}}{{else}}—{{end}}</dd>
-          <dt>SNI</dt><dd class="clip">{{if .Summary.SNI}}{{.Summary.SNI}}{{else}}—{{end}}</dd>
+          <dd>{{if .Summary.TypeHidden}}{{$.Text.wizard_summary_hidden}}{{else}}{{.Summary.Protocol}}{{if .Summary.Security}} · {{.Summary.Security}}{{end}}{{end}}</dd>
+          <dt>{{$.Text.wizard_field_server}}</dt><dd class="clip">{{if .Summary.ServerHidden}}{{$.Text.wizard_summary_hidden}}{{else if .Summary.Server}}{{.Summary.Server}}{{else}}—{{end}}</dd>
+          <dt>SNI</dt><dd class="clip">{{if .Summary.SNIHidden}}{{$.Text.wizard_summary_hidden}}{{else if .Summary.SNI}}{{.Summary.SNI}}{{else}}—{{end}}</dd>
         </dl>
         <form method="post" action="/connections/new/save" autocomplete="off" data-guard novalidate>
           {{template "wizard-context" $.ConnectionWizard}}

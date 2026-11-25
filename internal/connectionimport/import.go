@@ -75,7 +75,7 @@ func importLink(text string) (Draft, error) {
 	}
 	return Draft{
 		Connection: model.Connection{Type: model.ConnLink, Link: strings.Clone(text)},
-		Summary:    outboundSummary(out),
+		Summary:    profileSummary(out, false),
 	}, nil
 }
 
@@ -115,12 +115,11 @@ func importJSON(text string) (Draft, error) {
 	delete(profile.options, "tag")
 	var draft Draft
 	draft.Connection.Type = model.ConnSingBox
+	draft.Summary = profileSummary(profile.options, profile.endpoint)
 	if profile.endpoint {
 		draft.Connection.Endpoint = profile.options
-		draft.Summary = endpointSummary(profile.options)
 	} else {
 		draft.Connection.Outbound = profile.options
-		draft.Summary = outboundSummary(profile.options)
 	}
 	return draft, nil
 }

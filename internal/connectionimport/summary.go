@@ -7,12 +7,15 @@ import (
 	"strconv"
 
 	"golang.org/x/net/idna"
+
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 // Summary is the allowlisted projection for the check screen. Protocol is an
 // application-owned label shared by both locales.
 type Summary struct {
-	Protocol, Security, Server, SNI string
+	Protocol, Security, Server, SNI     string
+	TypeHidden, ServerHidden, SNIHidden bool
 }
 
 var protocolLabel = map[string]string{
@@ -24,30 +27,47 @@ var protocolLabel = map[string]string{
 	"openvpn": "OpenVPN", "openconnect": "OpenConnect", "tor": "Tor", "bridge": "Bridge",
 }
 
-func outboundSummary(out map[string]any) Summary {
-	summary := Summary{Protocol: displayProtocol(out), Server: profileAddress(out, "server", "server_port")}
-	tls, _ := out["tls"].(map[string]any)
+func profileSummary(profile map[string]any, endpoint bool) Summary {
+	rawServer, server := profileAddress(profile, "server", "server_port")
+	if peers, ok := profile["peers"].([]any); endpoint && ok && len(peers) == 1 {
+		if peer, ok := peers[0].(map[string]any); ok {
+			rawServer, server = profileAddress(peer, "address", "port")
+		}
+	}
+	summary := Summary{Protocol: displayProtocol(profile), Server: server}
+	var sni string
+	tls, _ := profile["tls"].(map[string]any)
 	if tls["enabled"] == true {
 		summary.Security = "TLS"
 		reality, _ := tls["reality"].(map[string]any)
 		if reality["enabled"] == true {
 			summary.Security = "REALITY"
 		}
-		if name, ok := tls["server_name"].(string); ok {
-			summary.SNI = displayHost(name)
-		}
+		sni, _ = tls["server_name"].(string)
+		summary.SNI = displayHost(sni)
 	}
-	return summary
+	return summary.hideRepeatedCredentials(rawServer, sni, profileCredentials(profile, nil))
 }
 
-func endpointSummary(endpoint map[string]any) Summary {
-	summary := outboundSummary(endpoint)
-	if peers, ok := endpoint["peers"].([]any); ok && len(peers) == 1 {
-		if peer, ok := peers[0].(map[string]any); ok {
-			summary.Server = profileAddress(peer, "address", "port")
-		}
+// Compare the input and the display form of each host so canonicalization
+// cannot turn a repeated credential into a visible hostname.
+func (s Summary) hideRepeatedCredentials(rawServer, rawSNI string, credentials []string) Summary {
+	typ := s.Protocol
+	if s.Security != "" {
+		typ += " · " + s.Security
 	}
-	return summary
+	s.TypeHidden = subscription.ContainsDisplaySecret(typ, credentials)
+	s.Server, s.ServerHidden = hideSummaryHost(s.Server, rawServer, credentials)
+	s.SNI, s.SNIHidden = hideSummaryHost(s.SNI, rawSNI, credentials)
+	return s
+}
+
+func hideSummaryHost(value, raw string, credentials []string) (string, bool) {
+	if value != "" && (subscription.ContainsDisplaySecret(value, credentials) ||
+		raw != value && subscription.ContainsDisplaySecret(raw, credentials)) {
+		return "", true
+	}
+	return value, false
 }
 
 func displayProtocol(profile map[string]any) string {
@@ -58,7 +78,7 @@ func displayProtocol(profile map[string]any) string {
 	return "sing-box"
 }
 
-func profileAddress(profile map[string]any, serverKey, portKey string) string {
+func profileAddress(profile map[string]any, serverKey, portKey string) (raw, display string) {
 	host, _ := profile[serverKey].(string)
 	var port string
 	switch value := profile[portKey].(type) {
@@ -70,9 +90,9 @@ func profileAddress(profile map[string]any, serverKey, portKey string) string {
 		port = strconv.FormatFloat(value, 'f', -1, 64)
 	}
 	if port == "" {
-		return displayHost(host)
+		return host, displayHost(host)
 	}
-	return displayAddress(host, port)
+	return net.JoinHostPort(host, port), displayAddress(host, port)
 }
 
 func displayAddress(host, port string) string {
