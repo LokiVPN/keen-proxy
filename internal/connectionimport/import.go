@@ -30,6 +30,7 @@ var (
 type Draft struct {
 	Connection model.Connection
 	Summary    Summary
+	secrets    []string
 }
 
 // Parse detects the format of one bounded connection input. Filename is used

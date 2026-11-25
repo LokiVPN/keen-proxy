@@ -7,16 +7,10 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
-// importedIdentity projects a name before the raw import reaches the wizard.
-// Neither the saved display name nor the ID derived from it can carry parsed
-// credentials. An unsafe label falls back to the public protocol and server.
+// importedIdentity prepares an untrusted label for the wizard. The wizard
+// checks the final name and ID again after choosing a unique identifier.
 func importedIdentity(draft Draft, label string, secrets []string) Draft {
-	if subscription.ContainsDisplaySecret(draft.Summary.Server, secrets) {
-		draft.Summary.Server = ""
-	}
-	if subscription.ContainsDisplaySecret(draft.Summary.SNI, secrets) {
-		draft.Summary.SNI = ""
-	}
+	draft = credentialDraft(draft, secrets)
 	const labelLimit = 160
 	name := subscription.ImportedConnectionLabel(label, labelLimit, secrets)
 	// Slugging can join words with the same separators used by a credential.
@@ -27,17 +21,43 @@ func importedIdentity(draft Draft, label string, secrets []string) Draft {
 	return draft
 }
 
-var credentialKeySeparators = strings.NewReplacer("-", "", "_", "")
+func credentialDraft(draft Draft, secrets []string) Draft {
+	draft.secrets = secrets
+	if draft.ContainsCredential(draft.Summary.Server) {
+		draft.Summary.Server = ""
+	}
+	if draft.ContainsCredential(draft.Summary.SNI) {
+		draft.Summary.SNI = ""
+	}
+	return draft
+}
+
+// ContainsCredential checks the final values without exposing the secret list
+// or parsing the draft again.
+func (d Draft) ContainsCredential(values ...string) bool {
+	for _, value := range values {
+		if subscription.ContainsDisplaySecret(value, d.secrets) {
+			return true
+		}
+	}
+	return false
+}
+
+var profileKeySeparators = strings.NewReplacer("-", "", "_", "")
+
+func normalizedProfileKey(key string) string {
+	return strings.ToLower(profileKeySeparators.Replace(key))
+}
 
 func credentialField(key string) bool {
-	key = strings.ToLower(credentialKeySeparators.Replace(key))
-	for _, suffix := range []string{"password", "passwd", "uuid", "token", "privatekey", "publickey", "sharedkey", "apikey", "secret"} {
+	key = normalizedProfileKey(key)
+	for _, suffix := range []string{"password", "passwd", "passphrase", "uuid", "token", "key", "psk", "secret"} {
 		if strings.HasSuffix(key, suffix) {
 			return true
 		}
 	}
 	switch key {
-	case "username", "auth", "authstr", "shortid", "headerprotectionkey":
+	case "username", "auth", "authstr", "shortid":
 		return true
 	default:
 		return false
@@ -62,6 +82,10 @@ func profileSecrets(profile map[string]any) []string {
 				collect(item, sensitive)
 			}
 		case []map[string]any:
+			for _, item := range v {
+				collect(item, sensitive)
+			}
+		case []string:
 			for _, item := range v {
 				collect(item, sensitive)
 			}

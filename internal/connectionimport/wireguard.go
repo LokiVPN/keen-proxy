@@ -52,7 +52,11 @@ func importConf(raw, text, filename string) (Draft, error) {
 	if err != nil {
 		return Draft{}, err
 	}
-	return importedIdentity(wireGuardDraft(wg), filename, []string{wg.PrivateKey, wg.Peer.PublicKey, wg.Peer.PresharedKey}), nil
+	return importedIdentity(wireGuardDraft(wg), filename, wireGuardSecrets(wg)), nil
+}
+
+func wireGuardSecrets(wg *model.WireGuard) []string {
+	return []string{wg.PrivateKey, wg.Peer.PublicKey, wg.Peer.PresharedKey}
 }
 
 func amneziaDraft(c model.Connection) (Draft, error) {

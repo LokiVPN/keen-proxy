@@ -205,7 +205,10 @@ func restoreWizardManual(view *connectionWizardPage, form url.Values, text map[s
 				continue
 			}
 			value := form.Get(field.Key)
-			if len(field.Options) != 0 && !slices.ContainsFunc(field.Options, func(option wizardOption) bool { return option.Value == value }) {
+			if len(field.Options) != 0 {
+				if slices.ContainsFunc(field.Options, func(option wizardOption) bool { return option.Value == value }) {
+					field.Value = value
+				}
 				continue
 			}
 			if len(value) <= 1024 && utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n@") &&

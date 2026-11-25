@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/ordo-systems/keen-proxy/internal/awg"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
@@ -68,10 +69,11 @@ func Manual(f url.Values) (Draft, error) {
 			out["tls"] = manualTLS(f, host)
 		}
 	}
-	return Draft{
+	draft := Draft{
 		Connection: model.Connection{Type: model.ConnSingBox, Outbound: out},
 		Summary:    outboundSummary(out),
-	}, nil
+	}
+	return credentialDraft(draft, profileSecrets(out)), nil
 }
 
 var (
@@ -131,6 +133,12 @@ func manualWireGuard(f url.Values) (Draft, error) {
 			return Draft{}, ManualField(field.name)
 		}
 	}
+	if !awg.ValidKey(wg.PrivateKey) {
+		return Draft{}, ManualField("privateKey")
+	}
+	if !awg.ValidKey(wg.Peer.PublicKey) {
+		return Draft{}, ManualField("peerKey")
+	}
 	host, port, err := net.SplitHostPort(wg.Peer.Endpoint)
 	if err != nil || displayAddress(host, port) == "" {
 		return Draft{}, ManualField("endpoint")
@@ -140,6 +148,9 @@ func manualWireGuard(f url.Values) (Draft, error) {
 		return Draft{}, ManualField("address")
 	}
 	wg.Peer.PresharedKey = strings.TrimSpace(f.Get("psk"))
+	if wg.Peer.PresharedKey != "" && !awg.ValidKey(wg.Peer.PresharedKey) {
+		return Draft{}, ManualField("psk")
+	}
 	if value := f.Get("mtu"); value != "" {
 		n, err := strconv.ParseUint(value, 10, 32)
 		if err != nil {
@@ -154,5 +165,5 @@ func manualWireGuard(f url.Values) (Draft, error) {
 		}
 		wg.Peer.Keepalive = uint16(n)
 	}
-	return wireGuardDraft(wg), nil
+	return credentialDraft(wireGuardDraft(wg), wireGuardSecrets(wg)), nil
 }

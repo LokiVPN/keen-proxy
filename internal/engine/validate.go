@@ -44,21 +44,35 @@ func validateProfiles(ctx context.Context, config []byte, runtimeGraph bool) err
 	return instance.Close()
 }
 
-// Check generated tags before the core decoder can return a raw error.
-func validateRuntimeTags(config []byte) error {
+// RuntimeOutboundTags returns the configured and generated tags consumed by
+// the outbound manager at Start.
+func RuntimeOutboundTags(raw []byte) ([]string, error) {
 	type tagged struct{ Tag string }
 	var graph struct{ Outbounds, Endpoints []tagged }
-	if err := json.Unmarshal(config, &graph); err != nil {
-		return err
+	if err := json.Unmarshal(raw, &graph); err != nil {
+		return nil, err
 	}
-	tags := make(map[string]bool, len(graph.Outbounds)+len(graph.Endpoints))
+	tags := make([]string, 0, len(graph.Outbounds)+len(graph.Endpoints))
 	for _, profiles := range [][]tagged{graph.Outbounds, graph.Endpoints} {
 		for _, profile := range profiles {
-			if tags[profile.Tag] {
-				return model.ErrConnectionTagConflict
-			}
-			tags[profile.Tag] = true
+			tags = append(tags, profile.Tag)
 		}
+	}
+	return tags, nil
+}
+
+// Check generated tags before the core decoder can return a raw error.
+func validateRuntimeTags(config []byte) error {
+	tags, err := RuntimeOutboundTags(config)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		if seen[tag] {
+			return model.ErrConnectionTagConflict
+		}
+		seen[tag] = true
 	}
 	return nil
 }

@@ -54,6 +54,8 @@ Choose **Check** to validate the profile on the router and review its type, serv
 
 If an identifier conflicts with a routing tag, choose another one. After a manual input error, correct the highlighted field and re-enter credentials before checking again.
 
+The wizard accepts a detour to a saved manual connection. KeenProxy supplies the built-in routes and controls interface binding.
+
 Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Profiles can also be set in the [YAML configuration](getting-started.md).
 
 Groups, devices, networks, and DNS settings keep their references to a disabled connection. Traffic follows its configured enabled fallback chain; with no enabled fallback it is blocked, not silently routed directly or passed to the next rule. An explicitly configured **Direct** fallback remains intentional. DNS keeps its separate strict/direct failure policy: disabling a connection must not create a direct DNS path in strict mode.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
+	"github.com/ordo-systems/keen-proxy/internal/connectionimport"
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -63,6 +64,14 @@ func (d uiDeps) Apply(ctx context.Context, cfg *model.Config, revision string) e
 	return d.daemon.ApplyIfCurrent(ctx, cfg, revision)
 }
 
+func (d uiDeps) ConnectionRuntimeTags(cfg *model.Config) ([]string, error) {
+	compiled, err := d.daemon.CompileConnectionDraft(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return engine.RuntimeOutboundTags(compiled.SingBox)
+}
+
 func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -72,6 +81,9 @@ func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id st
 		return errors.New("missing connection to validate")
 	}
 	changed := cfg.Connections[i]
+	if err := connectionimport.ValidateRoutingOptions(changed, cfg); err != nil {
+		return err
+	}
 	if err := api.ValidateProfileFields(changed); err != nil {
 		return err
 	}

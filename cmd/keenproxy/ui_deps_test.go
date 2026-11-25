@@ -87,6 +87,7 @@ func (*wizardRuntimeDaemon) CompileConnectionDraft(cfg *model.Config) (compile.O
 func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 	d := &wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
 		{ID: "home", Type: model.ConnLink, Link: "socks5://home.example:1080", Fallback: model.TargetDirect},
+		{ID: "home-2", Type: model.ConnLink, Link: "socks5://other.example:1080", Fallback: model.TargetDirect},
 	}}}
 	d.cfg.Defaults()
 	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
@@ -105,8 +106,8 @@ func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 	}
 	const profile = `{"type":"socks","server":"vpn.example.test","server_port":1080`
 	w := check(profile + `,"tag":"Failover Home"}`)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "conflicts with a routing tag") {
-		t.Errorf("Check accepted the generated selector's tag: HTTP %d", w.Code)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `name="id" value="failover-home-3"`) {
+		t.Errorf("Check did not offer an ID distinct from both generated tags: HTTP %d", w.Code)
 	}
 	const missing = "synthetic-absent-detour"
 	for _, raw := range []string{
@@ -118,9 +119,18 @@ func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 			t.Errorf("invalid graph was accepted or its error was exposed: HTTP %d", w.Code)
 		}
 	}
-	checked := check(profile + `,"tag":"Office","detour":"failover-home"}`)
+	const wireGuard = `{"endpoint":{"type":"wireguard","address":["10.1.0.2/32"],"private_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","peers":[{"address":"192.0.2.10","port":51820,"public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=","allowed_ips":["0.0.0.0/0"]}],"detour":"direct"}}`
+	for _, raw := range []string{wireGuard, profile + `,"detour":"block"}`, profile + `,"detour":"failover-home"}`,
+		profile + `,"bind_interface":"synthetic-device"}`, profile + `,"inet4_bind_address":"192.0.2.10"}`} {
+		refused := check(raw)
+		if refused.Code != http.StatusUnprocessableEntity || !strings.Contains(refused.Body.String(), "includes unsupported routing options") ||
+			strings.Contains(refused.Body.String(), "synthetic-device") || d.applies != 0 {
+			t.Errorf("Check did not refuse explicit routing before Apply: HTTP %d", refused.Code)
+		}
+	}
+	checked := check(profile + `,"tag":"Office","detour":"home"}`)
 	if checked.Code != http.StatusOK {
-		t.Fatalf("a valid generated-selector dependency failed Check: HTTP %d", checked.Code)
+		t.Fatalf("a valid manual connection dependency failed Check: HTTP %d", checked.Code)
 	}
 	token := func(w *httptest.ResponseRecorder) string {
 		t.Helper()
@@ -135,8 +145,9 @@ func TestWizardRuntimeValidationCheckAndSave(t *testing.T) {
 		"rev": {ui.Revision(d.Config())}, "preview": {token(checked)}, "name": {"Office"}, "id": {"failover-home"},
 	}
 	w = post("/connections/new/save", form, cookies...)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "conflicts with a routing tag") || d.applies != 0 {
-		t.Fatalf("Save attempted Apply with the selector's tag: HTTP %d", w.Code)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "conflicts with a routing tag") ||
+		!strings.Contains(w.Body.String(), `aria-describedby="wizard-id-hint wizard-id-error"`) || d.applies != 0 {
+		t.Fatalf("Save did not associate the generated-tag collision with its editable ID: HTTP %d", w.Code)
 	}
 	form.Set("id", "office")
 	form.Set("preview", token(w))

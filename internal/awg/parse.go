@@ -246,9 +246,14 @@ func peerEndpoint(peer map[string]any, value string) error {
 	return nil
 }
 
-func parseKey(value string) (string, error) {
+// ValidKey accepts a canonical base64-encoded WireGuard key.
+func ValidKey(value string) bool {
 	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
-	if err != nil || len(decoded) != 32 || base64.StdEncoding.EncodeToString(decoded) != value {
+	return err == nil && len(decoded) == 32 && base64.StdEncoding.EncodeToString(decoded) == value
+}
+
+func parseKey(value string) (string, error) {
+	if !ValidKey(value) {
 		return "", fmt.Errorf("expected a base64 32-byte key")
 	}
 	return value, nil

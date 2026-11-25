@@ -19,7 +19,8 @@ var protocolLabel = map[string]string{
 	"wireguard": "WireGuard", "vless": "VLESS", "vmess": "VMess", "shadowsocks": "Shadowsocks",
 	"trojan": "Trojan", "hysteria2": "Hysteria2", "socks": "SOCKS", "tuic": "TUIC",
 	"anytls": "AnyTLS", "trusttunnel": "TrustTunnel", "hysteria": "Hysteria",
-	"ssh": "SSH", "http": "HTTP", "naive": "Naive", "tailscale": "Tailscale",
+	"snell": "Snell",
+	"ssh":   "SSH", "http": "HTTP", "naive": "Naive", "tailscale": "Tailscale",
 	"openvpn": "OpenVPN", "openconnect": "OpenConnect", "tor": "Tor",
 }
 

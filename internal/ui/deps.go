@@ -15,6 +15,7 @@ type Deps interface {
 	Config() *model.Config
 	PreviewSubscription(context.Context, subscription.Source) SetupPreview
 	LANPrefix(iface string) (netip.Prefix, error)
+	ConnectionRuntimeTags(cfg *model.Config) ([]string, error)
 	ValidateConnection(ctx context.Context, cfg *model.Config, id string) error
 	Apply(ctx context.Context, cfg *model.Config, revision string) error
 	ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error
