@@ -1,8 +1,8 @@
-// Command provider serves a subscription with a Happ routing profile over
+// Command provider serves subscriptions with Happ routing profiles over
 // HTTPS for integration tests. It writes a self-signed certificate for the
 // listen address, which KeenProxy trusts through SSL_CERT_FILE:
 //
-//	provider 198.51.100.2:8444 ca.pem nodes.txt profile.json
+//	provider 198.51.100.2:8444 ca.pem nodes.txt profile.json [/path nodes.txt profile.json]...
 package main
 
 import (
@@ -22,14 +22,41 @@ import (
 	"time"
 )
 
-// main serves /sub with the nodes file as the body and the profile as the
-// routing header until the test terminates the process.
+// main serves the default /sub and any additional fixtures with one certificate.
 func main() {
-	listen, certPath, nodesPath, profilePath := os.Args[1], os.Args[2], os.Args[3], os.Args[4]
+	if len(os.Args) < 5 || (len(os.Args)-5)%3 != 0 {
+		log.Fatal("usage: provider listen cert nodes profile [path nodes profile]...")
+	}
+	listen, certPath := os.Args[1], os.Args[2]
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		log.Fatal(err)
 	}
+	mux := http.NewServeMux()
+	serveSubscription(mux, "/sub", os.Args[3], os.Args[4])
+	for i := 5; i < len(os.Args); i += 3 {
+		serveSubscription(mux, os.Args[i], os.Args[i+1], os.Args[i+2])
+	}
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cert, err := selfSigned(net.ParseIP(host), certPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", listen, &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Log unserved paths too, so a missing dat file proves an actual HTTPS request.
+	log.Fatal(http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("%s %s", r.Method, r.URL.Path)
+		mux.ServeHTTP(w, r)
+	})))
+}
+
+// serveSubscription freezes the nodes and routing header from fixture files.
+func serveSubscription(mux *http.ServeMux, path, nodesPath, profilePath string) {
 	nodes, err := os.ReadFile(nodesPath)
 	if err != nil {
 		log.Fatal(err)
@@ -38,21 +65,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cert, err := selfSigned(net.ParseIP(host), certPath)
-	if err != nil {
-		log.Fatal(err)
-	}
 	routing := "happ://routing/add/" + base64.StdEncoding.EncodeToString(profile)
-	http.HandleFunc("/sub", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s", r.Method, r.URL.Path)
+	mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("routing", routing)
 		_, _ = w.Write(nodes)
 	})
-	ln, err := tls.Listen("tcp", listen, &tls.Config{Certificates: []tls.Certificate{cert}})
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Fatal(http.Serve(ln, nil))
 }
 
 // selfSigned creates a certificate for ip and writes it to path as PEM.

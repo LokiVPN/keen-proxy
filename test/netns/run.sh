@@ -52,7 +52,9 @@ cat >/tmp/server.json <<'JSON'
   "log": {"level": "info"},
   "inbounds": [
     {"type": "shadowsocks", "listen": "198.51.100.2", "listen_port": 8388, "method": "aes-128-gcm", "password": "test-pass"},
-    {"type": "vless", "listen": "198.51.100.2", "listen_port": 8443, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]}
+    {"type": "vless", "listen": "198.51.100.2", "listen_port": 8443, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]},
+    {"type": "vless", "tag": "node-a", "listen": "198.51.100.2", "listen_port": 8445, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]},
+    {"type": "vless", "tag": "node-b", "listen": "198.51.100.2", "listen_port": 8446, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]}
   ],
   "outbounds": [{"type": "direct"}]
 }
@@ -81,9 +83,18 @@ SS_MAIN="ss://$(printf 'aes-128-gcm:test-pass' | base64 | tr -d '=\n')@198.51.10
 # its self-signed certificate through SSL_CERT_FILE.
 echo 'vless://11111111-2222-3333-4444-555555555555@198.51.100.2:8443?type=tcp&encryption=none#Provider' >/tmp/provider-nodes.txt
 cat >/tmp/provider-profile.json <<'JSON'
-{"Name": "Netns", "GlobalProxy": "false", "DirectSites": ["domain:provdirect.test"], "BlockSites": ["domain:provads.test"]}
+{"Name": "Netns", "GlobalProxy": "false", "DirectSites": ["domain:provdirect.test"], "BlockSites": ["domain:provads.test"], "Geositeurl": "https://198.51.100.2:8444/unused-geosite.dat", "Geoipurl": "https://198.51.100.2:8444/unused-geoip.dat"}
 JSON
-ip netns exec wan /work/provider 198.51.100.2:8444 /tmp/provider-ca.pem /tmp/provider-nodes.txt /tmp/provider-profile.json >/tmp/provider.log 2>&1 &
+cat >/tmp/provider-failed-profile.json <<'JSON'
+{"Name": "Unavailable data", "GlobalProxy": true, "DirectSites": ["geosite:synthetic"], "Geositeurl": "https://198.51.100.2:8444/missing-geosite.dat"}
+JSON
+cat >/tmp/provider-reserve-nodes.txt <<'NODES'
+vless://11111111-2222-3333-4444-555555555555@198.51.100.2:8445?type=tcp&encryption=none#Node-A
+vless://11111111-2222-3333-4444-555555555555@198.51.100.2:8446?type=tcp&encryption=none#Node-B
+NODES
+ip netns exec wan /work/provider 198.51.100.2:8444 /tmp/provider-ca.pem /tmp/provider-nodes.txt /tmp/provider-profile.json \
+	/sub-failed /tmp/provider-nodes.txt /tmp/provider-failed-profile.json \
+	/sub-reserve /tmp/provider-reserve-nodes.txt /tmp/provider-profile.json >/tmp/provider.log 2>&1 &
 for i in $(seq 1 50); do [ -s /tmp/provider-ca.pem ] && break; sleep 0.1; done
 [ -s /tmp/provider-ca.pem ] || { cat /tmp/provider.log; fail "subscription provider did not start"; }
 cat >/tmp/config.yaml <<YAML
@@ -474,7 +485,7 @@ PY
 }
 dig_a() { ip netns exec client dig +short +time=2 +tries=1 @8.8.8.8 "$1" A; }
 provider_apply '[]'
-grep -q 'GET /sub' /tmp/provider.log || fail "the subscription was not fetched over HTTPS"
+grep -q 'GET /sub$' /tmp/provider.log || fail "the subscription was not fetched over HTTPS"
 a=$(dig_a x.provads.test)
 [ "$a" = "0.0.0.0" ] || fail "provider block rule: '$a'"
 a=$(dig_a www.keep.provads.test)
@@ -518,9 +529,34 @@ ok "provider DNS fallback: a device answer routed the address until its TTL; the
 provider_apply '["block:literals:site"]'
 a=$(dig_a y.provads.test)
 [ "$a" = "198.51.100.3" ] || fail "a switched-off provider block rule still answers locally: '$a'"
+if grep -Eq 'GET /unused-(geosite|geoip)\.dat$' /tmp/provider.log; then
+	fail "a literal-only profile requested a dat file"
+fi
+ok "literal provider rules work without downloading either advertised dat file"
+ok "switching the provider block rule off releases its names on Apply"
+
+# A distinct source keeps last-good rules from masking a first download failure.
+# The WAN site can be reached directly, so a fallback to direct is observable.
+ip netns exec client curl --noproxy '*' -fsS -m 3 -o /dev/null 'http://198.51.100.3/?probe=direct-control'
+grep -Eq '^198\.51\.100\.1 .*GET /\?probe=direct-control ' /tmp/http.log || fail "provider failure direct control"
+put_config 'c["subscriptions"]=[{"id":"missing-data","url":"https://198.51.100.2:8444/sub-failed"}]; c["provider_rules"]={"source":"missing-data"}; c["groups"]=[]; c["networks"][0].update(default="profile", target="ss")'
+grep -q 'GET /missing-geosite.dat$' /tmp/provider.log || fail "the missing geosite file was not requested over HTTPS"
+curl -fsS -m 5 -H 'Accept-Language: en' http://127.0.0.1:8086/connections >/tmp/provider-failed.html
+grep -Fq 'Provider routing rules could not be loaded.' /tmp/provider-failed.html || fail "missing dat did not report unavailable rules"
+server_lines=$(wc -l </tmp/sbserver.log)
+ip netns exec client curl --noproxy '*' -fsS -m 3 -o /dev/null 'http://198.51.100.3/?probe=missing-data'
+tail -n "+$((server_lines + 1))" /tmp/sbserver.log | grep -q 'inbound/shadowsocks.*198\.51\.100\.3:80' || fail "profile default did not reach the WAN site through ss"
+if grep -Eq '^198\.51\.100\.1 .*GET /\?probe=missing-data ' /tmp/http.log; then
+	fail "traffic went direct when the geosite download failed"
+fi
+ok "missing geosite download reports unavailable rules and profile default still uses the tunnel"
 curl -fsS -m 15 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 	--data-binary @/tmp/provider-baseline.json http://127.0.0.1:8086/api/config >/dev/null || fail "provider rules restore"
-ok "switching the provider block rule off releases its names on Apply"
+
+timeout -k 3s 55s python3 -B /work/test/netns/simple_ui_cases.py reserve || {
+	tail -20 /tmp/keenproxy.log /tmp/sbserver.log
+	fail "subscription reserve scenario"
+}
 
 # --- Shutdown removes all interception owned by KeenProxy
 kill -TERM $KPID
@@ -563,8 +599,11 @@ for i in $(seq 1 20); do
     [ -S /var/run/ndm.core.socket ] && break
     sleep 0.1
 done
+FIREWALL_TEST_DIR=$(mktemp -d /tmp/keenproxy-firewall.XXXXXX)
+install -m 755 /work/test/netns/firewall-command.sh "$FIREWALL_TEST_DIR/iptables"
+install -m 755 /work/test/netns/firewall-command.sh "$FIREWALL_TEST_DIR/iptables-restore"
 /opt/bin/keenproxy -config /opt/etc/keenproxy/config.yaml -rule-sets /tmp/event-rule-sets -watch 1h \
-    -iptables /usr/sbin/iptables -iptables-restore /usr/sbin/iptables-restore >/tmp/keenproxy-event.log 2>&1 &
+    -iptables "$FIREWALL_TEST_DIR/iptables" -iptables-restore "$FIREWALL_TEST_DIR/iptables-restore" >/tmp/keenproxy-event.log 2>&1 &
 KPID=$!
 for i in $(seq 1 50); do
     iptables -t nat -C PREROUTING -j KEENPROXY_TCP 2>/dev/null && break
@@ -591,15 +630,21 @@ ip netns exec client curl -s -m 5 -o /dev/null http://198.51.100.3/ || fail "HTT
 api_get 'journal/audit?actor=watchdog' | python3 -c 'import json,sys; events=json.load(sys.stdin)["entries"]; assert any(e.get("firewall",{}).get("trigger")=="netfilter_hook" and e["firewall"]["outcome"]=="restored" and e["firewall"].get("duration_ms",-1)>=0 for e in events)' || fail "event recovery source or verification is missing"
 if grep -Eq 'checking firewall after netfilter event|interception rules restored and verified|interception rule check failed' /tmp/keenproxy-event.log; then fail "successful event recovery duplicated into system log"; fi
 ok "NDM callback restores a deleted chain and HTTP before the one-hour poll"
+# Test guarded forwarding with a real IPv4 return path in place.
+ip -n wan route add 192.168.77.10/32 via 198.51.100.1
+timeout -k 3s 55s python3 -B /work/test/netns/simple_ui_cases.py firewall "$FIREWALL_TEST_DIR" "$HOOK" || {
+    tail -40 /tmp/keenproxy-event.log "$FIREWALL_TEST_DIR/dns.log" "$FIREWALL_TEST_DIR/http.log" 2>/dev/null || true
+    fail "guarded firewall recovery scenarios"
+}
 kill -TERM "$KPID"
 wait "$KPID"
+rm -rf "$FIREWALL_TEST_DIR"
 [ ! -e "$HOOK" ] || fail "owned NDM hook remains after stop"
 [ ! -e /var/run/keenproxy/netfilter/changed ] || fail "event marker remains after stop"
 kill "$NDMPID"
 ok "NDM lifecycle cleanup is safe"
 
-# Give both families direct return routes so the probes detect an unguarded gap.
-ip -n wan route add 192.168.77.10/32 via 198.51.100.1
+# Add a direct IPv6 return route as well so both families can detect a gap.
 ip addr add 2001:db8:1::1/64 dev br0 nodad
 ip addr add 2001:db8:2::1/64 dev veth-w nodad
 ip -n client addr add 2001:db8:1::2/64 dev eth0 nodad
