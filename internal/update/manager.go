@@ -209,21 +209,12 @@ func (m *Manager) confirmRollback(ctx context.Context, current installState) {
 	}
 }
 
-// SetPreferences writes scheduler settings independently of the routing draft.
-func (m *Manager) SetPreferences(p Preferences) error {
-	return m.setPreferences(p, "")
-}
-
 // SetPreferencesIfCurrent checks the displayed revision under the same lock
-// used by rollback and the existing preferences writer.
+// used by rollback before writing scheduler settings.
 func (m *Manager) SetPreferencesIfCurrent(p Preferences, revision string) error {
 	if revision == "" {
 		return ErrPreferencesChanged
 	}
-	return m.setPreferences(p, revision)
-}
-
-func (m *Manager) setPreferences(p Preferences, revision string) error {
 	if m.installed().Current == "" {
 		return ErrUnavailable
 	}
@@ -236,7 +227,7 @@ func (m *Manager) setPreferences(p Preferences, revision string) error {
 	if err != nil {
 		return err
 	}
-	if revision != "" && revision != s.Preferences.Revision() {
+	if revision != s.Preferences.Revision() {
 		return ErrPreferencesChanged
 	}
 	s.Preferences = p

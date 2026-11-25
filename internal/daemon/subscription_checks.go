@@ -28,16 +28,8 @@ type subscriptionChecks struct {
 	sweep   SubscriptionCheckProgress
 }
 
-// CheckSubscription schedules a probe of a saved node, or a sweep of the saved
-// catalog when nodeID is empty. The background worker owns all network work.
-func (d *Daemon) CheckSubscription(sourceID, nodeID string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.checkSubscriptionLocked(sourceID, nodeID)
-}
-
-// CheckSubscriptionIfCurrent admits a browser action under the same lock as
-// source replacement, so the page can only queue checks for its saved config.
+// CheckSubscriptionIfCurrent queues a probe of the saved node or, with an
+// empty node ID, its catalog. The revision check and scheduling share a lock.
 func (d *Daemon) CheckSubscriptionIfCurrent(sourceID, nodeID, revision string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

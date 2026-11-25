@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,11 +42,7 @@ func (f *fakeDaemon) Apply(_ context.Context, c *model.Config) error {
 	return nil
 }
 func (f *fakeDaemon) Status(context.Context) daemon.Status { return daemon.Status{Mode: "redirect"} }
-func (f *fakeDaemon) Devices() []daemon.Device {
-	return []daemon.Device{{MAC: "aa:bb:cc:dd:ee:ff", IP: "192.168.7.10"}}
-}
-
-func (f *fakeDaemon) Stats(bool) stats.Snapshot { return stats.Snapshot{} }
+func (f *fakeDaemon) Stats(bool) stats.Snapshot            { return stats.Snapshot{} }
 func (f *fakeDaemon) Hosts(_, _ string, limit int) ([]stats.Host, int) {
 	f.limits = append(f.limits, limit)
 	return []stats.Host{{Host: "youtube.com", Down: 10}}, 1
@@ -185,45 +180,6 @@ func TestPutConfig(t *testing.T) {
 	}
 }
 
-func TestParseLink(t *testing.T) {
-	s, _ := newServer()
-	w := do(t, s.Handler(), "POST", "/api/links/parse", "{\"link\":\"trojan://pw@tr.example.com:443#\u041c\u043e\u0439\"}", "secret", local)
-	var got map[string]any
-	json.Unmarshal(w.Body.Bytes(), &got)
-	if w.Code != 200 || got["protocol"] != "trojan" || got["name"] != "\u041c\u043e\u0439" || got["server"] != "tr.example.com" {
-		t.Errorf("parse: %d %v", w.Code, got)
-	}
-	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"vless://u@h:1?type=xhttp"}`, "secret", local)
-	json.Unmarshal(w.Body.Bytes(), &got)
-	transport, _ := got["transport"].(map[string]any)
-	if w.Code != 200 || got["type"] != "link" || got["protocol"] != "vless" || transport["type"] != "xhttp" {
-		t.Errorf("xhttp preview: %d %v", w.Code, got)
-	}
-	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"vless://u@h:1?type=nope"}`, "secret", local)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Errorf("invalid transport: %d %s", w.Code, w.Body)
-	}
-	w = do(t, s.Handler(), "POST", "/api/links/parse", `{"link":"`+ttPreviewLink()+`"}`, "secret", local)
-	json.Unmarshal(w.Body.Bytes(), &got)
-	if w.Code != 200 || got["type"] != "link" || got["protocol"] != "trusttunnel" || got["name"] != "Finland" || got["server"] != "203.0.113.50" || got["tls"] != true {
-		t.Errorf("tt preview: %d %v", w.Code, got)
-	}
-	if _, ok := got["password"]; ok {
-		t.Errorf("preview exposed credentials: %v", got)
-	}
-}
-
-func ttPreviewLink() string {
-	var b []byte
-	field := func(tag byte, v string) { b = append(append(b, tag, byte(len(v))), v...) }
-	field(0x01, "vpn.example.com")
-	field(0x02, "203.0.113.50:443")
-	field(0x05, "user")
-	field(0x06, "pass")
-	field(0x0C, "Finland")
-	return "tt://?" + base64.RawURLEncoding.EncodeToString(b)
-}
-
 func TestLegacyTrustTunnelMixIsRejected(t *testing.T) {
 	s, d := newServer()
 	body := `{"connections":[{"id":"tt","type":"trusttunnel","link":"tt://?one","trusttunnel":{"link":"tt://?two","binary":"/opt/bin/trusttunnel_client"}}]}`
@@ -246,7 +202,7 @@ func TestStatsEndpoints(t *testing.T) {
 	}
 }
 
-// The panel requests a short preview, then every retained host; invalid limits keep the old default.
+// Loopback callers may request every retained host; invalid limits use the default.
 func TestHostsLimit(t *testing.T) {
 	s, d := newServer()
 	for _, l := range []string{"10", strconv.Itoa(stats.MaxHosts), strconv.Itoa(stats.MaxHosts + 1), "0", "x"} {
@@ -309,6 +265,33 @@ func TestRemovedEndpointsAreNotFound(t *testing.T) {
 	}
 	if w := do(t, h, "GET", "/api/journal/routes", "", "", local); w.Code != http.StatusOK {
 		t.Errorf("GET /api/journal/routes = %d, want 200", w.Code)
+	}
+}
+
+func TestPageReplacedEndpointsReturnJSONNotFound(t *testing.T) {
+	s, _ := newServer()
+	h := s.Handler()
+	for _, target := range []string{
+		"POST /api/diagnostics/check",
+		"GET /api/diagnostics/bundle",
+		"GET /api/subscriptions/status",
+		"POST /api/subscriptions/preview",
+		"POST /api/subscriptions/sample/refresh",
+		"POST /api/subscriptions/sample/check",
+		"POST /api/config/validate",
+		"GET /api/devices",
+		"POST /api/links/parse",
+		"POST /api/amnezia/import",
+		"GET /api/updates",
+		"POST /api/updates/check",
+		"PUT /api/updates/preferences",
+		"POST /api/updates/install",
+	} {
+		method, path := routeMethod(target)
+		w := do(t, h, method, path, "{}", "", local)
+		if w.Code != http.StatusNotFound || !strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+			t.Errorf("%s: HTTP %d, Content-Type %q, want JSON 404", target, w.Code, w.Header().Get("Content-Type"))
+		}
 	}
 }
 
@@ -389,8 +372,7 @@ func routeMethod(pattern string) (method, path string) {
 	return "", pattern
 }
 
-// routePaths turns a pattern into request paths: {id} gets a sample value,
-// {kind} every journal kind, and a catch-all also a path below it.
+// routePaths exercises every journal kind and a child path for any catch-all.
 func routePaths(pattern string) []string {
 	_, path := routeMethod(pattern)
 	switch {
@@ -403,7 +385,7 @@ func routePaths(pattern string) []string {
 	case strings.HasSuffix(path, "/"):
 		return []string{path, path + "nothing-here"}
 	}
-	return []string{strings.ReplaceAll(path, "{id}", "loki")}
+	return []string{path}
 }
 
 // lanRequest is a browser request from a LAN peer to the panel address.
@@ -433,6 +415,7 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 	}
 	var requests []request
 	seen := map[string]bool{}
+	wantPublic := map[string]bool{"GET /api/session": true, "POST /api/logout": true}
 	for _, rt := range plain.routes() {
 		seen[rt.pattern] = true
 		method, _ := routeMethod(rt.pattern)
@@ -442,7 +425,7 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 		}
 		for _, path := range routePaths(rt.pattern) {
 			for _, m := range append(methods, http.MethodHead, http.MethodOptions) {
-				requests = append(requests, request{m, path, m == method && publicRoutes[rt.pattern]})
+				requests = append(requests, request{m, path, m == method && wantPublic[rt.pattern]})
 			}
 		}
 	}
@@ -486,7 +469,7 @@ func TestEveryRouteRejectsLANPeers(t *testing.T) {
 			}
 		}
 	}
-	for p := range publicRoutes {
+	for p := range wantPublic {
 		if !seen[p] {
 			t.Errorf("public pattern %q is not a registered route", p)
 		}

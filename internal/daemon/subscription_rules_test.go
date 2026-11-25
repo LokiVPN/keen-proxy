@@ -216,9 +216,7 @@ func requireAppliedProviderRules(t *testing.T, d *Daemon) compile.ProviderRules 
 func refreshProviderRules(t *testing.T, d *Daemon, check func(SubscriptionStatus) bool) SubscriptionStatus {
 	t.Helper()
 	before := d.Subscriptions()[0].LastAttempt
-	if !d.RefreshSubscription("sample") {
-		t.Fatal("refresh was not accepted")
-	}
+	refreshAppliedSubscription(t, d, "sample")
 	return awaitSubscriptionStatus(t, d, func(got SubscriptionStatus) bool {
 		return got.LastAttempt != nil && (before == nil || got.LastAttempt.After(*before)) && check(got)
 	})
@@ -316,7 +314,7 @@ func TestRestoreRedactsLegacyProviderKeysAndRetainsDisabledRules(t *testing.T) {
 
 func TestProviderRulesPreviewDownloadsNothingAndRefreshReusesDatFiles(t *testing.T) {
 	d, cfg, p := newRulesTestDaemon(t)
-	if preview := d.PreviewSubscription(t.Context(), cfg.Subscriptions[0]); preview.State != subscription.StateReady {
+	if preview := d.PreviewSubscriptionDetails(t.Context(), cfg.Subscriptions[0]).Status; preview.State != subscription.StateReady {
 		t.Fatalf("preview failed: %+v", preview)
 	}
 	if n := p.count("/geosite.dat") + p.count("/geoip.dat"); n != 0 {
@@ -877,7 +875,7 @@ func TestProviderRulesRetryMissingGeoFilesEarly(t *testing.T) {
 		func(p *rulesProvider) { p.enable = ""; delete(p.files, "/geoip.dat") },
 	} {
 		p.update(change)
-		d.RefreshSubscription("sample")
+		refreshAppliedSubscription(t, d, "sample")
 		d.runSubscriptionRequest(t.Context(), claimSubscriptionRequest(d, 0))
 	}
 	if claimSubscriptionRequest(d, 55*time.Second) != nil || claimSubscriptionRequest(d, time.Minute+time.Second) == nil {
@@ -892,9 +890,10 @@ func TestProviderRulesRetryKeepsAManualRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	retry := claimSubscriptionRequest(d, time.Minute+time.Second)
-	if retry == nil || !d.RefreshSubscription("sample") {
-		t.Fatal("retry or manual refresh was not accepted")
+	if retry == nil {
+		t.Fatal("expected a dat retry")
 	}
+	refreshAppliedSubscription(t, d, "sample")
 	d.runSubscriptionRequest(t.Context(), retry)
 	refresh := claimSubscriptionRequest(d, 0)
 	if refresh == nil {

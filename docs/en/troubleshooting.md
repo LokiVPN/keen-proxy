@@ -30,9 +30,26 @@ For repeated recoveries, record the times of the triggering actions and export t
 
 The error `iptables-restore: line N failed` does not necessarily mean TPROXY is missing. Start with the exact Apply error and the [`firewall_apply.restore` entry in the diagnostic ZIP](#download-the-diagnostic-zip). If the reported operation is `commit`, it identifies the table whose commit failed, not a specific rule.
 
-In **Settings → Network → Interception mode**, KeenProxy reports whether TPROXY passed the preliminary check, was found unavailable, or could not be verified. Select **Check again** after correcting the reported problem. An unknown result does not block Apply. On OpenWrt with `iptables-nft`, the absence of a target from the legacy iptables list does not prove that TPROXY is unavailable.
+Use the loopback control API from an SSH session on the router to run the
+preliminary TPROXY check. Adjust the port if you changed `api.listen`.
 
-If the saved TPROXY mode is found unavailable at startup, the panel stays accessible without starting interception. KeenProxy neither loads the module explicitly nor switches to compatible mode automatically. To recover, correct the reported problem, select **Check again**, then **Apply again**. This retry uses the saved settings without rewriting the configuration or its backup. To change modes instead, select **Compatible** and apply the draft. A successful preliminary check is not a traffic test.
+```sh
+curl -fsS http://127.0.0.1:8086/api/diagnostics/tproxy
+```
+
+An `unknown` result allows Apply to proceed. On OpenWrt with `iptables-nft`,
+the legacy iptables target list may be incomplete. Verify traffic separately
+after activation.
+
+When the saved TPROXY mode is unavailable at startup, the panel stays
+accessible while interception is stopped. The probe reports
+`startup_blocked: true`. After fixing the reported cause, retry activation
+from the router's SSH session. The retry uses the saved settings and leaves
+the configuration file and its backup intact.
+
+```sh
+curl -fsS -X POST http://127.0.0.1:8086/api/diagnostics/tproxy/retry
+```
 
 In the KeeneticOS component list, check **Open Package support (OPKG)** and **Kernel modules for Netfilter**. Entware supplies the `iptables` commands separately. Even with Netfilter and Xtables-addons installed, the TPROXY module may be present on disk but not loaded.
 

@@ -25,10 +25,8 @@ import (
 
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
-	"github.com/ordo-systems/keen-proxy/internal/links"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
-	"github.com/ordo-systems/keen-proxy/internal/trusttunnel"
 	"github.com/ordo-systems/keen-proxy/internal/update"
 )
 
@@ -39,7 +37,6 @@ type Daemon interface {
 	Config() *model.Config
 	Apply(ctx context.Context, cfg *model.Config) error
 	Status(ctx context.Context) daemon.Status
-	Devices() []daemon.Device
 	Stats(withSeries bool) stats.Snapshot
 	Hosts(tag, query string, limit int) ([]stats.Host, int)
 	Journal(kind journal.Kind) *journal.Journal
@@ -78,28 +75,18 @@ var publicRoutes = map[string]bool{
 
 // routes lists the registered control endpoints.
 func (s *Server) routes() []route {
-	return append([]route{
-		{"POST /api/diagnostics/check", http.HandlerFunc(s.diagnosticCheck)},
-		{"GET /api/diagnostics/bundle", http.HandlerFunc(s.ServeSupportBundle)},
+	return []route{
 		{"GET /api/diagnostics/tproxy", http.HandlerFunc(s.tproxyReadiness)},
 		{"POST /api/diagnostics/tproxy/retry", http.HandlerFunc(s.retryTProxy)},
-		{"GET /api/subscriptions/status", http.HandlerFunc(s.subscriptionStatus)},
-		{"POST /api/subscriptions/preview", http.HandlerFunc(s.subscriptionPreview)},
-		{"POST /api/subscriptions/{id}/refresh", http.HandlerFunc(s.subscriptionRefresh)},
-		{"POST /api/subscriptions/{id}/check", http.HandlerFunc(s.subscriptionCheck)},
 		{"POST /api/logout", http.HandlerFunc(s.logout)},
 		{"GET /api/session", http.HandlerFunc(s.session)},
 		{"GET /api/status", http.HandlerFunc(s.status)},
 		{"GET /api/config", http.HandlerFunc(s.getConfig)},
 		{"PUT /api/config", http.HandlerFunc(s.putConfig)},
-		{"POST /api/config/validate", http.HandlerFunc(s.validateConfig)},
-		{"GET /api/devices", http.HandlerFunc(s.devices)},
-		{"POST /api/links/parse", http.HandlerFunc(s.parseLink)},
-		{"POST /api/amnezia/import", http.HandlerFunc(s.amneziaImport)},
 		{"GET /api/stats", http.HandlerFunc(s.stats)},
 		{"GET /api/stats/hosts", http.HandlerFunc(s.hosts)},
 		{"GET /api/journal/{kind}", http.HandlerFunc(s.journalPage)},
-	}, s.updateRoutes()...)
+	}
 }
 
 // Handler mounts the control API and pages behind the same access policy.
@@ -332,22 +319,6 @@ func decodeConfig(r *http.Request) (*model.Config, error) {
 	return &cfg, nil
 }
 
-// validateConfig checks model and engine profile constraints without applying changes.
-func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := decodeConfig(r)
-	if err == nil {
-		err = cfg.Validate()
-	}
-	if err == nil {
-		err = ValidateEngineProfiles(r.Context(), cfg)
-	}
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
 // putConfig validates and applies the complete configuration through the daemon.
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := decodeConfig(r)
@@ -363,14 +334,6 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.D.Config())
-}
-
-func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
-	list := s.D.Devices()
-	if list == nil {
-		list = []daemon.Device{}
-	}
-	writeJSON(w, http.StatusOK, list)
 }
 
 // stats returns per-connection summaries, including history when series=1.
@@ -393,45 +356,6 @@ func (s *Server) hosts(w http.ResponseWriter, r *http.Request) {
 		list = []stats.Host{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hosts": list, "total": total})
-}
-
-// parseLink returns connection-link metadata for the creation wizard.
-func (s *Server) parseLink(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Link string `json:"link"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request")
-		return
-	}
-	link := strings.TrimSpace(req.Link)
-	if strings.HasPrefix(link, "tt://") {
-		outbound, err := trusttunnel.ParseOutbound(link)
-		if err != nil {
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-		name := links.Name(link)
-		if name == "" {
-			if ep, err := trusttunnel.ParseLink(link); err == nil {
-				name = ep.Name
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"type": model.ConnLink, "name": name, "protocol": "trusttunnel",
-			"server": outbound["server"], "port": outbound["server_port"], "tls": outbound["tls"] != nil,
-		})
-		return
-	}
-	o, err := links.Parse(link)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"type": model.ConnLink, "name": links.Name(link), "protocol": o["type"],
-		"server": o["server"], "port": o["server_port"], "tls": o["tls"] != nil, "transport": o["transport"],
-	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

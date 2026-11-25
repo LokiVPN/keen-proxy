@@ -1,36 +1,12 @@
 package api
 
 import (
-	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"regexp"
 
-	"github.com/ordo-systems/keen-proxy/internal/compile"
-	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
-
-// ValidateEngineProfiles checks model-validated profiles through compilation
-// and engine construction without starting the engine. Errors omit raw
-// parser details that may contain credentials.
-func ValidateEngineProfiles(ctx context.Context, cfg *model.Config) error {
-	for _, connection := range cfg.Connections {
-		if err := ValidateProfileFields(connection); err != nil {
-			return err
-		}
-	}
-	raw, err := compile.ConnectionValidationConfig(cfg)
-	if err == nil {
-		err = engine.Validate(ctx, raw)
-	}
-	// Parser/constructor errors may contain passwords, UUIDs or keys.
-	if err != nil {
-		return errors.New("core rejected connection parameters: check type, required fields, and keys")
-	}
-	return nil
-}
 
 var profileUUID = regexp.MustCompile(`(?i)^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
 

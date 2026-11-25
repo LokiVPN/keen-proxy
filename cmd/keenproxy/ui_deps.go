@@ -22,6 +22,7 @@ import (
 
 type managementDaemon interface {
 	api.Daemon
+	Devices() []daemon.Device
 	PreviewSubscriptionDetails(context.Context, subscription.Source) daemon.SubscriptionPreviewDetails
 	ApplyIfCurrent(context.Context, *model.Config, string) error
 	CompileConnectionDraft(*model.Config) (compile.Output, error)

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -33,9 +32,6 @@ func TestDisabledHealthAndSelectionAfterRecompile(t *testing.T) {
 		t.Fatal("disabled probe state retained")
 	}
 	d.switchLocked(time.Now())
-	if _, err := d.DiagnosticChecks(context.Background(), "primary"); !errors.Is(err, ErrDiagnosticConnection) {
-		t.Fatalf("disabled diagnostic = %v", err)
-	}
 	if result := d.probe(context.Background(), "primary", "http://invalid.invalid/"); result.err == nil {
 		t.Fatal("disabled probe accepted")
 	}

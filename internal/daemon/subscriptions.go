@@ -154,14 +154,8 @@ func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
 	}
 }
 
-// PreviewSubscription validates provider data against the running build and
-// caches usable previews for Apply. It never modifies applied sources.
-func (d *Daemon) PreviewSubscription(ctx context.Context, source subscription.Source) SubscriptionStatus {
-	return d.fetchSubscription(ctx, source, true).previewStatus(source.ID)
-}
-
-// PreviewSubscriptionDetails uses the existing preview path and cache, with
-// display-only routing information for the server-rendered setup page.
+// PreviewSubscriptionDetails checks provider data and caches usable previews
+// for Apply without modifying applied sources.
 func (d *Daemon) PreviewSubscriptionDetails(ctx context.Context, source subscription.Source) SubscriptionPreviewDetails {
 	attempt := d.fetchSubscription(ctx, source, true)
 	status := attempt.previewStatus(source.ID)
@@ -335,16 +329,9 @@ func subscriptionNodeHealth(h *health) string {
 	}
 }
 
-// RefreshSubscription asks the download worker to check a saved source now.
-// Requests for the same source coalesce while a download is in flight.
-func (d *Daemon) RefreshSubscription(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.refreshSubscriptionLocked(id)
-}
-
 // RefreshSubscriptionIfCurrent queues a browser request against the exact
 // configuration it displayed, including the subscription link for the ID.
+// Requests for the same source coalesce while a download is in flight.
 func (d *Daemon) RefreshSubscriptionIfCurrent(id, revision string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

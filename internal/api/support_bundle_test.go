@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,16 +16,30 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
-const bundlePath = "/api/diagnostics/bundle"
+const bundlePath = "/diagnostics/bundle.zip"
+
+// Mount the archive behind the same authorization policy as the page wiring.
+func supportBundleHandler(s *Server) http.Handler {
+	pages := http.NewServeMux()
+	pages.HandleFunc("GET "+bundlePath, s.ServeSupportBundle)
+	s.Pages = pages
+	return s.Handler()
+}
 
 func TestSupportBundleAuthorization(t *testing.T) {
 	s, _ := newServer()
-	h := s.Handler()
+	h := supportBundleHandler(s)
 	if got := do(t, h, "GET", bundlePath, "", "", lan).Code; got != http.StatusForbidden {
 		t.Errorf("unauthenticated status = %d", got)
 	}
 	if got := do(t, h, "GET", bundlePath, "", "secret", "8.8.8.8:1234").Code; got != http.StatusForbidden {
 		t.Errorf("non-LAN status = %d", got)
+	}
+	viewer, _, _ := keeneticFixtureTags(t, []string{"http", "readonly"})
+	w := httptest.NewRecorder()
+	supportBundleHandler(viewer).ServeHTTP(w, keeneticRequest("GET", bundlePath, "", true))
+	if w.Code != http.StatusForbidden || w.Header().Get("Content-Type") == "application/zip" {
+		t.Fatalf("view-only archive request: HTTP %d, Content-Type %q", w.Code, w.Header().Get("Content-Type"))
 	}
 }
 
@@ -51,9 +66,10 @@ func TestSupportBundleIncludesRetainedHistoryWithoutPrivateValues(t *testing.T) 
 	// System/audit fields can contain arbitrary text from an old configuration.
 	d.journals[journal.Audit].Add(journal.Entry{Actor: "user", Action: "Configuration rejected", Result: "error", Target: "config", Details: "retired-password https://private-url.example"})
 	d.journals[journal.System].Add(journal.Entry{Source: "sing-box", Level: "WARN", Message: "connect failed: private-host.example: i/o timeout", Count: 4})
+	h := supportBundleHandler(s)
 	read := func() map[string]string {
 		t.Helper()
-		w := do(t, s.Handler(), "GET", bundlePath, "", "secret", local)
+		w := do(t, h, "GET", bundlePath, "", "secret", local)
 		if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/zip" || w.Header().Get("Cache-Control") != "no-store" || !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment;") {
 			t.Fatalf("unexpected download: %d %v", w.Code, w.Header())
 		}

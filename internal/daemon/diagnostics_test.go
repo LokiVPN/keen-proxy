@@ -505,14 +505,6 @@ func TestDiagnosticCancellation(t *testing.T) {
 	}
 }
 
-func TestDiagnosticsRejectUnknownAndStoppedProfiles(t *testing.T) {
-	d := &Daemon{cfg: &model.Config{Connections: []model.Connection{{ID: "one", Name: "One", Type: model.ConnLink}}}}
-	for _, id := range []string{"missing", "one"} {
-		if _, err := d.DiagnosticChecks(context.Background(), id); !errors.Is(err, ErrDiagnosticConnection) {
-			t.Fatalf("%s: %v", id, err)
-		}
-	}
-}
 func TestDiagnosticProfileDialerAndCancellation(t *testing.T) {
 	var profileContext context.Context
 	client, peer := net.Pipe()

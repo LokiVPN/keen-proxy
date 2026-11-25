@@ -25,6 +25,13 @@ import (
 const subscriptionFirst = "vless://11111111-2222-3333-4444-555555555555@127.0.0.1:12340?encryption=none#First"
 const subscriptionSecond = "vless://11111111-2222-3333-4444-555555555555@127.0.0.1:12341?encryption=none#Second"
 
+func refreshAppliedSubscription(t *testing.T, d *Daemon, id string) {
+	t.Helper()
+	if err := d.RefreshSubscriptionIfCurrent(id, model.ConfigRevision(d.Config())); err != nil {
+		t.Fatalf("refresh subscription %q: %v", id, err)
+	}
+}
+
 func TestPageSubscriptionRefreshRequiresCurrentConfig(t *testing.T) {
 	const id = "sample"
 	now := time.Now()
@@ -136,7 +143,7 @@ func TestSubscriptionPreviewApplyRefreshAndRestart(t *testing.T) {
 	provider.response.Store(&subscriptionTestResponse{body: subscriptionFirst + "\n" + subscriptionSecond, title: "Test provider"})
 	d, cfg := newSubscriptionTestDaemon(t, provider)
 	source := cfg.Subscriptions[0]
-	preview := d.PreviewSubscription(t.Context(), source)
+	preview := d.PreviewSubscriptionDetails(t.Context(), source).Status
 	if preview.State != "ready" || len(preview.Nodes) != 2 || preview.Nodes[0].Name != "First" || len(d.Subscriptions()) != 0 {
 		t.Fatalf("preview did not return two draft-only nodes: %+v", preview)
 	}
@@ -156,9 +163,7 @@ func TestSubscriptionPreviewApplyRefreshAndRestart(t *testing.T) {
 	runSubscriptionTestWorker(t, d)
 	provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond + "\n" + subscriptionFirst, title: "Updated notice",
 		headers: http.Header{"Profile-Web-Page-Url": {account}}})
-	if !d.RefreshSubscription(source.ID) {
-		t.Fatal("applied subscription did not accept refresh")
-	}
+	refreshAppliedSubscription(t, d, source.ID)
 	beforeFailure := awaitSubscriptionStatus(t, d, func(got SubscriptionStatus) bool {
 		return got.State == "ready" && got.Metadata.Title == "Updated notice"
 	})
@@ -167,7 +172,7 @@ func TestSubscriptionPreviewApplyRefreshAndRestart(t *testing.T) {
 	}
 
 	provider.response.Store(&subscriptionTestResponse{headers: http.Header{"X-Hwid-Max-Devices-Reached": []string{"true"}}})
-	d.RefreshSubscription(source.ID)
+	refreshAppliedSubscription(t, d, source.ID)
 	afterFailure := awaitSubscriptionStatus(t, d, func(got SubscriptionStatus) bool { return got.State == "hwid_limit" })
 	if len(afterFailure.Nodes) != 2 || afterFailure.LastSuccess == nil || !afterFailure.LastSuccess.Equal(*beforeFailure.LastSuccess) {
 		t.Fatalf("device-limit response discarded the last working snapshot: %+v", afterFailure)
@@ -252,7 +257,7 @@ func TestSubscriptionRefreshStorageFailurePreservesRunningSnapshot(t *testing.T)
 	}
 	provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond})
 	runSubscriptionTestWorker(t, d)
-	d.RefreshSubscription("sample")
+	refreshAppliedSubscription(t, d, "sample")
 	after := awaitSubscriptionStatus(t, d, func(got SubscriptionStatus) bool { return got.State == "activation_error" })
 	if len(after.Nodes) != 1 || after.Nodes[0].ID != before.ActiveNode || !after.LastSuccess.Equal(*before.LastSuccess) {
 		t.Fatalf("uncommitted candidate leaked into applied status: %+v", after)
@@ -318,7 +323,7 @@ func TestSubscriptionRefreshIgnoresReplacedSource(t *testing.T) {
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	d.RefreshSubscription("sample")
+	refreshAppliedSubscription(t, d, "sample")
 	d.mu.Lock()
 	request := d.nextSubscriptionRefreshLocked(time.Now())
 	d.mu.Unlock()
@@ -356,7 +361,7 @@ func TestSubscriptionRefreshReconcilesTheCoreWithoutFirewallOrDNS(t *testing.T) 
 	d.opt.Firewall.Run = &gateRunner{fail: true}
 	provider.response.Store(&subscriptionTestResponse{body: subscriptionFirst + "\n" + subscriptionSecond})
 	runSubscriptionTestWorker(t, d)
-	d.RefreshSubscription("sample")
+	refreshAppliedSubscription(t, d, "sample")
 	got := awaitSubscriptionStatus(t, d, func(status SubscriptionStatus) bool {
 		return len(status.Nodes) == 2 || status.State == "activation_error"
 	})
@@ -378,7 +383,7 @@ func TestSubscriptionRemovalBlocksUntilReplacementResponds(t *testing.T) {
 	second := model.ManagedTarget("sample", d.Subscriptions()[0].Nodes[1].ID)
 	provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond})
 	runSubscriptionTestWorker(t, d)
-	d.RefreshSubscription("sample")
+	refreshAppliedSubscription(t, d, "sample")
 	got := awaitSubscriptionStatus(t, d, func(status SubscriptionStatus) bool { return len(status.Nodes) == 1 })
 	if got.ActiveNode != "" || !got.Unavailable || got.SwitchReason != "removed" {
 		t.Fatalf("removed active did not leave an unavailable selector: %+v", got)

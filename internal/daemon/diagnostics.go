@@ -21,24 +21,24 @@ import (
 
 // DiagnosticResult reports one connectivity or transfer check with elapsed milliseconds.
 type DiagnosticResult struct {
-	Kind    string    `json:"kind"`
-	OK      bool      `json:"ok"`
-	Checked time.Time `json:"checked"`
-	Latency int64     `json:"latency_ms"`
-	Bytes   int64     `json:"bytes,omitempty"`
-	Error   string    `json:"error,omitempty"`
+	Kind    string
+	OK      bool
+	Checked time.Time
+	Latency int64
+	Bytes   int64
+	Error   string
 }
 
 // DiagnosticReport records the outbound and any completed probes for one check.
 type DiagnosticReport struct {
-	Connection string             `json:"connection"`
-	Results    []DiagnosticResult `json:"results"`
-	Group      string             `json:"-"` // group whose selected leaf is Connection
-	GroupName  string             `json:"-"` // captured display name for a subscription group
-	Reserve    string             `json:"-"` // configured reserve target selected by an automatic subscription
-	SkippedVPN bool               `json:"-"` // a reserve, direct, or block leaf was selected
-	Node       DiagnosticNode     `json:"-"`
-	CheckedAt  time.Time          `json:"-"`
+	Connection string
+	Results    []DiagnosticResult
+	Group      string // group whose selected leaf is Connection
+	GroupName  string // captured display name for a subscription group
+	Reserve    string // configured reserve target selected by an automatic subscription
+	SkippedVPN bool   // a reserve, direct, or block leaf was selected
+	Node       DiagnosticNode
+	CheckedAt  time.Time
 }
 
 // DiagnosticNode projects one subscription member from the applied catalog.
@@ -73,27 +73,6 @@ func acquireDiagnosticSlot(ctx context.Context) (func(), error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-// DiagnosticChecks dials the actual profile, never its failover selector, and
-// does not update periodic health, configuration or route selection.
-func (d *Daemon) DiagnosticChecks(ctx context.Context, id string) (DiagnosticReport, error) {
-	report := DiagnosticReport{Connection: id}
-	cfg := d.Config()
-	if cfg == nil || !slices.ContainsFunc(cfg.Connections, func(c model.Connection) bool { return c.ID == id && !c.Disabled }) {
-		return report, ErrDiagnosticConnection
-	}
-	release, err := acquireDiagnosticSlot(ctx)
-	if err != nil {
-		return report, err
-	}
-	defer release()
-	out, engineContext, ok := d.eng.Outbound(id)
-	if !ok {
-		return report, ErrDiagnosticConnection
-	}
-	report.Results = diagnosticProfileChecks(ctx, engineContext, out.DialContext)
-	return report, nil
 }
 
 // DiagnosticTargetIfCurrent checks the applied target at the page's revision.

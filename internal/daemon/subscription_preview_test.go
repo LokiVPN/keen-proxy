@@ -301,8 +301,8 @@ func TestApplySubscriptionPreviewUsesCheckedCatalogForSameLink(t *testing.T) {
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if !d.CheckSubscription(cfg.Subscriptions[0].ID, "") || d.Subscriptions()[0].CheckProgress == nil {
-		t.Fatal("could not queue a sweep of the currently applied nodes")
+	if err := d.CheckSubscriptionIfCurrent(cfg.Subscriptions[0].ID, "", model.ConfigRevision(d.Config())); err != nil || d.Subscriptions()[0].CheckProgress == nil {
+		t.Fatalf("queue a sweep of the currently applied nodes: %v", err)
 	}
 	provider.response.Store(&subscriptionTestResponse{body: subscriptionSecond})
 	candidate := d.PreviewSubscriptionDetails(t.Context(), cfg.Subscriptions[0])

@@ -63,8 +63,8 @@ func journalClientHost(value string) string {
 	return strings.Trim(value, "[]")
 }
 
-// ServeSupportBundle streams the same redacted archive to authorized API and
-// page callers. Use it behind the server's authorization middleware.
+// ServeSupportBundle streams a redacted archive from the diagnostics page.
+// Use it behind the server's authorization middleware.
 func (s *Server) ServeSupportBundle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if RoleFrom(r.Context()) != RoleManage {

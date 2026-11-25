@@ -15,6 +15,7 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 - Install and configure the LokiVPN build. [English guide](docs/en/getting-started.md) · [Russian guide](docs/ru/getting-started.md)
 - Configure subscriptions and routing. [English user guide](docs/en/user-guide.md) · [Russian user guide](docs/ru/user-guide.md)
 - Run the experimental KeeneticOS integration in local fixtures. [WebUI prototype](docs/en/development.md#keeneticos-webui-prototype)
+- Use the loopback control API for configuration, status, statistics, journals, and TPROXY recovery. [English endpoint list](docs/en/development.md#control-api) · [Russian endpoint list](docs/ru/development.md#control-api)
 
 ## What works today
 

@@ -148,7 +148,8 @@ The Applications preview loads a script and a stylesheet from
 the first column of the Applications grid on `/apps` and opens the current
 KeenProxy panel. It follows the stock column layout and stays visible when
 the built-in application list is empty. The default destination is HTTP
-port 8086 on the current host. A different deployment can set
+port 8086 on the current host, whether the router's LAN IPv4 address or
+`my.keenetic.net`. A different deployment can set
 `data-keenproxy-panel-url` on the script element to an absolute HTTP or HTTPS
 panel URL.
 
@@ -160,6 +161,16 @@ the preview.
 python3 -B test/keenetic-webui/orca_fixture.py \
   --firmware /path/to/KN-3812_stable_5.1.10_5.01.C.10.0-0.bin \
   --applications-card --panel-url http://127.0.0.1:8086/
+```
+
+The browser regression fixture clicks the shipped card from both hosts and
+checks that the KeeneticOS session opens the server-rendered setup page. It
+uses a synthetic router and needs Chromium but no firmware archive.
+
+```sh
+KEENPROXY_TEST_CHROMIUM=/path/to/chromium \
+  go test -count=1 -tags with_quic,with_utls,with_wireguard,with_awg,with_gvisor,with_xhttp,with_trusttunnel \
+  ./internal/api -run '^TestApplicationsCardOpensAuthorizedPages$'
 ```
 
 ### Entware package for KN-3812
@@ -216,11 +227,10 @@ only view: writes get `403 KeeneticOS management access denied`. Other
 accounts and demo mode are denied.
 Signing out of either panel ends the router session.
 
-A session opens pages only. Under `/api` it reaches nothing but
-`GET /api/session` and `POST /api/logout`: configuration, keys and journals
-stay with the loopback [control API](#control-api), and the pages will show
-them server-side once they arrive. Sign-in is the only non-loopback way in:
-without it, other clients get `403 local access only`.
+A KeeneticOS session opens server-rendered pages. The browser-facing routes
+under `/api` are `GET /api/session` and `POST /api/logout`. Access to the
+[control API](#control-api) requires loopback. With KeeneticOS sign-in off,
+non-loopback clients receive `403 local access only` for protected routes.
 
 Recovery and non-Keenetic systems: forward the panel through SSH and open it
 on loopback, which is always trusted. On Keenetic, use the Entware SSH server
@@ -237,12 +247,13 @@ reachable only through such a tunnel. See
 
 ## Control API { #control-api }
 
-The HTTP API is a control API, not a browser session API. A request whose
+The HTTP control API serves local processes. A request whose
 `RemoteAddr` is loopback and whose `Host` is `127.0.0.1`, `::1` or `localhost`
 (any port) is trusted without a token; a loopback peer with any other `Host`
 is treated like a LAN client. The memory gate
-(`test/memory/scenario.py`), `make integration` (`test/netns/run.sh`) and
-local scripts on the router rely on this; the installer does not call the API.
+(`test/memory/scenario.py`), `make integration` (`test/netns/run.sh`), the
+OpenWrt CI smoke test (`test/openwrt/smoke.sh`) and local scripts on the router
+rely on this. The installer uses the service controller.
 Any `Authorization` header a client still sends is ignored. Every other
 client gets `403 local access only` on `/api`, with or without a KeeneticOS
 session (`503` while sign-in is unavailable); only `GET /api/session` and
@@ -252,6 +263,23 @@ endpoints and canonical `GET` and `HEAD` requests under `/static/` skip the
 session requirement. The LAN address and cross-origin write checks still apply.
 A successful same-origin sign-out form redirects to `/`. JSON callers receive
 `{"ok":true}`.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /api/config` | Read the applied configuration, including secrets. |
+| `PUT /api/config` | Validate and apply a complete JSON configuration. |
+| `GET /api/status` | Read daemon, interception and build status. |
+| `GET /api/stats` | Read traffic statistics. Use `series=1` to include history. |
+| `GET /api/stats/hosts` | Read per-host traffic, with filters for connection and host. |
+| `GET /api/journal/{kind}` | Read retained `routes`, `audit` or `system` entries. |
+| `GET /api/diagnostics/tproxy` | Check preliminary TPROXY readiness and whether saved startup is blocked. |
+| `POST /api/diagnostics/tproxy/retry` | Retry blocked startup using the saved configuration. [SSH recovery](troubleshooting.md#keenetic-tproxy-apply) |
+| `GET /api/session` | Report access and, in KeeneticOS mode, where to sign in. |
+| `POST /api/logout` | End the KeeneticOS session. |
+
+The pages handle device discovery, connection validation and import,
+subscription management, connectivity checks, diagnostic ZIP downloads and
+release updates. Requests to removed routes return a JSON `404` to loopback.
 
 Before it decides on trust, the middleware refuses cross-origin writes with
 `403 cross-origin request denied`: any method other than `GET`, `HEAD` and
@@ -272,15 +300,12 @@ the panel port through it. Do not run such proxies next to KeenProxy, or make
 them pass the client's own `Host` (nginx `proxy_set_header Host $host`).
 
 The panel token, the `-key` option, trusted networks and `POST /api/login` are
-removed; `api.token_file` and `api.no_token_from` are accepted and ignored. The
-Vue panel and demo mode are removed too. `GET /` serves the server-rendered
-panel shell to trusted loopback clients and signed-in KeeneticOS accounts.
-Page refusals show the sign-in screen, with `401`, `403` or `503` according
-to the reason. The control API returns JSON errors. The journal stays internal
-(`GET /api/journal/{kind}` on loopback and
-the support ZIP); the journal stream and export, presets, resource exchange,
-ad filter lists, GeoIP lookup, domain preview, YAML import/export and the DNS
-check endpoint are removed.
+removed. `api.token_file` and `api.no_token_from` are accepted and ignored.
+`GET /` opens the server-rendered panel for trusted loopback clients and
+signed-in KeeneticOS accounts. Page refusals show the sign-in screen with
+`401`, `403` or `503` according to the reason. The control API returns JSON
+errors. The journal is available on loopback and in redacted form in the
+diagnostic ZIP.
 
 ## Configuration schema 2 and rollback { #config-schema }
 
