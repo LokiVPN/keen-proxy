@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -22,6 +23,25 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 	"github.com/ordo-systems/keen-proxy/internal/ui"
 )
+
+func TestWizardValidationCompilesDisabledReplacement(t *testing.T) {
+	cfg := &model.Config{}
+	cfg.Defaults()
+	cfg.Connections = []model.Connection{{
+		ID: "retired", Type: model.ConnSingBox, Disabled: true,
+		Outbound: map[string]any{"type": "socks", "server": "vpn.example.test", "server_port": 1080},
+	}}
+	deps := uiDeps{}
+	if err := deps.ValidateConnection(context.Background(), cfg, "retired"); err != nil {
+		t.Fatal(err)
+	}
+	const sensitive = "synthetic-private-protocol"
+	cfg.Connections[0].Outbound["type"] = sensitive
+	err := deps.ValidateConnection(context.Background(), cfg, "retired")
+	if err == nil || strings.Contains(err.Error(), sensitive) || !cfg.Connections[0].Disabled {
+		t.Fatal("profile validation failed to reject the disabled candidate privately without changing its switch")
+	}
+}
 
 func TestDevicesPageUsesDaemonDiscovery(t *testing.T) {
 	deps := uiDeps{daemon: deviceSnapshotDaemon{

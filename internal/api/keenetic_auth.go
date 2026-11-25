@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -235,8 +236,9 @@ const (
 
 // account is a verified KeeneticOS identity or a trusted loopback role.
 type account struct {
-	role Role
-	user string
+	role       Role
+	user       string
+	sessionKey [sha256.Size]byte
 }
 
 type accountKey struct{}
@@ -254,6 +256,12 @@ func RoleFrom(ctx context.Context) Role {
 // KeeneticUserFrom returns the verified KeeneticOS name, if available.
 func KeeneticUserFrom(ctx context.Context) string {
 	return accountFrom(ctx).user
+}
+
+// KeeneticSessionKeyFrom binds a browser draft to the verified router session
+// without giving page handlers the router's credential. Loopback has no key.
+func KeeneticSessionKeyFrom(ctx context.Context) [sha256.Size]byte {
+	return accountFrom(ctx).sessionKey
 }
 
 // roleFromTags maps KeeneticOS account tags to a role. Administrators carry
@@ -299,7 +307,8 @@ func (a *KeeneticAuth) verify(r *http.Request) (account, int) {
 	if len(users) != 1 || role == RoleDeny {
 		return account{user: identity.User}, http.StatusForbidden
 	}
-	return account{role: role, user: identity.User}, http.StatusOK
+	key := sha256.Sum256([]byte(cookie.Name + "\x00" + cookie.Value + "\x00" + identity.User))
+	return account{role: role, user: identity.User, sessionKey: key}, http.StatusOK
 }
 
 func (a *KeeneticAuth) logout(r *http.Request) int {

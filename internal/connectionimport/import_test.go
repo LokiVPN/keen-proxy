@@ -29,8 +29,11 @@ func TestParseWireGuard(t *testing.T) {
 		Peer: model.WGPeer{Endpoint: "[2001:db8::1]:51820", PublicKey: wireGuardKey, PresharedKey: wireGuardKey,
 			AllowedIPs: []string{"0.0.0.0/0", "::/0"}, Keepalive: 25},
 	}
+	if len(drafts) != 1 {
+		t.Fatalf("imported %d WireGuard profiles", len(drafts))
+	}
 	c := drafts[0].Connection
-	if len(drafts) != 1 || c.Type != model.ConnWireGuard || c.Name != "home" || !reflect.DeepEqual(c.WireGuard, want) {
+	if c.Type != model.ConnWireGuard || c.Name != "home" || !reflect.DeepEqual(c.WireGuard, want) {
 		t.Fatalf("unexpected WireGuard import")
 	}
 	if got := drafts[0].Summary; got.Protocol != "WireGuard" || got.Server != "[2001:db8::1]:51820" || got.SNI != "" {
@@ -68,6 +71,7 @@ func TestRejectWireGuardSettings(t *testing.T) {
 		wireGuardConf + "\n[Peer]\nPublicKey=more",
 		strings.Replace(wireGuardConf, "[Peer]", "[Unknown]", 1),
 		wireGuardConf + "\nPersistentKeepalive=65536",
+		strings.Replace(wireGuardConf, ":51820", ":0", 1),
 		strings.Replace(wireGuardConf, "Address = ", "# Address = ", 1),
 	} {
 		if _, err := Parse(bad, "profile.conf"); err == nil {

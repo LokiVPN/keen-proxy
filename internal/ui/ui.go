@@ -23,25 +23,29 @@ const (
 )
 
 // Options supplies request identity and the addresses established at startup.
-// Role and User read the existing authorization decision without rechecking
-// the router session.
+// Identity callbacks read the authorization decision without rechecking it.
 type Options struct {
 	Role           func(*http.Request) Role
 	User           func(*http.Request) string
+	SessionKey     func(*http.Request) [sha256.Size]byte
 	KeeneticOrigin string
 	DirectURL      string
 }
 
 type pages struct {
-	deps          Deps
-	opts          Options
-	setupDrafts   *setupDrafts
-	deviceFormKey string
+	deps             Deps
+	opts             Options
+	setupDrafts      *setupDrafts
+	connectionDrafts *connectionDrafts
+	deviceFormKey    string
 }
 
 // New builds the page handler for the central HTTP server to authorize.
 func New(deps Deps, opts Options) http.Handler {
-	p := pages{deps: deps, opts: opts, setupDrafts: &setupDrafts{}, deviceFormKey: rand.Text()}
+	p := pages{
+		deps: deps, opts: opts, setupDrafts: &setupDrafts{},
+		connectionDrafts: &connectionDrafts{}, deviceFormKey: rand.Text(),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.home)
 	mux.HandleFunc("POST /overview/pause", p.overviewPause)
@@ -57,6 +61,10 @@ func New(deps Deps, opts Options) http.Handler {
 	mux.HandleFunc("POST /devices", p.devicesPost)
 	mux.HandleFunc("GET /connections", p.connectionsGet)
 	mux.HandleFunc("POST /connections", p.connectionsPost)
+	mux.HandleFunc("GET /connections/new", p.connectionWizardGet)
+	mux.HandleFunc("GET /connections/id/{id}/replace", p.connectionWizardGet)
+	mux.HandleFunc("POST /connections/new/check", p.connectionWizardCheck)
+	mux.HandleFunc("POST /connections/new/save", p.connectionWizardSave)
 	mux.HandleFunc("GET /fragments/connections/{source}", p.connectionsFragment)
 	mux.HandleFunc("GET /static/", serveAsset)
 	mux.HandleFunc("GET /", p.notFound)

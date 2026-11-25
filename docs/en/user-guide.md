@@ -48,7 +48,11 @@ Changes apply as soon as you use the switch or select a connection. With JavaScr
 
 Open **Connections**. The **Manual connections** table shows each profile's protocol, latest check result, and configured [reserve chain](routing.md#fallback-chains). Use **On** to enable or disable a profile. Choose **Save** to apply the switches and subscription reserves, or **Cancel** to return to the saved settings. Router accounts with view access can read the tables with the controls disabled.
 
-Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Connection creation and details are pending in this preview. Use the [YAML configuration](getting-started.md) to add a profile or edit its parameters.
+Choose **Add connection**. **Paste** detects a share link, standalone Amnezia `vpn://` export, WireGuard or AmneziaWG `.conf`, or sing-box JSON containing one connection profile. **From file** accepts the same formats up to 2 MiB. **Manual** offers WireGuard, VLESS, Shadowsocks, Trojan, Hysteria2 and SOCKS.
+
+Choose **Check** to validate the profile on the router and review its type, server and SNI. Edit the name and identifier, then choose **Save** to apply the connection and return to the list. An identifier starts with a lowercase Latin letter or digit and uses up to 32 lowercase Latin letters, digits, hyphens or underscores. It must be unique and available for manual connections. If the checked draft expires or settings change in another window, check your input again. Replacing a profile reuses its identifier and all routing and reserve references.
+
+Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Profiles can also be set in the [YAML configuration](getting-started.md).
 
 Groups, devices, networks, and DNS settings keep their references to a disabled connection. Traffic follows its configured enabled fallback chain; with no enabled fallback it is blocked, not silently routed directly or passed to the next rule. An explicitly configured **Direct** fallback remains intentional. DNS keeps its separate strict/direct failure policy: disabling a connection must not create a direct DNS path in strict mode.
 
@@ -76,11 +80,11 @@ Choose **Update now** on **Overview** to fetch the provider's latest list and me
 
 ### AmneziaWG profiles (experimental lx build)
 
-Import a single-peer AmneziaWG `.conf` file or paste its contents in the connection wizard. AWG fields select **AmneziaWG** automatically; you can also select the AmneziaWG protocol explicitly. The original profile stays in the shared draft and can be edited before **Apply**. Keep it private: it contains the tunnel's private key and may contain a preshared key.
+Import a single-peer AmneziaWG `.conf` file or paste its contents in the connection wizard. AWG fields select **AmneziaWG** automatically. KeenProxy stores the original profile when you save the connection. Keep the file private because it contains the tunnel's private key and may contain a preshared key.
 
 This build embeds [sing-box-lx 1.14.4-lx.35](https://github.com/Leadaxe/sing-box-lx/releases/tag/v1.14.4-lx.35). It supports AWG 2/3 client parameters and application TCP/UDP through a userspace WireGuard endpoint; the outer tunnel uses UDP. No kernel AWG module or additional daemon is required. Unsupported fields, executable hooks and multiple peers are rejected instead of being silently discarded.
 
-For a standalone Amnezia `vpn://` client export, choose **AmneziaWG → Paste .conf / vpn://**, paste the complete link, enter a name and ID, and validate. You can also upload a text or `.vpn` file containing the link. Decoding happens locally in KeenProxy's backend, without contacting Amnezia or registering a device. If the export contains several AWG profiles, select one explicitly and validate again before saving it to the draft. Only the selected AWG client configuration is retained; SSH credentials, source-envelope metadata, DNS policy and other protocols are not imported. The static browser-only demo cannot decode these exports.
+For a standalone Amnezia `vpn://` client export, paste the complete link or upload a text or `.vpn` file containing it. KeenProxy decodes the export locally. If it contains several AWG profiles, select one and choose **Check** again. Review the name and ID, then save the selected AWG client configuration.
 
 Compressed and uncompressed standalone exports with supported format versions (missing, 0 or 1) are accepted. The encoded URI is limited to 2 MiB and decoded JSON to 1 MiB. An export may contain at most 32 AWG candidates, with at most 1 MiB of native profile text in total; an over-limit export is rejected as a whole, without partial import. Damaged exports, unsupported protocol options, service/subscription keys and administrator-only exports without client keys are rejected. A `vpn://` link is not necessarily a ready-to-use tunnel: obtain a **client connection export**, not a subscription activation key.
 
@@ -114,11 +118,11 @@ connections:
       AllowedIPs = 0.0.0.0/0
 ```
 
-Replace the placeholders and obfuscation values with those exported by your server. Before rolling back to an official-sing-box build, remove or replace AmneziaWG connections in the draft and Apply: the older engine cannot use this profile type.
+Replace the placeholders and obfuscation values with those exported by your server. Before rolling back to an official-sing-box build, remove or replace AmneziaWG connections and save the configuration so the older engine can load it.
 
 ### sing-box-lx compatibility
 
-Both builds support XHTTP and native TrustTunnel alongside existing VLESS, REALITY and AWG. Import server-exported links through the connection wizard or paste a raw sing-box outbound in **sing-box JSON**. Saving a connection only updates the shared draft; use the global **Apply** action to validate and activate it.
+Both builds support XHTTP and native TrustTunnel alongside existing VLESS, REALITY and AWG. Paste server-exported links or a single raw sing-box outbound in the connection wizard. Choose **Check**, review the profile and choose **Save** to apply it.
 
 VLESS links retain their `encryption` setting instead of silently discarding it. REALITY's hybrid key exchange and VLESS encryption are different mechanisms; neither adds support for Xray's `pqv` signatures or `spiderX`. Use parameters matching the server rather than enabling encryption arbitrarily.
 

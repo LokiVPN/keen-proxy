@@ -339,7 +339,7 @@ func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 		err = cfg.Validate()
 	}
 	if err == nil {
-		err = validateEngineProfiles(r.Context(), cfg)
+		err = ValidateEngineProfiles(r.Context(), cfg)
 	}
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())

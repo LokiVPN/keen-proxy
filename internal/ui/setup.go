@@ -70,7 +70,7 @@ func (p pages) setupCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Token = p.setupDrafts.save(setupDraft{
 			preview: subscription.PreviewRef{Source: source, ID: preview.PreviewID},
-			rev:     Revision(cfg), user: p.setupUser(r), expires: deadline,
+			rev:     Revision(cfg), user: p.opts.requestUser(r), expires: deadline,
 		}, now)
 	}
 	p.renderSetup(w, r, http.StatusOK, cfg, page)
@@ -86,7 +86,7 @@ func (p pages) setupEnable(w http.ResponseWriter, r *http.Request) {
 	token := r.PostForm["preview"]
 	var checked subscription.PreviewRef
 	if len(token) == 1 {
-		checked = p.setupDrafts.take(token[0], rev, p.setupUser(r), time.Now())
+		checked = p.setupDrafts.take(token[0], rev, p.opts.requestUser(r), time.Now())
 	}
 	if checked.ID == 0 {
 		p.renderSetup(w, r, http.StatusConflict, cfg, setupPage{Error: text["setup_check_again"]})
@@ -137,11 +137,4 @@ func (p pages) setupRevision(w http.ResponseWriter, r *http.Request) *model.Conf
 		p.renderSetup(w, r, http.StatusConflict, p.deps.Config(), setupPage{Error: message})
 	}
 	return cfg
-}
-
-func (p pages) setupUser(r *http.Request) string {
-	if p.opts.User != nil {
-		return p.opts.User(r)
-	}
-	return ""
 }

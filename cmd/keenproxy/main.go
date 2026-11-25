@@ -219,6 +219,9 @@ func serveAPI(ctx context.Context, cfg *model.Config, d managementDaemon, update
 	opts := ui.Options{
 		Role: pageRole,
 		User: func(r *http.Request) string { return api.KeeneticUserFrom(r.Context()) },
+		SessionKey: func(r *http.Request) [32]byte {
+			return api.KeeneticSessionKeyFrom(r.Context())
+		},
 	}
 	if keenetic != nil {
 		opts.KeeneticOrigin, opts.DirectURL = keenetic.Origin(), keenetic.PanelURL()

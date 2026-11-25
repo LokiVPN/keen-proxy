@@ -37,6 +37,7 @@ type pageData struct {
 	Routing                 *routingPage
 	Devices                 *devicesPage
 	Connections             *connectionsPage
+	ConnectionWizard        *connectionWizardPage
 	SubscriptionNodes       subscriptionNodesView
 	Traffic                 trafficView
 }
@@ -46,12 +47,16 @@ func (opts Options) pageData(r *http.Request) pageData {
 	data := pageData{
 		Lang: lang, Text: translations[lang],
 		Origin: opts.KeeneticOrigin, DirectURL: opts.DirectURL,
-		Tabs: tabs, ActiveTab: r.URL.Path,
-	}
-	if opts.User != nil {
-		data.User = opts.User(r)
+		User: opts.requestUser(r), Tabs: tabs, ActiveTab: r.URL.Path,
 	}
 	return data
+}
+
+func (opts Options) requestUser(r *http.Request) string {
+	if opts.User != nil {
+		return opts.User(r)
+	}
+	return ""
 }
 
 // AccessError renders screen 1 for a refusal already decided by the server.

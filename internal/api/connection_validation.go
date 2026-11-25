@@ -5,15 +5,17 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"regexp"
+
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
-	"regexp"
 )
 
-// validateEngineProfiles checks profile fields and constructs engine options without starting it.
-// Returned errors deliberately omit raw parser details that may contain credentials.
-func validateEngineProfiles(ctx context.Context, cfg *model.Config) error {
+// ValidateEngineProfiles checks model-validated profiles through compilation
+// and engine construction without starting the engine. Errors omit raw
+// parser details that may contain credentials.
+func ValidateEngineProfiles(ctx context.Context, cfg *model.Config) error {
 	if err := validateProfileFields(cfg); err != nil {
 		return err
 	}

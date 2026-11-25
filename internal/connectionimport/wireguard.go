@@ -119,7 +119,7 @@ func parseWireGuard(text string) (*model.WireGuard, error) {
 func setWGField(wg *model.WireGuard, section, key, value string) error {
 	switch section + key {
 	case "[interface]privatekey":
-		wg.PrivateKey = value
+		wg.PrivateKey = strings.Clone(value)
 	case "[interface]address":
 		wg.Address = splitWGList(value, func(r rune) bool { return r == ',' })
 	case "[interface]dns":
@@ -133,11 +133,15 @@ func setWGField(wg *model.WireGuard, section, key, value string) error {
 		}
 		wg.MTU = uint32(n)
 	case "[peer]publickey":
-		wg.Peer.PublicKey = value
+		wg.Peer.PublicKey = strings.Clone(value)
 	case "[peer]presharedkey":
-		wg.Peer.PresharedKey = value
+		wg.Peer.PresharedKey = strings.Clone(value)
 	case "[peer]endpoint":
-		wg.Peer.Endpoint = value
+		host, port, err := net.SplitHostPort(value)
+		if err != nil || displayAddress(host, port) == "" {
+			return ErrInvalid
+		}
+		wg.Peer.Endpoint = strings.Clone(value)
 	case "[peer]allowedips":
 		wg.Peer.AllowedIPs = splitWGList(value, func(r rune) bool { return r == ',' })
 	case "[peer]persistentkeepalive":
@@ -156,7 +160,7 @@ func splitWGList(value string, separator func(rune) bool) []string {
 	var list []string
 	for _, item := range strings.FieldsFunc(value, separator) {
 		if item = strings.TrimSpace(item); item != "" {
-			list = append(list, item)
+			list = append(list, strings.Clone(item))
 		}
 	}
 	return list

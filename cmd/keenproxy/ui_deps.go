@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/netip"
+	"slices"
 
 	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
@@ -57,6 +58,23 @@ func (uiDeps) LANPrefix(iface string) (netip.Prefix, error) {
 func (d uiDeps) Apply(ctx context.Context, cfg *model.Config, revision string) error {
 	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
 	return d.daemon.ApplyIfCurrent(ctx, cfg, revision)
+}
+
+func (uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id string) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	// Compile a replacement even when its saved switch is off. Apply receives
+	// the original switch state and all existing references.
+	validation := *cfg
+	validation.Connections = slices.Clone(cfg.Connections)
+	for i := range validation.Connections {
+		if validation.Connections[i].ID == id {
+			validation.Connections[i].Disabled = false
+			break
+		}
+	}
+	return api.ValidateEngineProfiles(ctx, &validation)
 }
 
 func (d uiDeps) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error {

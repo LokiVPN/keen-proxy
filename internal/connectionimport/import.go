@@ -78,7 +78,7 @@ func importLink(text string) (Draft, error) {
 		return Draft{}, ErrInvalid
 	}
 	return Draft{
-		Connection: model.Connection{Type: model.ConnLink, Link: text, Name: links.Name(text)},
+		Connection: model.Connection{Type: model.ConnLink, Link: strings.Clone(text), Name: strings.Clone(links.Name(text))},
 		Summary:    outboundSummary(out),
 	}, nil
 }

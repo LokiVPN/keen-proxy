@@ -522,9 +522,11 @@ func TestPagesFollowTheKeeneticSession(t *testing.T) {
 			}
 			var gotRole Role
 			var gotUser string
+			var gotSessionKey [32]byte
 			s.Pages = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gotRole = RoleFrom(r.Context())
 				gotUser = KeeneticUserFrom(r.Context())
+				gotSessionKey = KeeneticSessionKeyFrom(r.Context())
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				if r.Method == http.MethodPost {
 					d.applied = d.cfg
@@ -549,6 +551,9 @@ func TestPagesFollowTheKeeneticSession(t *testing.T) {
 			}
 			if tc.role != RoleDeny && gotUser != "operator" {
 				t.Errorf("authorized account = %q, want operator", gotUser)
+			}
+			if (gotSessionKey != [32]byte{}) != (tc.role != RoleDeny) {
+				t.Fatal("only the verified session should supply a draft binding")
 			}
 			if tc.want != http.StatusOK && (d.applied != nil || !strings.Contains(w.Body.String(), "<h1>")) {
 				t.Error("refused page reached the write handler or lacked its HTML response")
