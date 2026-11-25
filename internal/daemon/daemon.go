@@ -91,8 +91,8 @@ type Daemon struct {
 	routeRelease func() error // ownership-aware cleanup for a recovered TPROXY route
 	plan         netfilter.Plan
 	planOn       bool
-	planPending  bool // installation failed after the plan and its dependencies were prepared
-	planGuarded  bool // rollback protection may still have filter jumps installed
+	planPending  bool            // installation failed after the plan and its dependencies were prepared
+	planGuard    *netfilter.Plan // sources guarded until a replacement plan is verified
 	neighbors    map[string]netip.Addr
 	deviceNames  map[string]cachedDeviceName
 	started      time.Time
@@ -706,7 +706,7 @@ func syncDir(dir string, log *slog.Logger) error {
 // applyLocked reconciles runtime state with cfg while d.mu is held.
 func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	prev := d.cfg
-	hadPlan := d.planOn || d.planPending || d.planGuarded
+	hadPlan := d.planOn || d.planPending || d.planGuard != nil
 	if d.startupBlocked != nil {
 		d.neighbors = d.readNeighbors(cfg)
 	}
@@ -772,9 +772,10 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	}
 	d.route = newRoute
 
-	// Interception mode changes require removing the complete previous chain set.
+	// Mode changes retire the old prerouting chains. A rollback guard keeps
+	// its filter hooks until the replacement can take over.
 	if hadPlan && d.plan.Mode != out.Plan.Mode {
-		d.removeFirewall()
+		d.removeFirewall(d.planGuard != nil)
 	}
 	d.plan = out.Plan
 	if err := d.installFirewall(ctx); err != nil {
@@ -829,8 +830,8 @@ func (d *Daemon) shutdown() {
 
 // stopInterceptionLocked detaches firewall and routing state before closing listeners.
 func (d *Daemon) stopInterceptionLocked() {
-	if d.planOn || d.planPending || d.planGuarded {
-		d.removeFirewall()
+	if d.planOn || d.planPending || d.planGuard != nil {
+		d.removeFirewall(false)
 	}
 	d.removeRouteLocked()
 	if d.dns != nil {
@@ -1060,14 +1061,20 @@ func (d *Daemon) readNeighbors(cfg *model.Config) map[string]netip.Addr {
 }
 
 // removeFirewall removes active interception rules using a fresh bounded context.
-func (d *Daemon) removeFirewall() {
+func (d *Daemon) removeFirewall(keepProtection bool) {
 	// Use a fresh context because cleanup must run after the serving context is canceled.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := d.opt.Firewall.Remove(ctx, d.plan); err != nil && !errors.Is(err, context.Canceled) {
+	remove := d.opt.Firewall.Remove
+	if keepProtection {
+		remove = d.opt.Firewall.RemovePrerouting
+	} else {
+		d.planGuard = nil
+	}
+	if err := remove(ctx, d.plan); err != nil && !errors.Is(err, context.Canceled) {
 		d.log.Warn("remove rules", "err", err)
 	}
-	d.planOn, d.planPending, d.planGuarded = false, false, false
+	d.planOn, d.planPending = false, false
 }
 
 // Config returns a deep copy of the current configuration.

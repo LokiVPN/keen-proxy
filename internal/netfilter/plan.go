@@ -8,6 +8,7 @@ package netfilter
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -63,21 +64,39 @@ func (p Plan) Jumps() []Jump {
 	j := []Jump{
 		{"nat", "PREROUTING", ChainTCP},
 		{"nat", "PREROUTING", ChainDNS},
-		{"filter", "FORWARD", ChainQUIC},
 	}
-	// Always present so toggling the guard cannot leave an orphan INPUT jump.
-	j = append(j, Jump{"filter", "INPUT", ChainDNSGuard}, Jump{"filter", "FORWARD", ChainDNSGuard})
+	j = append(j, filterJumps()...)
 	if p.Mode == model.InterceptTProxy {
 		j = append(j, Jump{"mangle", "PREROUTING", ChainUDP})
 	}
 	return j
 }
 
+func (p Plan) preroutingJumps() []Jump {
+	return slices.DeleteFunc(p.Jumps(), func(j Jump) bool { return j.Table == "filter" })
+}
+
+// The normal filter and the rollback guard share these hooks. Each filter
+// restore replaces the chain contents without detaching the hooks.
+func filterJumps() []Jump {
+	return []Jump{
+		{"filter", "FORWARD", ChainQUIC},
+		{"filter", "INPUT", ChainDNSGuard},
+		{"filter", "FORWARD", ChainDNSGuard},
+	}
+}
+
 // Render builds iptables-restore --noflush input. Declaring a chain
 // (":NAME - [0:0]") creates or flushes it without altering other chains.
 func (p Plan) Render() string {
 	var b strings.Builder
-	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	p.renderPrerouting(&b)
+	p.renderFilter(&b)
+	return b.String()
+}
+
+func (p Plan) renderPrerouting(b *strings.Builder) {
+	w := func(format string, a ...any) { fmt.Fprintf(b, format+"\n", a...) }
 	in := "-i " + p.LAN
 
 	w("*nat")
@@ -138,7 +157,11 @@ func (p Plan) Render() string {
 		}
 		w("COMMIT")
 	}
+}
 
+func (p Plan) renderFilter(b *strings.Builder) {
+	w := func(format string, a ...any) { fmt.Fprintf(b, format+"\n", a...) }
+	in := "-i " + p.LAN
 	w("*filter")
 	w(":%s - [0:0]", ChainQUIC)
 	w(":%s - [0:0]", ChainDNSGuard)
@@ -160,7 +183,6 @@ func (p Plan) Render() string {
 		w("-A %s %s -s %s -p udp -m udp --dport 443 -j REJECT --reject-with icmp-port-unreachable", ChainQUIC, in, s)
 	}
 	w("COMMIT")
-	return b.String()
 }
 
 // renderProtection blocks public forwarding and DNS for covered clients if

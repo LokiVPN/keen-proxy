@@ -40,6 +40,12 @@ func TestAdmittedApplySurvivesRequestCancellation(t *testing.T) {
 				failRestore:      tc.failRestore,
 			}
 			d, _ := startMemoryDaemon(t, path, runner, 768*memoryMiB)
+			if tc.failRestore == 2 {
+				// Model a firmware rebuild before the candidate and rollback fail.
+				clear(runner.jumps)
+				clear(runner.chains)
+				runner.filterRules = ""
+			}
 			current := d.Config()
 			revision := model.ConfigRevision(current)
 			candidate := current.Clone()
@@ -63,12 +69,7 @@ func TestAdmittedApplySurvivesRequestCancellation(t *testing.T) {
 				t.Fatalf("running and saved configuration diverged: %v", err)
 			}
 			if tc.failRestore == 2 {
-				if !strings.Contains(runner.protection, "-s 192.0.2.0/24 -j DROP") ||
-					!strings.Contains(runner.protection, "--dport 53 -j DROP") ||
-					!runner.jumps[[3]string{"filter", "FORWARD", netfilter.ChainQUIC}] ||
-					!runner.jumps[[3]string{"filter", "INPUT", netfilter.ChainDNSGuard}] {
-					t.Fatal("failed rollback left previously protected traffic or DNS unguarded")
-				}
+				assertProtectedWatchdogRecovery(t, d, runner)
 				return
 			}
 			status := d.Status(t.Context())
@@ -82,36 +83,104 @@ func TestAdmittedApplySurvivesRequestCancellation(t *testing.T) {
 	}
 }
 
+func assertProtectedWatchdogRecovery(t *testing.T, d *Daemon, runner *applyCancellationFirewall) {
+	t.Helper()
+	tcp := [3]string{"nat", "PREROUTING", netfilter.ChainTCP}
+	dns := [3]string{"nat", "PREROUTING", netfilter.ChainDNS}
+	forwardDrop := "-s 192.0.2.0/24 -j DROP"
+	dnsDrop := "--dport 53 -j DROP"
+	guarded := func() bool {
+		return runner.drops("FORWARD", forwardDrop) && runner.drops("INPUT", dnsDrop) && runner.drops("FORWARD", dnsDrop)
+	}
+	if !guarded() || runner.jumps[tcp] || runner.jumps[dns] {
+		t.Fatal("failed rollback did not leave an active drop guard and missing NAT jumps")
+	}
+	// Check the packet path at each command boundary, including a successful
+	// chain restore followed by a failed DNS jump insertion or verification.
+	gap := false
+	runner.observe = func() {
+		if (!runner.jumps[tcp] && !runner.drops("FORWARD", forwardDrop)) ||
+			(!runner.jumps[dns] && (!runner.drops("INPUT", dnsDrop) || !runner.drops("FORWARD", dnsDrop))) {
+			gap = true
+		}
+	}
+	defer func() { runner.observe = nil }()
+
+	runner.fail = true // Allow the TCP insert and fail the following DNS insert.
+	d.watch(t.Context())
+	if gap || !guarded() || !runner.jumps[tcp] || runner.jumps[dns] || d.Status(t.Context()).Firewall {
+		t.Fatal("watchdog lost rollback protection while the DNS entry jump could not be inserted")
+	}
+
+	runner.fail = false
+	runner.loseDNSOnCheck = true
+	d.watch(t.Context())
+	if gap || !guarded() || runner.jumps[dns] || d.Status(t.Context()).Firewall {
+		t.Fatal("watchdog lost rollback protection while the DNS entry jump could not be verified")
+	}
+
+	runner.loseDNSOnCheck = false
+	d.watch(t.Context())
+	status := d.Status(t.Context())
+	if gap || guarded() || !runner.jumps[tcp] || !runner.jumps[dns] || !status.Firewall || status.Restored != 1 {
+		t.Fatal("watchdog did not restore interception and release the guard without a forwarding gap")
+	}
+}
+
 var errApplyCancellationRestore = errors.New("synthetic firewall restore failed")
 
 type applyCancellationFirewall struct {
 	recoveryFirewall
-	cancel               context.CancelFunc
-	failRestore          int
-	lastPlan, protection string
+	cancel                context.CancelFunc
+	failRestore           int
+	lastPlan, filterRules string
+	loseDNSOnCheck        bool
+	observe               func()
 }
 
 func (r *applyCancellationFirewall) Run(ctx context.Context, input, name string, args ...string) error {
-	if name == "iptables-restore" {
+	if r.observe != nil {
+		defer r.observe()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if name == "iptables-restore" && strings.HasPrefix(input, "*nat\n") {
 		if r.attempts == 1 {
 			r.cancel()
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if strings.HasPrefix(input, "*filter\n") {
-			r.protection = input
-		} else if r.attempts > 0 && r.attempts <= r.failRestore {
+		if r.attempts > 0 && r.attempts <= r.failRestore {
 			r.attempts++
 			return errApplyCancellationRestore
-		} else {
-			r.lastPlan = input
 		}
+		r.lastPlan = input
 	}
-	if err := ctx.Err(); err != nil {
+	if r.loseDNSOnCheck && name == "iptables" && args[3] == "-C" && args[len(args)-1] == netfilter.ChainDNS {
+		delete(r.jumps, [3]string{"nat", "PREROUTING", netfilter.ChainDNS})
+	}
+	if err := r.recoveryFirewall.Run(ctx, input, name, args...); err != nil {
 		return err
 	}
-	return r.recoveryFirewall.Run(ctx, input, name, args...)
+	if _, rules, found := strings.Cut(input, "*filter\n"); found {
+		r.filterRules = rules
+	}
+	return nil
+}
+
+func (r *applyCancellationFirewall) drops(hook, ruleSuffix string) bool {
+	for line := range strings.SplitSeq(r.filterRules, "\n") {
+		rule, isRule := strings.CutPrefix(line, "-A ")
+		if isRule && strings.HasSuffix(rule, ruleSuffix) {
+			chain, _, _ := strings.Cut(rule, " ")
+			if r.jumps[[3]string{"filter", hook, chain}] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestApplyRestoresPreviousCoreOnStartFailure(t *testing.T) {

@@ -16,24 +16,33 @@ const firewallVerifyRetryDelay = 250 * time.Millisecond
 // installFirewall installs the current plan and makes shutdown responsible for its cleanup.
 // A failed update stays pending even when the previous entry jumps remain installed.
 func (d *Daemon) installFirewall(ctx context.Context) error {
-	if err := d.opt.Firewall.Apply(ctx, d.plan); err != nil {
+	var err error
+	if d.planGuard == nil {
+		err = d.opt.Firewall.Apply(ctx, d.plan)
+	} else {
+		err = d.opt.Firewall.ApplyProtected(ctx, d.plan, *d.planGuard)
+	}
+	if err != nil {
 		d.planPending = true
 		return err
 	}
-	d.planOn, d.planPending, d.planGuarded = true, false, false
+	d.planOn, d.planPending, d.planGuard = true, false, nil
 	return nil
 }
 
 // protectPreviousPlan uses the last known protected sources when a normal
 // rollback cannot restore its runtime dependencies or interception rules.
 func (d *Daemon) protectPreviousPlan(previous netfilter.Plan) error {
-	if len(previous.Sources) == 0 {
-		return nil
+	if d.planGuard == nil {
+		if len(previous.Sources) == 0 {
+			return nil
+		}
+		d.planGuard = &previous
 	}
-	d.planOn, d.planGuarded = false, true
+	d.planOn = false
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return d.opt.Firewall.Protect(ctx, previous)
+	return d.opt.Firewall.Protect(ctx, *d.planGuard)
 }
 
 func (d *Daemon) detachStartupJumps() error {
