@@ -18,6 +18,9 @@ const (
 // ErrDiagnosticPath maps a reserved or dependent dial to fixed page copy.
 var ErrDiagnosticPath = errors.New("diagnostic path requires a detour or reserve")
 
+// ErrDiagnosticNotRouting maps inactive routing to the localized check refusal.
+var ErrDiagnosticNotRouting = errors.New("routing is inactive")
+
 func (p pages) diagnosticsGet(w http.ResponseWriter, r *http.Request) {
 	if !p.canReadDiagnostics(w, r) {
 		return
@@ -77,6 +80,8 @@ func (p pages) diagnosticsCheck(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, model.ErrConfigChanged):
 		p.renderDiagnostics(w, r, http.StatusConflict, "revision_changed")
+	case errors.Is(err, ErrDiagnosticNotRouting):
+		p.renderDiagnostics(w, r, http.StatusServiceUnavailable, "diag_check_not_routing")
 	case errors.Is(err, ErrDiagnosticPath):
 		p.renderDiagnostics(w, r, http.StatusUnprocessableEntity, "diag_check_detour")
 	case err != nil:
@@ -107,7 +112,7 @@ func (p pages) diagnosticsCheckFragment(w http.ResponseWriter, r *http.Request) 
 }
 
 func (p pages) lastDiagnosticCheck(r *http.Request, revision string) (DiagnosticCheckResult, string) {
-	if p.role(r) == RoleManage {
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && p.role(r) == RoleManage {
 		token := r.URL.Query().Get("result")
 		if ticket, ok := p.diagnosticTickets.get(token, diagnosticsFragment, p.diagnosticsOwner(r)); ok && ticket.revision == revision {
 			return ticket.check, "?result=" + ticket.token

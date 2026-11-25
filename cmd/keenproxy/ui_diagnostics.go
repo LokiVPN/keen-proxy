@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ordo-systems/keen-proxy/internal/api"
+	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/ui"
 	"github.com/ordo-systems/keen-proxy/internal/update"
@@ -40,10 +41,12 @@ func (d uiDeps) DiagnosticNode(target string) ui.DiagnosticNode {
 
 func (d uiDeps) CheckDiagnosticTarget(ctx context.Context, target, revision string) (ui.DiagnosticCheckResult, error) {
 	report, err := d.daemon.DiagnosticTargetIfCurrent(ctx, target, revision)
-	if errors.Is(err, engine.ErrDiagnosticPath) {
+	switch {
+	case errors.Is(err, daemon.ErrDiagnosticNotRouting):
+		return ui.DiagnosticCheckResult{}, ui.ErrDiagnosticNotRouting
+	case errors.Is(err, engine.ErrDiagnosticPath):
 		return ui.DiagnosticCheckResult{}, ui.ErrDiagnosticPath
-	}
-	if err != nil {
+	case err != nil:
 		return ui.DiagnosticCheckResult{}, err
 	}
 	probes := make([]ui.DiagnosticProbe, 0, len(report.Results))

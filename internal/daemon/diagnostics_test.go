@@ -20,6 +20,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/netfilter"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
@@ -313,28 +314,103 @@ func TestDiagnosticAutomaticTargetFollowsSubscriptionSelection(t *testing.T) {
 	if selected := group.Selected("tcp"); selected == nil || selected.Tag() != model.TargetDirect {
 		t.Fatal("automatic selector did not activate its direct reserve")
 	}
-	rev := model.ConfigRevision(d.Config())
-	skipped, err := d.DiagnosticTargetIfCurrent(t.Context(), auto, rev)
-	if err != nil || !skipped.SkippedVPN || skipped.Group != auto || skipped.Connection != model.TargetDirect ||
-		skipped.GroupName != "Office subscription" || skipped.Reserve != model.TargetDirect ||
-		!skipped.CheckedAt.IsZero() || len(skipped.Results) != 0 || skipped.Node != (DiagnosticNode{}) ||
-		firstHits.Load() != 0 || secondHits.Load() != 0 || directHits.Load() != 0 {
-		t.Fatalf("automatic diagnostics on reserve returned %d probes, %d candidate requests and %d reserve requests, error %v",
-			len(skipped.Results), firstHits.Load()+secondHits.Load(), directHits.Load(), err)
+	const notRouting = "KeenProxy is not routing traffic right now"
+	for _, tc := range []struct {
+		name    string
+		prepare func(*testing.T) *Daemon
+		want    DiagnosticReport
+		wantErr string
+		probe   bool
+	}{
+		{
+			name: "running on reserve", prepare: func(*testing.T) *Daemon { return d },
+			want: DiagnosticReport{Group: auto, GroupName: "Office subscription",
+				Connection: model.TargetDirect, Reserve: model.TargetDirect, SkippedVPN: true},
+		},
+		{
+			name: "running on node",
+			prepare: func(t *testing.T) *Daemon {
+				if !d.eng.Select(auto, secondTag) {
+					t.Fatal("automatic selector could not activate the second node")
+				}
+				state.snapshot.Selection = subscriptionSelection{Node: second, Reason: subscriptionSwitchRecovered}
+				d.subscriptions.states["main"] = state
+				return d
+			},
+			want: DiagnosticReport{Group: auto, GroupName: "Office subscription", Connection: secondTag,
+				Node: DiagnosticNode{Name: "Second region", Position: 2}},
+			probe: true,
+		},
+		{
+			name: "stopped after failed activation", wantErr: notRouting,
+			prepare: func(t *testing.T) *Daemon { return startCatalogFreeDiagnostic(t, auto, true, false) },
+		},
+		{
+			name: "paused", wantErr: notRouting,
+			prepare: func(t *testing.T) *Daemon { return startCatalogFreeDiagnostic(t, auto, false, true) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tc.prepare(t)
+			firstBefore, secondBefore, directBefore := firstHits.Load(), secondHits.Load(), directHits.Load()
+			report, err := d.DiagnosticTargetIfCurrent(t.Context(), auto, model.ConfigRevision(d.Config()))
+			var message string
+			if err != nil {
+				message = err.Error()
+			}
+			if message != tc.wantErr || report.Connection != tc.want.Connection || report.Group != tc.want.Group ||
+				report.GroupName != tc.want.GroupName || report.Reserve != tc.want.Reserve ||
+				report.Node != tc.want.Node || report.SkippedVPN != tc.want.SkippedVPN {
+				t.Errorf("diagnostics reported %+v, error %q, want route %+v, error %q", report, message, tc.want, tc.wantErr)
+			}
+			if tc.probe {
+				if report.CheckedAt.IsZero() || len(report.Results) != 1 || !report.Results[0].OK || secondHits.Load()-secondBefore != 1 {
+					t.Error("diagnostics did not complete a probe through the active node")
+				}
+			} else if !report.CheckedAt.IsZero() || len(report.Results) != 0 || secondHits.Load() != secondBefore {
+				t.Error("diagnostics ran a probe with no active node")
+			}
+			if firstHits.Load() != firstBefore || directHits.Load() != directBefore {
+				t.Error("diagnostics used the other candidate or the direct reserve")
+			}
+		})
 	}
-	if !d.eng.Select(auto, secondTag) {
-		t.Fatal("automatic selector could not activate the second node")
+}
+
+// startCatalogFreeDiagnostic exercises startup and Apply with a saved managed
+// target whose catalog has never been fetched.
+func startCatalogFreeDiagnostic(t *testing.T, target string, failActivation, paused bool) *Daemon {
+	t.Helper()
+	holdMemoryLimit(t)
+	cfg := quietConfig(t)
+	cfg.Intercept.Mode, cfg.Paused = model.InterceptRedirect, paused
+	cfg.Networks = []model.Network{{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeSplit, Target: target}}
+	cfg.Subscriptions = []subscription.Source{{ID: "main", URL: "https://provider.example.test/subscription", Fallback: model.TargetBlock}}
+	if failActivation {
+		cfg.Intercept.Mode = model.InterceptTProxy
 	}
-	state.snapshot.Selection = subscriptionSelection{Node: second, Reason: subscriptionSwitchRecovered}
-	d.subscriptions.states["main"] = state
-	active, err := d.DiagnosticTargetIfCurrent(t.Context(), auto, rev)
-	if err != nil || active.SkippedVPN || active.Group != auto || active.Connection != secondTag || active.CheckedAt.IsZero() ||
-		active.GroupName != "Office subscription" || active.Reserve != "" ||
-		active.Node != (DiagnosticNode{Name: "Second region", Position: 2}) || len(active.Results) != 1 || !active.Results[0].OK ||
-		firstHits.Load() != 0 || secondHits.Load() != 1 || directHits.Load() != 0 {
-		t.Fatalf("automatic diagnostics did not test only the active node, first %d, second %d, reserve %d, error %v",
-			firstHits.Load(), secondHits.Load(), directHits.Load(), err)
+	runner := &recoveryFirewall{fail: failActivation, jumps: make(map[[3]string]bool), chains: make(map[[2]string]bool)}
+	d := newMemoryDaemon(t, writeSavedConfig(t, cfg), runner)
+	t.Cleanup(d.shutdown)
+	d.tproxyProbe = func(context.Context) netfilter.TProxyReadiness {
+		return netfilter.TProxyReadiness{State: netfilter.TProxyUnavailable, Reason: "target_not_registered"}
 	}
+	blocked, err := d.startLocked(t.Context())
+	if err != nil || (blocked != nil) != failActivation {
+		t.Fatalf("startup blocked = %t, error %v", blocked != nil, err)
+	}
+	if failActivation {
+		redirect := d.Config()
+		redirect.Intercept.Mode = model.InterceptRedirect
+		if err := d.Apply(t.Context(), redirect); err == nil || !strings.Contains(err.Error(), "jump insertion failed") {
+			t.Fatalf("first activation did not fail during firewall installation: %v", err)
+		}
+	}
+	status := d.Status(t.Context())
+	if status.CoreRunning == failActivation || status.Paused != paused {
+		t.Fatalf("fixture core running = %t, paused = %t", status.CoreRunning, status.Paused)
+	}
+	return d
 }
 
 func TestDiagnosticTargetKeepsReserveOutOfTheCheck(t *testing.T) {
@@ -344,16 +420,18 @@ func TestDiagnosticTargetKeepsReserveOutOfTheCheck(t *testing.T) {
 	auto := model.ManagedTarget("main", "auto")
 	balance := model.ManagedTarget("main", model.SubscriptionRoundRobin)
 	missing := model.ManagedTarget("main", strings.Repeat("b", 32))
-	d := &Daemon{cfg: &model.Config{Connections: []model.Connection{
-		{ID: "primary", Fallback: "reserve"},
-		{ID: "disabled", Disabled: true, Fallback: "reserve"},
-	}}}
+	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
+		{ID: "primary", Type: model.ConnSingBox, Outbound: map[string]any{"type": "block"}, Fallback: "reserve"},
+		{ID: "disabled", Type: model.ConnSingBox, Outbound: map[string]any{"type": "block"}, Disabled: true, Fallback: "reserve"},
+		{ID: "reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+	}})
 	d.targetAliases = map[string]string{"primary": "failover-primary", missing: "reserve"}
 	d.subscriptions.members = []string{tag, second}
 	d.subscriptions.selectors = []compile.SubscriptionSelector{{SourceID: "main", Tag: auto, Candidates: []string{tag, second}, Fallback: "reserve"}}
 	d.subscriptions.balances = []compile.SubscriptionBalance{{Tag: balance, Candidates: []string{tag, second}, Fallback: "reserve"}}
 	rev := model.ConfigRevision(d.Config())
-	// Report.Connection identifies the outbound even without a running engine.
+	// The running core lacks the synthetic subscription candidates. The report
+	// still identifies the chosen candidate when its outbound is unavailable.
 	assertTarget := func(target, want string) {
 		t.Helper()
 		report, err := d.DiagnosticTargetIfCurrent(t.Context(), target, rev)

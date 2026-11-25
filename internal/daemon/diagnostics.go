@@ -50,6 +50,10 @@ type DiagnosticNode struct {
 
 // ErrDiagnosticConnection means the requested profile is absent from applied runtime state.
 var ErrDiagnosticConnection = errors.New("connection is not applied")
+
+// ErrDiagnosticNotRouting means the core is stopped or traffic interception is paused.
+var ErrDiagnosticNotRouting = errors.New("KeenProxy is not routing traffic right now")
+
 var diagnosticSlots = make(chan struct{}, 2)
 var errDiagnosticDNS = errors.New("diagnostic DNS lookup failed")
 
@@ -95,12 +99,23 @@ func (d *Daemon) DiagnosticChecks(ctx context.Context, id string) (DiagnosticRep
 // DiagnosticTargetIfCurrent checks the applied target at the page's revision.
 // It observes selection and recorded health without changing them.
 func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision string) (DiagnosticReport, error) {
+	d.mu.Lock()
+	routing := d.diagnosticRoutingLocked()
+	d.mu.Unlock()
+	if !routing {
+		return DiagnosticReport{}, ErrDiagnosticNotRouting
+	}
 	release, err := acquireDiagnosticSlot(ctx)
 	if err != nil {
 		return DiagnosticReport{}, err
 	}
 	defer release()
 	d.mu.Lock()
+	// An Apply can stop or pause routing while this check waits for a slot.
+	if !d.diagnosticRoutingLocked() {
+		d.mu.Unlock()
+		return DiagnosticReport{}, ErrDiagnosticNotRouting
+	}
 	if !d.matchesConfigRevisionLocked(revision) {
 		d.mu.Unlock()
 		return DiagnosticReport{}, model.ErrConfigChanged
@@ -140,6 +155,11 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 	report.CheckedAt = time.Now()
 	report.Results = diagnosticProfileChecks(ctx, engineContext, out.DialContext)
 	return report, nil
+}
+
+// diagnosticRoutingLocked accounts for pause mode, which keeps the core alive.
+func (d *Daemon) diagnosticRoutingLocked() bool {
+	return d.eng.Running() && d.cfg != nil && !d.cfg.Paused
 }
 
 // DiagnosticNode reads the same protected display label used by the report.

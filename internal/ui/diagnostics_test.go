@@ -277,6 +277,18 @@ func TestDiagnosticsReportsAutomaticSubscriptionReserve(t *testing.T) {
 			t.Error("the result did not identify the automatic subscription's reserve and skipped probes")
 		}
 	}
+
+	f.probeErr = ErrDiagnosticNotRouting
+	path := strings.Replace(location, "/diagnostics?", "/diagnostics/check?", 1)
+	stopped := diagnosticRequest(h, http.MethodPost, path, "owner", url.Values{"rev": {Revision(cfg)}})
+	body := stopped.Body.String()
+	if stopped.Code != http.StatusServiceUnavailable || stopped.Header().Get("Location") != "" ||
+		!strings.Contains(body, "KeenProxy is not routing traffic right now") {
+		t.Fatalf("inactive routing did not return the fixed refusal, HTTP %d", stopped.Code)
+	}
+	if strings.Contains(body, "→") || strings.Contains(body, "No VPN check was run") || strings.Contains(body, "data-fragment=") {
+		t.Error("inactive routing displayed the previous reserve result")
+	}
 }
 
 func TestDiagnosticsReportsTheSelectedGroupPath(t *testing.T) {
