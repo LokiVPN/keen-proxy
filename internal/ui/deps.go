@@ -30,6 +30,7 @@ type Deps interface {
 	RefreshSubscription(id, revision string) error
 	CheckSubscription(source, node, revision string) error
 	ConnectionHealth(id string) (ConnectionHealth, bool)
+	ConnectionGroupMembers(ctx context.Context, conn model.Connection) []string
 	ConnectionTraffic(id string) (active int, series []stats.Point)
 	ConnectionHosts(id string, limit int) ([]stats.Host, int)
 	CheckConnection(ctx context.Context, id, revision string) error

@@ -90,7 +90,7 @@ func (p pages) renderConnectionDetail(w http.ResponseWriter, r *http.Request, co
 	data.ConnectionHealth = detailHealth(health, data.Text)
 	active := -1
 	if health.TrafficGroup {
-		data.ConnectionTraffic = detailTrafficMembers(cfg, conn.ID, health.TrafficMembers, data.Text)
+		data.ConnectionTraffic = p.detailTrafficMembers(r.Context(), cfg, conn.ID, health.TrafficMembers, data.Text)
 	} else {
 		var series []stats.Point
 		active, series = p.deps.ConnectionTraffic(conn.ID)
@@ -169,21 +169,10 @@ func (p pages) detailFallbackOptions(ctx context.Context, cfg *model.Config, set
 	return options, ""
 }
 
-func detailTrafficMembers(cfg *model.Config, id string, tags []string, text map[string]string) connectionTrafficView {
+func (p pages) detailTrafficMembers(ctx context.Context, cfg *model.Config, id string, tags []string, text map[string]string) connectionTrafficView {
 	var declared []string
-	if cfg != nil {
-		if i := connectionIndex(cfg, id); i >= 0 && cfg.Connections[i].Outbound["type"] == "selector" {
-			switch members := cfg.Connections[i].Outbound["outbounds"].(type) {
-			case []string:
-				declared = members
-			case []any:
-				for _, member := range members {
-					if tag, ok := member.(string); ok {
-						declared = append(declared, tag)
-					}
-				}
-			}
-		}
+	if i := connectionIndex(cfg, id); i >= 0 {
+		declared = p.deps.ConnectionGroupMembers(ctx, cfg.Connections[i])
 	}
 	var view connectionTrafficView
 	seen := make(map[string]bool, len(declared)+len(tags))

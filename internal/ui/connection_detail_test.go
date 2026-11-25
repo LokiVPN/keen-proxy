@@ -65,6 +65,41 @@ func TestConnectionDetailReveal(t *testing.T) {
 	}
 }
 
+func TestConnectionDetailMasksWireGuardKeyWithUnusedPadBits(t *testing.T) {
+	const keyBytes = "padbits-test-private-key-bytes01"
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	encoded := []byte(base64.StdEncoding.EncodeToString([]byte(keyBytes)))
+	last := len(encoded) - 2 // The final data character has two unused bits.
+	encoded[last] = alphabet[strings.IndexByte(alphabet, encoded[last])+1]
+	privateKey := string(encoded)
+	if decoded, err := base64.StdEncoding.DecodeString(privateKey); err != nil || string(decoded) != keyBytes {
+		t.Fatal("fixture does not decode to the same bytes as the core expects")
+	}
+	if _, err := base64.StdEncoding.Strict().DecodeString(privateKey); err == nil {
+		t.Fatal("fixture has canonical padding bits")
+	}
+
+	f := newDetailFixture(t)
+	wg := f.cfg.Connections[1].WireGuard
+	wg.PrivateKey = privateKey
+	wg.Peer.PublicKey = base64.StdEncoding.EncodeToString([]byte(strings.Repeat("p", 32)))
+	wg.Peer.Endpoint = keyBytes + ".example.test:51820"
+	for _, tc := range []struct {
+		role  Role
+		query string
+	}{
+		{RoleManage, ""},
+		{RoleView, "?reveal=1"},
+	} {
+		w := setupRequest(New(f, setupTestOptions(tc.role)), "/connections/id/backup"+tc.query, nil)
+		requireDetailStatus(t, w, http.StatusOK)
+		body := w.Body.String()
+		if strings.Contains(body, keyBytes) || strings.Contains(body, privateKey) || !strings.Contains(body, `title="Hidden">Hidden</dd>`) {
+			t.Errorf("masked server fact or endpoint revealed key bytes for role %v", tc.role)
+		}
+	}
+}
+
 func TestConnectionDetailFactsKeepOpaqueParametersPrivate(t *testing.T) {
 	f := newDetailFixture(t)
 	f.cfg.Connections[0] = model.Connection{
@@ -432,6 +467,8 @@ func (f *detailFixture) ConnectionHealth(id string) (ConnectionHealth, bool) {
 	}
 	return health, i >= 0
 }
+
+func (*detailFixture) ConnectionGroupMembers(context.Context, model.Connection) []string { return nil }
 
 func (f *detailFixture) ConnectionTraffic(string) (int, []stats.Point) { return 14, f.series }
 

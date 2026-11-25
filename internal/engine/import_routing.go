@@ -41,7 +41,7 @@ func visitOutboundReferences(value reflect.Value, visit func(string) bool) bool 
 		f := value.Field(i)
 		switch f.Kind() {
 		case reflect.String:
-			if visit(f.String()) {
+			if tag := f.String(); tag != "" && visit(tag) {
 				return true
 			}
 		case reflect.Slice:

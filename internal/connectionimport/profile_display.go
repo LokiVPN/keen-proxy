@@ -77,16 +77,9 @@ func walkProfileStrings(value reflect.Value, path []string, visit func([]string,
 }
 
 func profileStringForms(value string) []string {
-	forms := []string{value}
+	forms := appendCredentialForms(nil, value)
 	if decoded, err := url.PathUnescape(value); err == nil && decoded != value {
-		forms = append(forms, decoded)
-	}
-	for _, form := range forms {
-		// When guessing the encoding, require canonical pad bits. Known
-		// encodings such as Basic auth keep their protocol's decoding rules.
-		if decoded := decodedCredential(form, true); decoded != "" {
-			forms = append(forms, decoded)
-		}
+		forms = appendCredentialForms(forms, decoded)
 	}
 	for _, form := range forms {
 		scheme, _, _ := strings.Cut(strings.TrimSpace(form), " ")
@@ -112,12 +105,23 @@ func repeatsProfileString(leaves []profileString, source []string, values ...str
 		}
 		for _, form := range forms {
 			for _, other := range leaf.forms {
-				if other != "" && (strings.Contains(form, other) ||
-					utf8.ValidString(form) && utf8.ValidString(other) && subscription.ContainsDisplaySecret(form, []string{other})) {
+				if containsProfileValue(form, other) {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+func containsProfileValue(value, other string) bool {
+	if other == "" {
+		return false
+	}
+	if !utf8.ValidString(value) {
+		return strings.Contains(value, other)
+	}
+	// A UTF-8 display value can only contain complete characters. Keep
+	// binary comparisons for the raw and decoded forms that contain bytes.
+	return utf8.ValidString(other) && subscription.ContainsDisplaySecret(value, []string{other})
 }

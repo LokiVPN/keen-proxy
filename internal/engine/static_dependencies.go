@@ -4,7 +4,26 @@ import (
 	"context"
 	"reflect"
 	"slices"
+
+	"github.com/sagernet/sing-box/option"
 )
+
+// DeclaredGroupMembers reads a projected outbound with the runtime's option
+// decoder. It returns the configured group list before any traffic walk.
+func DeclaredGroupMembers(ctx context.Context, config []byte) []string {
+	options, err := decodeOptions(ctx, config)
+	if err != nil || len(options.Outbounds) != 1 {
+		return nil
+	}
+	switch group := options.Outbounds[0].Options.(type) {
+	case *option.SelectorOutboundOptions:
+		return group.Outbounds
+	case *option.URLTestOutboundOptions:
+		return group.Outbounds
+	default:
+		return nil
+	}
+}
 
 // ValidateStaticOutboundGraph checks the compiler's dependencies using only
 // decoded option fields, without instantiating any profiles.
@@ -78,9 +97,7 @@ func staticOutboundReferences(options any) []string {
 	var tags []string
 	walkProfileOptions(reflect.ValueOf(options), func(value reflect.Value) bool {
 		return visitOutboundReferences(value, func(tag string) bool {
-			if tag != "" {
-				tags = append(tags, tag)
-			}
+			tags = append(tags, tag)
 			return false
 		})
 	})

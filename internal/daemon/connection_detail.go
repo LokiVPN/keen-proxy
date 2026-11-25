@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/compile"
+	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 )
@@ -20,6 +21,20 @@ func (d *Daemon) CompileConnectionSettings(cfg *model.Config) ([]byte, error) {
 	subs := d.subscriptionCompileInputLocked()
 	d.mu.Unlock()
 	return compile.ConnectionSettingsConfig(compile.Input{Config: cfg, Subscriptions: subs})
+}
+
+// ConnectionGroupMembers decodes the saved group using the compiled profile
+// shape so disabled groups also retain their declared members.
+func ConnectionGroupMembers(ctx context.Context, conn model.Connection) []string {
+	if conn.Outbound == nil {
+		return nil
+	}
+	conn.Disabled = false
+	raw, err := compile.ConnectionValidationConfig(&model.Config{Connections: []model.Connection{conn}})
+	if err != nil {
+		return nil
+	}
+	return engine.DeclaredGroupMembers(ctx, raw)
 }
 
 // ConnectionObservation describes reachability of the profile and the static

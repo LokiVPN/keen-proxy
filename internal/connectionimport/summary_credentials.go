@@ -86,7 +86,7 @@ func appendAuthorizationForms(forms []string, value string) []string {
 	if strings.EqualFold(parts[0], "Basic") {
 		// Go strings preserve bytes, so split even when the username or
 		// password in a legacy Basic header is not valid UTF-8.
-		if user, password, found := strings.Cut(decodedCredential(parts[1], false), ":"); found {
+		if user, password, found := strings.Cut(decodedCredential(parts[1]), ":"); found {
 			forms = append(forms, user, password)
 		}
 	}
@@ -105,17 +105,14 @@ func decodedProfileBytes(field any) string {
 // parsers supply URL-decoded options; the display comparison handles escapes.
 func appendCredentialForms(credentials []string, value string) []string {
 	credentials = append(credentials, value)
-	if decoded := decodedCredential(value, false); decoded != "" {
+	if decoded := decodedCredential(value); decoded != "" {
 		credentials = append(credentials, decoded)
 	}
 	return credentials
 }
 
-func decodedCredential(value string, strict bool) string {
+func decodedCredential(value string) string {
 	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		if strict {
-			encoding = encoding.Strict()
-		}
 		if raw, err := encoding.DecodeString(value); err == nil {
 			return string(raw)
 		}

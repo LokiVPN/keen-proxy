@@ -320,6 +320,10 @@ func (d uiDeps) ConnectionHealth(id string) (ui.ConnectionHealth, bool) {
 	return ui.ConnectionHealth(health), found
 }
 
+func (uiDeps) ConnectionGroupMembers(ctx context.Context, conn model.Connection) []string {
+	return daemon.ConnectionGroupMembers(ctx, conn)
+}
+
 func (d uiDeps) ConnectionTraffic(id string) (int, []stats.Point) {
 	return d.daemon.ConnectionTraffic(id)
 }

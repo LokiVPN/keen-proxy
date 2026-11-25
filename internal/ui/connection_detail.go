@@ -178,7 +178,7 @@ func (p pages) connectionDetailFragment(name string) http.HandlerFunc {
 		}
 		data := p.opts.pageData(r)
 		if health.TrafficGroup && name != "connection-health" {
-			data.ConnectionTraffic = detailTrafficMembers(p.deps.Config(), id, health.TrafficMembers, data.Text)
+			data.ConnectionTraffic = p.detailTrafficMembers(r.Context(), p.deps.Config(), id, health.TrafficMembers, data.Text)
 			render(w, r, http.StatusOK, "connection-traffic-members", data)
 			return
 		}

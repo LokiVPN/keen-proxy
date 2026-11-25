@@ -154,6 +154,26 @@ func TestConnectionDetailUsesStaticChoicesForBothSwitchStates(t *testing.T) {
 	}
 }
 
+func TestConnectionDetailCheckRejectsAnEmptySelectorMember(t *testing.T) {
+	d := &detailRuntimeDaemon{wizardRuntimeDaemon: wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
+		{ID: "selector", Type: model.ConnSingBox, Disabled: true,
+			Outbound: map[string]any{"type": "selector", "outbounds": []string{model.TargetDirect, ""}}},
+	}}}}
+	d.cfg.Defaults()
+	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	form := url.Values{"rev": {ui.Revision(d.Config())}, "enabled": {"0", "1"}, "fallback": {""}}
+	r := httptest.NewRequest(http.MethodPost, "/connections/id/selector/probe", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `aria-describedby="connection-reserve-error"`) {
+		t.Errorf("Check returned HTTP %d without rejecting the empty selector dependency", w.Code)
+	}
+	if d.probes != 0 || d.applies != 0 {
+		t.Fatal("Check reached runtime with an empty selector dependency")
+	}
+}
+
 func TestConnectionDetailRendersUserspaceEndpointsWithoutEngineValidation(t *testing.T) {
 	const privateKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
 	const publicKey = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="

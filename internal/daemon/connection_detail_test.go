@@ -176,7 +176,7 @@ func TestConnectionDetailSelectorTrafficLinksLeafPages(t *testing.T) {
 	holdMemoryLimit(t)
 	cfg := quietConfig(t)
 	cfg.Connections = []model.Connection{
-		{ID: "route", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"nested", "balancer"}}},
+		{ID: "route", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "OUTBOUNDS": []string{"nested", "balancer"}}},
 		{ID: "nested", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"leaf"}}},
 		{ID: "balancer", Type: model.ConnSingBox, Outbound: map[string]any{
 			"type": "urltest", "outbounds": []string{"leaf"}, "url": "http://127.0.0.1:1/check",
@@ -206,10 +206,16 @@ func TestConnectionDetailSelectorTrafficLinksLeafPages(t *testing.T) {
 		strings.Contains(body, "Active connections") || strings.Contains(body, "No site traffic recorded") {
 		t.Error("selector page did not direct the user to the real member traffic")
 	}
+	if !strings.Contains(body, `href="/connections/id/nested"`) {
+		t.Error("selector page omitted the saved member declared in OUTBOUNDS")
+	}
 	for _, part := range []string{"speed", "hosts"} {
 		body = get("/fragments/connection/route/" + part)
 		if !strings.Contains(body, "Traffic is recorded on member outbounds") {
 			t.Errorf("selector %s fragment implied a standalone traffic history", part)
+		}
+		if !strings.Contains(body, `href="/connections/id/nested"`) {
+			t.Errorf("selector %s fragment omitted the saved member declared in OUTBOUNDS", part)
 		}
 	}
 	body = get("/connections/id/leaf")
@@ -377,6 +383,10 @@ func (f connectionDetailTestDeps) ValidateConnectionSettings(_ context.Context, 
 func (f connectionDetailTestDeps) ConnectionHealth(id string) (ui.ConnectionHealth, bool) {
 	observation, ok := f.d.ConnectionHealth(id)
 	return ui.ConnectionHealth(observation), ok
+}
+
+func (connectionDetailTestDeps) ConnectionGroupMembers(ctx context.Context, conn model.Connection) []string {
+	return ConnectionGroupMembers(ctx, conn)
 }
 
 func (f connectionDetailTestDeps) ConnectionTraffic(id string) (int, []stats.Point) {
