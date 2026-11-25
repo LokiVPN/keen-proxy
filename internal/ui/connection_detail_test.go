@@ -220,6 +220,7 @@ func TestConnectionDetailMasksCredentialSpellings(t *testing.T) {
 	}{
 		{"uppercase VLESS UUID", "vless", uuidSNI, "uuid", strings.ToUpper(id)},
 		{"compact VMess UUID", "vmess", uuidSNI, "uuid", strings.ReplaceAll(strings.ToUpper(id), "-", "")},
+		{"compact UUID in a hostname", "vless", "region-" + strings.ReplaceAll(strings.ToUpper(id), "-", "") + ".example.test", "uuid", id},
 		{"ASCII case in binary Hysteria auth", "hysteria", "caf\u00e9-mAsk.example.test", "auth",
 			base64.StdEncoding.EncodeToString([]byte("\xa9-MaSK.example.test"))},
 	} {

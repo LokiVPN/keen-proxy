@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/connectionimport"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
@@ -50,17 +51,20 @@ type diagnosticUpdate struct {
 
 type diagnosticsFixture struct {
 	fakeDeps
-	state     DiagnosticStatus
-	subs      []AppliedSubscription
-	pinned    DiagnosticNode
-	checkedAt time.Time
-	probes    []DiagnosticProbe
-	probeErr  error
-	checked   []string
-	updates   update.Status
-	starts    []diagnosticUpdate
-	refreshes int
-	writes    int
+	state      DiagnosticStatus
+	subs       []AppliedSubscription
+	pinned     DiagnosticNode
+	checkedAt  time.Time
+	group      string
+	leaf       string
+	skippedVPN bool
+	probes     []DiagnosticProbe
+	probeErr   error
+	checked    []string
+	updates    update.Status
+	starts     []diagnosticUpdate
+	refreshes  int
+	writes     int
 }
 
 func (f *diagnosticsFixture) DiagnosticStatus(context.Context) DiagnosticStatus { return f.state }
@@ -71,7 +75,10 @@ func (f *diagnosticsFixture) DiagnosticNode(string) DiagnosticNode { return f.pi
 
 func (f *diagnosticsFixture) CheckDiagnosticTarget(_ context.Context, target, _ string) (DiagnosticCheckResult, error) {
 	f.checked = append(f.checked, target)
-	result := DiagnosticCheckResult{Probes: f.probes, CheckedAt: f.checkedAt}
+	result := DiagnosticCheckResult{
+		Node: f.pinned, Probes: f.probes, CheckedAt: f.checkedAt,
+		Group: f.group, Leaf: f.leaf, SkippedVPN: f.skippedVPN,
+	}
 	for _, sub := range f.subs {
 		for i, node := range sub.Nodes {
 			if node.ID == sub.ActiveNode {
@@ -142,21 +149,41 @@ func TestDiagnosticsStateRendersDaemonFactsWithPartialResourceSamples(t *testing
 }
 
 func TestDiagnosticsPinnedLabelHidesCredentialsForBothRoles(t *testing.T) {
-	const secret = "A7E68FBA-CD36-4079-9C4A-FA7B5C8D93A2"
+	const uuid = "a7e68fba-cd36-4079-9c4a-fa7b5c8d93a2"
+	const compact = "a7E68fbaCd3640799C4aFa7b5c8D93a2"
+	const name = "Region " + compact
+	link := "vless://" + uuid + "@proxy.example.test:443#" + url.PathEscape(name)
 	node := strings.Repeat("a", 32)
 	cfg := &model.Config{
 		Networks:      []model.Network{{Name: "Home", Target: model.ManagedTarget("main", node)}},
 		Subscriptions: []subscription.Source{{ID: "main"}},
 	}
-	f := &diagnosticsFixture{fakeDeps: fakeDeps{config: cfg}, pinned: DiagnosticNode{Position: 2}, subs: []AppliedSubscription{
-		{ID: "main", Nodes: []SubscriptionNode{{ID: strings.Repeat("b", 32), Name: "First"}, {ID: node, Name: "Region " + secret}}},
-	}}
+	f := &diagnosticsFixture{
+		fakeDeps: fakeDeps{config: cfg},
+		pinned:   DiagnosticNode{Name: connectionimport.SafeLinkLabel(link, name), Position: 2},
+		probes:   []DiagnosticProbe{{Kind: "http", OK: true, LatencyMS: 38}},
+	}
 	for _, role := range []Role{RoleManage, RoleView} {
 		h := New(f, Options{Role: func(*http.Request) Role { return role }})
 		w := diagnosticRequest(h, http.MethodGet, "/diagnostics", "", nil)
 		body := w.Body.String()
-		if w.Code != http.StatusOK || strings.Contains(body, secret) || !strings.Contains(body, `value="Node 2"`) {
+		if w.Code != http.StatusOK || strings.Contains(strings.ToLower(body), strings.ToLower(compact)) || !strings.Contains(body, `value="Node 2"`) {
 			t.Errorf("role %d did not get a generic pinned label", role)
+		}
+	}
+	h := diagnosticsHandler(f)
+	check := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", url.Values{"rev": {Revision(cfg)}})
+	if check.Code != http.StatusSeeOther {
+		t.Fatalf("diagnostics returned HTTP %d", check.Code)
+	}
+	location := check.Header().Get("Location")
+	fragment := strings.Replace(location, "/diagnostics?", "/fragments/diagnostics/check?", 1)
+	for _, path := range []string{location, fragment} {
+		result := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
+		body := result.Body.String()
+		if result.Code != http.StatusOK || strings.Contains(strings.ToLower(body), strings.ToLower(compact)) ||
+			!strings.Contains(body, "Tested Node 2") {
+			t.Error("diagnostics result did not mask the tested node name")
 		}
 	}
 }
@@ -203,6 +230,52 @@ func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
 				t.Errorf("the result for %s lost the actual tested identity", check.want)
 			}
 		}
+	}
+}
+
+func TestDiagnosticsReportsTheSelectedGroupPath(t *testing.T) {
+	cfg := &model.Config{
+		Networks: []model.Network{{Name: "Home", Target: "office"}},
+		Connections: []model.Connection{
+			{ID: "office", Name: "Office <group>"},
+			{ID: "vpn", Name: "VPN tunnel"},
+			{ID: "reserve", Name: "Direct reserve"},
+		},
+	}
+	const skippedMessage = "The main VPN path is not in use. No VPN check was run."
+	for _, tc := range []struct {
+		leaf, label string
+		skipped     bool
+	}{
+		{leaf: "vpn", label: "VPN tunnel"},
+		{leaf: "reserve", label: "Direct reserve", skipped: true},
+	} {
+		t.Run(tc.leaf, func(t *testing.T) {
+			f := &diagnosticsFixture{
+				fakeDeps: fakeDeps{config: cfg}, group: "office", leaf: tc.leaf, skippedVPN: tc.skipped,
+				probes: []DiagnosticProbe{{Kind: "http", OK: true, LatencyMS: 38}},
+			}
+			h := diagnosticsHandler(f)
+			post := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", url.Values{"rev": {Revision(cfg)}})
+			if post.Code != http.StatusSeeOther {
+				t.Fatalf("group diagnostics returned HTTP %d", post.Code)
+			}
+			for _, cookie := range post.Result().Cookies() {
+				if tc.skipped && cookie.Value == "flash_diag_checked" {
+					t.Error("skipped VPN check produced a completion flash")
+				}
+			}
+			location := post.Header().Get("Location")
+			fragment := strings.Replace(location, "/diagnostics?", "/fragments/diagnostics/check?", 1)
+			for _, path := range []string{location, fragment} {
+				w := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
+				body := w.Body.String()
+				if w.Code != http.StatusOK || !strings.Contains(body, "Office &lt;group&gt; → "+tc.label) ||
+					strings.Contains(body, skippedMessage) != tc.skipped || strings.Contains(body, "38 ms") == tc.skipped {
+					t.Errorf("%s did not report the selected route and its probe state", tc.leaf)
+				}
+			}
+		})
 	}
 }
 

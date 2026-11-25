@@ -50,7 +50,10 @@ func (d uiDeps) CheckDiagnosticTarget(ctx context.Context, target, revision stri
 	for _, result := range report.Results {
 		probes = append(probes, ui.DiagnosticProbe{Kind: result.Kind, OK: result.OK, LatencyMS: result.Latency})
 	}
-	return ui.DiagnosticCheckResult{Probes: probes, Node: ui.DiagnosticNode(report.Node), CheckedAt: report.CheckedAt}, nil
+	return ui.DiagnosticCheckResult{
+		Probes: probes, Node: ui.DiagnosticNode(report.Node), CheckedAt: report.CheckedAt,
+		Group: report.Group, Leaf: report.Connection, SkippedVPN: report.SkippedVPN,
+	}, nil
 }
 
 func (d uiDeps) SupportBundle(w http.ResponseWriter, r *http.Request) {

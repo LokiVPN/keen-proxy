@@ -152,16 +152,42 @@ func diagnosticNodeName(node DiagnosticNode, text map[string]string) string {
 }
 
 type diagnosticResultView struct {
-	Node, Checked string
-	Rows          []diagnosticRow
+	Path, Node, Checked string
+	SkippedVPN          bool
+	Rows                []diagnosticRow
 }
 
-func diagnosticResult(result DiagnosticCheckResult, text map[string]string) diagnosticResultView {
-	view := diagnosticResultView{Node: diagnosticNodeName(result.Node, text), Rows: diagnosticProbeRows(result.Probes, text)}
+func diagnosticResult(result DiagnosticCheckResult, cfg *model.Config, text map[string]string) diagnosticResultView {
+	view := diagnosticResultView{Node: diagnosticNodeName(result.Node, text), SkippedVPN: result.SkippedVPN}
+	if result.Group != "" {
+		leaf := cmp.Or(view.Node, diagnosticPathName(cfg, result.Leaf, text))
+		view.Path = diagnosticPathName(cfg, result.Group, text) + " → " + leaf
+	}
+	if result.SkippedVPN {
+		view.Rows = diagnosticProbeRows(nil, text)
+		return view
+	}
+	view.Rows = diagnosticProbeRows(result.Probes, text)
 	if !result.CheckedAt.IsZero() {
 		view.Checked = overviewTimestamp(result.CheckedAt, text)
 	}
 	return view
+}
+
+func diagnosticPathName(cfg *model.Config, tag string, text map[string]string) string {
+	switch tag {
+	case model.TargetDirect:
+		return text["overview_direct"]
+	case model.TargetBlock:
+		return text["detail_blocked"]
+	}
+	if _, _, managed := model.ParseManagedTarget(tag); managed {
+		return text["diag_subscription_node"]
+	}
+	if cfg != nil {
+		return cmp.Or(connectionName(cfg, tag), tag)
+	}
+	return tag
 }
 
 func diagnosticProbeRows(probes []DiagnosticProbe, text map[string]string) []diagnosticRow {

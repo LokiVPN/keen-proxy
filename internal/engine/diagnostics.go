@@ -12,24 +12,29 @@ import (
 var ErrDiagnosticPath = errors.New("diagnostic path requires a detour or reserve")
 
 // DiagnosticLeaf pins the selected concrete TCP outbound in the current
-// instance. Its caller can dial that leaf even if a selector changes afterward.
-func (e *Engine) DiagnosticLeaf(tag string, excluded func(string) bool) (adapter.Outbound, context.Context, error) {
+// instance. A skipped leaf describes the route but must not be dialed.
+func (e *Engine) DiagnosticLeaf(tag string, isReserve func(group, member string) bool) (leaf adapter.Outbound, core context.Context, skipped bool, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.box == nil {
-		return nil, nil, nil
+		return nil, nil, false, nil
 	}
-	out, blocked := stats.SelectedTCPLeaf(e.box.Outbound(), tag, excluded)
-	if blocked {
-		return nil, nil, ErrDiagnosticPath
+	manager := e.box.Outbound()
+	out, reserve := stats.SelectedTCPLeaf(manager, tag, isReserve)
+	if out == nil {
+		return nil, nil, false, nil
 	}
-	switch stats.TargetClassOf(e.ctx, out) {
+	class := stats.TargetClassOf(e.ctx, out)
+	if reserve || (class == stats.TargetDirect || class == stats.TargetBlock) && stats.HasAlternativeTargetLeaf(manager, tag, out.Tag()) {
+		return out, nil, true, nil
+	}
+	switch class {
 	case stats.TargetDirect, stats.TargetVPN:
 		if len(out.Dependencies()) != 0 || !independentDiagnosticLeaf(e.ctx, e.current, out.Tag()) {
-			return nil, nil, ErrDiagnosticPath
+			return nil, nil, false, ErrDiagnosticPath
 		}
-		return out, e.ctx, nil
+		return out, e.ctx, false, nil
 	default:
-		return nil, nil, nil
+		return nil, nil, false, nil
 	}
 }

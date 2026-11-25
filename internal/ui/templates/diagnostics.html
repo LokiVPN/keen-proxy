@@ -98,12 +98,14 @@
 {{end}}
 
 {{define "diagnostics-probes"}}
-          {{if or .DiagnosticResult.Node .DiagnosticResult.Checked}}
+          {{if or .DiagnosticResult.Path .DiagnosticResult.Node .DiagnosticResult.Checked}}
           <p class="hint prov">
-            {{if .DiagnosticResult.Node}}<span class="clip" title="{{.DiagnosticResult.Node}}">{{printf .Text.diag_tested_node .DiagnosticResult.Node}}</span>{{end}}
+            {{if .DiagnosticResult.Path}}<span class="clip" title="{{.DiagnosticResult.Path}}">{{.DiagnosticResult.Path}}</span>
+            {{else if .DiagnosticResult.Node}}<span class="clip" title="{{.DiagnosticResult.Node}}">{{printf .Text.diag_tested_node .DiagnosticResult.Node}}</span>{{end}}
             {{if .DiagnosticResult.Checked}}<span>{{printf .Text.diag_checked_at .DiagnosticResult.Checked}}</span>{{end}}
           </p>
           {{end}}
+          {{if .DiagnosticResult.SkippedVPN}}<p class="hint" role="status">{{.Text.diag_vpn_skipped}}</p>{{end}}
           <table class="tbl diagnostics-table" aria-label="{{.Text.diag_connection_check}}">
             <tbody>{{template "diagnostics-rows" .DiagnosticResult.Rows}}</tbody>
           </table>

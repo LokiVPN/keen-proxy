@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/connectionimport"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
@@ -29,10 +28,12 @@ type DiagnosticResult struct {
 	Error   string    `json:"error,omitempty"`
 }
 
-// DiagnosticReport groups checks performed through one applied connection profile.
+// DiagnosticReport records the outbound and any completed probes for one check.
 type DiagnosticReport struct {
 	Connection string             `json:"connection"`
 	Results    []DiagnosticResult `json:"results"`
+	Group      string             `json:"-"` // group whose selected leaf is Connection
+	SkippedVPN bool               `json:"-"` // a reserve, direct, or block leaf was selected
 	Node       DiagnosticNode     `json:"-"`
 	CheckedAt  time.Time          `json:"-"`
 }
@@ -107,7 +108,7 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 		d.mu.Unlock()
 		return DiagnosticReport{}, ErrDiagnosticConnection
 	}
-	out, engineContext, err := d.eng.DiagnosticLeaf(tag, d.diagnosticReserveLocked)
+	out, engineContext, skipped, err := d.eng.DiagnosticLeaf(tag, d.diagnosticReserveLocked)
 	var node subscription.Node
 	var position int
 	if out != nil {
@@ -122,7 +123,14 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 		return report, ErrDiagnosticConnection
 	}
 	report.Connection = out.Tag()
+	if report.Connection != tag {
+		report.Group = tag
+	}
 	report.Node = diagnosticNode(node, position)
+	report.SkippedVPN = skipped
+	if skipped {
+		return report, nil
+	}
 	report.CheckedAt = time.Now()
 	report.Results = diagnosticProfileChecks(ctx, engineContext, out.DialContext)
 	return report, nil
@@ -151,14 +159,22 @@ func diagnosticNode(node subscription.Node, position int) DiagnosticNode {
 	return DiagnosticNode{connectionimport.SafeLinkLabel(node.Link, node.Name), position}
 }
 
-// A nested routing group must never unwrap an installed reserve relay.
-func (d *Daemon) diagnosticReserveLocked(tag string) bool {
-	if _, node, managed := model.ParseManagedTarget(tag); managed {
-		return node == "auto" || model.IsSubscriptionBalance(node)
+// diagnosticReserveLocked identifies a configured reserve from the actual
+// selected group member. Raw groups have no separately designated reserve.
+func (d *Daemon) diagnosticReserveLocked(group, member string) bool {
+	for _, chain := range d.chains {
+		if chain.Tag == group {
+			return member != chain.ID
+		}
+	}
+	for _, selector := range d.subscriptions.selectors {
+		if selector.Tag == group {
+			return !slices.Contains(selector.Candidates, member)
+		}
 	}
 	return slices.ContainsFunc(d.cfg.Connections, func(c model.Connection) bool {
-		return c.ID == tag && c.Disabled
-	}) || slices.ContainsFunc(d.chains, func(chain compile.FailoverChain) bool { return chain.Tag == tag })
+		return c.ID == group && c.Disabled
+	})
 }
 
 // diagnosticOutboundLocked bypasses the compiler's reserve aliases. For a

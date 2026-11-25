@@ -20,6 +20,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
+	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
@@ -56,8 +57,8 @@ func startDiagnosticCore(t *testing.T, cfg *model.Config) *Daemon {
 	return d
 }
 
-func TestDiagnosticTargetRefusesDetourThroughReachableReserve(t *testing.T) {
-	hits := useLocalDiagnostic(t)
+func useLocalDiagnosticSOCKS(t *testing.T) (int, *atomic.Int64) {
+	t.Helper()
 	proxy, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -86,42 +87,140 @@ func TestDiagnosticTargetRefusesDetourThroughReachableReserve(t *testing.T) {
 		}
 	}()
 	t.Cleanup(func() { _ = proxy.Close(); <-done })
+	return proxy.Addr().(*net.TCPAddr).Port, &proxyHits
+}
+
+func TestDiagnosticTargetRefusesDetourThroughReachableReserve(t *testing.T) {
+	hits := useLocalDiagnostic(t)
+	port, proxyHits := useLocalDiagnosticSOCKS(t)
 	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
 		{ID: "disabled", Type: model.ConnLink, Link: "socks5://192.0.2.1:1080", Disabled: true, Fallback: "reserve"},
+		{ID: "disabled-vpn", Type: model.ConnLink, Link: "socks5://192.0.2.1:1080", Disabled: true, Fallback: "reserve-vpn"},
 		{ID: "dependent", Type: model.ConnSingBox, Outbound: map[string]any{
-			"type": "socks", "version": "4", "server": "127.0.0.1", "server_port": proxy.Addr().(*net.TCPAddr).Port, "detour": "disabled",
+			"type": "socks", "version": "4", "server": "127.0.0.1", "server_port": port, "detour": "disabled",
 		}},
 		{ID: "group", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"disabled"}}},
 		{ID: "alias", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"failover-disabled"}}},
+		{ID: "group-with-vpn-reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"failover-disabled-vpn"}}},
 		{ID: "reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+		{ID: "reserve-vpn", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "version": "4", "server": "127.0.0.1", "server_port": port,
+		}},
 	}})
-	d.chains = []compile.FailoverChain{{ID: "disabled", Tag: "failover-disabled"}}
+	d.chains = []compile.FailoverChain{
+		{ID: "disabled", Tag: "failover-disabled"},
+		{ID: "disabled-vpn", Tag: "failover-disabled-vpn"},
+	}
 	rev := model.ConfigRevision(d.Config())
 	control, err := d.DiagnosticTargetIfCurrent(t.Context(), "reserve", rev)
 	if err != nil || len(control.Results) != 1 || !control.Results[0].OK || hits.Load() != 1 {
 		t.Fatal("the local reserve control could not reach the diagnostic endpoint")
 	}
-	for _, target := range []string{"dependent", "group", "alias"} {
+	dependent, err := d.DiagnosticTargetIfCurrent(t.Context(), "dependent", rev)
+	if !errors.Is(err, engine.ErrDiagnosticPath) || len(dependent.Results) != 0 || proxyHits.Load() != 0 {
+		t.Fatal("the raw detour reached its proxy through the disabled hop")
+	}
+	for target, leaf := range map[string]string{"group": "reserve", "alias": "reserve", "group-with-vpn-reserve": "reserve-vpn"} {
 		result, err := d.DiagnosticTargetIfCurrent(t.Context(), target, rev)
-		if !errors.Is(err, engine.ErrDiagnosticPath) || len(result.Results) != 0 || proxyHits.Load() != 0 || hits.Load() != 1 {
-			t.Errorf("%s diagnostic did not refuse the reserve before dialing, proxy hits %d", target, proxyHits.Load())
+		if err != nil || !result.SkippedVPN || result.Group != target || result.Connection != leaf ||
+			len(result.Results) != 0 || proxyHits.Load() != 0 || hits.Load() != 1 {
+			t.Errorf("%s diagnostic did not report and skip the selected reserve, proxy hits %d", target, proxyHits.Load())
 		}
 	}
 }
 
 func TestDiagnosticTargetUsesSelectedConcreteLeaf(t *testing.T) {
 	hits := useLocalDiagnostic(t)
+	port, proxyHits := useLocalDiagnosticSOCKS(t)
 	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
 		{ID: "main", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"nested"}}},
 		{ID: "nested", Type: model.ConnSingBox, Outbound: map[string]any{
-			"type": "selector", "outbounds": []string{"first", "selected"}, "default": "selected",
+			"type": "selector", "outbounds": []string{"first", "selected", "reject"}, "default": "selected",
 		}},
 		{ID: "first", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
-		{ID: "selected", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+		{ID: "direct-alias", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"first"}}},
+		{ID: "selected", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "version": "4", "server": "127.0.0.1", "server_port": port,
+		}},
+		{ID: "reject", Type: model.ConnSingBox, Outbound: map[string]any{"type": "block"}},
 	}})
-	report, err := d.DiagnosticTargetIfCurrent(t.Context(), "main", model.ConfigRevision(d.Config()))
-	if err != nil || report.Connection != "selected" || len(report.Results) != 1 || !report.Results[0].OK || hits.Load() != 1 {
-		t.Fatalf("expected the selected leaf to run the check, got %q, %d hits, error %v", report.Connection, hits.Load(), err)
+	rev := model.ConfigRevision(d.Config())
+	report, err := d.DiagnosticTargetIfCurrent(t.Context(), "main", rev)
+	if err != nil || report.Group != "main" || report.Connection != "selected" || report.SkippedVPN ||
+		len(report.Results) != 1 || !report.Results[0].OK || proxyHits.Load() != 1 || hits.Load() != 0 {
+		t.Fatalf("expected the selected leaf to run the check, got %q, %d proxy hits, error %v", report.Connection, proxyHits.Load(), err)
+	}
+	if !d.eng.Select("nested", "reject") {
+		t.Fatal("could not select the block leaf")
+	}
+	blocked, err := d.DiagnosticTargetIfCurrent(t.Context(), "main", rev)
+	if err != nil || !blocked.SkippedVPN || blocked.Group != "main" || blocked.Connection != "reject" ||
+		len(blocked.Results) != 0 || hits.Load() != 0 {
+		t.Fatal("the selected block leaf was not reported as skipped")
+	}
+	direct, err := d.DiagnosticTargetIfCurrent(t.Context(), "direct-alias", rev)
+	if err != nil || direct.SkippedVPN || direct.Group != "direct-alias" || direct.Connection != "first" ||
+		len(direct.Results) != 1 || !direct.Results[0].OK || hits.Load() != 1 {
+		t.Fatal("the single direct target did not preserve its connectivity check")
+	}
+}
+
+func TestDiagnosticRawFailoverOnDirectSkipsTheVPNCheck(t *testing.T) {
+	hits := useLocalDiagnostic(t)
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(health.Close)
+	failed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			conn, err := failed.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = failed.Close(); <-stopped })
+	// The simulated tunnel's SOCKS handshake always fails. The direct
+	// member can reach the distinct URL-test health endpoint.
+	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
+		{ID: "main", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "urltest", "mode": "failover", "url": health.URL, "outbounds": []string{"vpn", "reserve"},
+		}},
+		{ID: "vpn", Type: model.ConnLink, Link: "socks5://" + failed.Addr().String()},
+		{ID: "reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+	}})
+	out, _, ok := d.eng.Outbound("main")
+	group, isGroup := out.(adapter.URLTestGroup)
+	if !ok || !isGroup {
+		t.Fatal("raw failover group did not start")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		if selected := group.Selected("tcp"); selected != nil && selected.Tag() == "reserve" {
+			break
+		}
+		if _, err := group.URLTest(ctx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("raw failover group did not select its healthy direct member")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	report, err := d.DiagnosticTargetIfCurrent(ctx, "main", model.ConfigRevision(d.Config()))
+	if err != nil || report.Group != "main" || report.Connection != "reserve" || !report.SkippedVPN ||
+		!report.CheckedAt.IsZero() || len(report.Results) != 0 || hits.Load() != 0 {
+		t.Fatalf("direct reserve returned VPN readings, outbound %q, %d checks, %d requests, error %v",
+			report.Connection, len(report.Results), hits.Load(), err)
 	}
 }
 
@@ -134,6 +233,7 @@ func TestDiagnosticNodeLabelsProtectProviderTextAndProfileCredentials(t *testing
 	long := strings.Repeat("fixture-secret-", 20)
 	cases := []struct{ link, label, want string }{
 		{"vless://" + uuid + "@proxy.example.test:443", "Region A7E68FBA-CD36-4079-9C4A-FA7B5C8D93A2", ""},
+		{"vless://a7e68fba-cd36-4079-9c4a-fa7b5c8d93a2@proxy.example.test:443", "Region a7E68fbaCd3640799C4aFa7b5c8D93a2", ""},
 		{socks(base64.StdEncoding.EncodeToString([]byte("fixture-private"))), "Region FIXTURE-PRIVATE", ""},
 		{socks(long), long, ""},
 		{socks("other-secret"), "Region " + source.URL, "Region [redacted]"},
@@ -168,9 +268,10 @@ func TestDiagnosticReportCapturesSubscriptionNodeAtTheCheck(t *testing.T) {
 		{ID: secondTag, Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
 	}})
 	state := appliedSubscription{}
+	const compact = "Region a7E68fbaCd3640799C4aFa7b5c8D93a2"
 	state.snapshot.Nodes = []subscription.Node{
 		{ID: first, Name: "First region", Link: "socks5://proxy.example.test:1080#First%20region"},
-		{ID: second, Name: "PASSWORD", Link: "socks5://test:password@proxy.example.test:1080#PASSWORD"},
+		{ID: second, Name: compact, Link: "vless://a7e68fba-cd36-4079-9c4a-fa7b5c8d93a2@proxy.example.test:443#" + url.PathEscape(compact)},
 	}
 	d.subscriptions.states = map[string]appliedSubscription{"main": state}
 	d.subscriptions.members = []string{firstTag, secondTag}

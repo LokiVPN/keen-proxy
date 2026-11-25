@@ -78,28 +78,36 @@ func TrafficMemberTags(manager adapter.OutboundManager, tag string) ([]string, b
 }
 
 // SelectedTCPLeaf follows declared group members to one concrete outbound.
-// An excluded tag stops the walk before a generated reserve can be unwrapped.
-func SelectedTCPLeaf(manager adapter.OutboundManager, tag string, excluded func(string) bool) (leaf adapter.Outbound, blocked bool) {
+// It records any configured reserve edge in the selected path.
+func SelectedTCPLeaf(manager adapter.OutboundManager, tag string, isReserve func(group, member string) bool) (leaf adapter.Outbound, reserve bool) {
 	selected := func(out adapter.Outbound) ([]string, bool) {
-		if excluded(out.Tag()) {
-			blocked = true
-			return nil, true
-		}
 		members, group := targetMembers(out)
 		if !group {
 			return nil, false
 		}
 		if selector, ok := out.(adapter.OutboundGroup); ok {
 			if next := selector.Selected(N.NetworkTCP); next != nil && slices.Contains(members, next.Tag()) {
+				reserve = reserve || isReserve(out.Tag(), next.Tag())
 				return []string{next.Tag()}, true
 			}
 		}
 		return nil, true
 	}
 	for out := range targetLeaves(manager, tag, selected) {
-		return out, false
+		return out, reserve
 	}
-	return nil, blocked
+	return nil, reserve
+}
+
+// HasAlternativeTargetLeaf uses the static group graph to distinguish a
+// group with choices from a group that aliases a single outbound.
+func HasAlternativeTargetLeaf(manager adapter.OutboundManager, root, selected string) bool {
+	for leaf := range targetLeaves(manager, root, targetMembers) {
+		if leaf.Tag() != selected {
+			return true
+		}
+	}
+	return false
 }
 
 func trafficMembers(out adapter.Outbound) ([]string, bool) {

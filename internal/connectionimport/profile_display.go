@@ -120,8 +120,12 @@ func profileComparisonForms(forms []string) []string {
 			forms = append(forms, folded)
 		}
 		if id, err := uuid.FromString(form); err == nil {
-			if canonical := id.String(); canonical != folded {
+			canonical := id.String()
+			if canonical != folded {
 				forms = append(forms, canonical)
+			}
+			if compact := strings.ReplaceAll(canonical, "-", ""); compact != folded {
+				forms = append(forms, compact)
 			}
 		}
 	}

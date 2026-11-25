@@ -43,7 +43,7 @@ func (p pages) renderDiagnostics(w http.ResponseWriter, r *http.Request, status 
 	if query != "" {
 		data.Diagnostics.FragmentURL = diagnosticsFragment + query
 	}
-	data.DiagnosticResult = diagnosticResult(result, data.Text)
+	data.DiagnosticResult = diagnosticResult(result, cfg, data.Text)
 	render(w, r, status, "diagnostics", data)
 }
 
@@ -86,7 +86,12 @@ func (p pages) diagnosticsCheck(w http.ResponseWriter, r *http.Request) {
 			owner: p.diagnosticsOwner(r), purpose: diagnosticsFragment,
 			revision: rev, check: result,
 		})
-		redirectWithFlash(w, r, diagnosticsPath+"?result="+token, "flash_diag_checked")
+		flash := "flash_diag_checked"
+		if result.SkippedVPN {
+			flash = ""
+			setFlashCookie(w, r, "", -1)
+		}
+		redirectWithFlash(w, r, diagnosticsPath+"?result="+token, flash)
 	}
 }
 
@@ -95,8 +100,9 @@ func (p pages) diagnosticsCheckFragment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	data := p.opts.pageData(r)
-	result, _ := p.lastDiagnosticCheck(r, Revision(p.deps.Config()))
-	data.DiagnosticResult = diagnosticResult(result, data.Text)
+	cfg := p.deps.Config()
+	result, _ := p.lastDiagnosticCheck(r, Revision(cfg))
+	data.DiagnosticResult = diagnosticResult(result, cfg, data.Text)
 	render(w, r, http.StatusOK, "diagnostics-probes", data)
 }
 
