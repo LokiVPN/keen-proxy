@@ -101,7 +101,7 @@ func diagnosticNumber(value float64, lang string) string {
 }
 
 // diagnosticTargetLabel displays the configured target even when traffic has
-// switched to its reserve. The check resolves the primary in the daemon.
+// switched to its reserve. The daemon resolves the path for each check.
 func (p pages) diagnosticTargetLabel(cfg *model.Config, text map[string]string) (string, bool) {
 	if cfg == nil {
 		return diagnosticUnknown, false
@@ -160,8 +160,12 @@ type diagnosticResultView struct {
 func diagnosticResult(result DiagnosticCheckResult, cfg *model.Config, text map[string]string) diagnosticResultView {
 	view := diagnosticResultView{Node: diagnosticNodeName(result.Node, text), SkippedVPN: result.SkippedVPN}
 	if result.Group != "" {
+		group := cmp.Or(result.GroupName, diagnosticPathName(cfg, result.Group, text))
 		leaf := cmp.Or(view.Node, diagnosticPathName(cfg, result.Leaf, text))
-		view.Path = diagnosticPathName(cfg, result.Group, text) + " → " + leaf
+		if result.Reserve != "" {
+			leaf = fmt.Sprintf(text["diag_reserve"], diagnosticPathName(cfg, result.Reserve, text))
+		}
+		view.Path = group + " → " + leaf
 	}
 	if result.SkippedVPN {
 		view.Rows = diagnosticProbeRows(nil, text)

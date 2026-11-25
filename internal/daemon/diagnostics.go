@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -33,6 +34,8 @@ type DiagnosticReport struct {
 	Connection string             `json:"connection"`
 	Results    []DiagnosticResult `json:"results"`
 	Group      string             `json:"-"` // group whose selected leaf is Connection
+	GroupName  string             `json:"-"` // captured display name for a subscription group
+	Reserve    string             `json:"-"` // configured reserve target selected by an automatic subscription
 	SkippedVPN bool               `json:"-"` // a reserve, direct, or block leaf was selected
 	Node       DiagnosticNode     `json:"-"`
 	CheckedAt  time.Time          `json:"-"`
@@ -89,9 +92,8 @@ func (d *Daemon) DiagnosticChecks(ctx context.Context, id string) (DiagnosticRep
 	return report, nil
 }
 
-// DiagnosticTargetIfCurrent checks the primary outbound of an applied target
-// against the same revision the page displayed. It leaves selection and
-// recorded health untouched.
+// DiagnosticTargetIfCurrent checks the applied target at the page's revision.
+// It observes selection and recorded health without changing them.
 func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision string) (DiagnosticReport, error) {
 	release, err := acquireDiagnosticSlot(ctx)
 	if err != nil {
@@ -103,7 +105,12 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 		d.mu.Unlock()
 		return DiagnosticReport{}, model.ErrConfigChanged
 	}
-	tag := d.diagnosticOutboundLocked(target)
+	report := d.diagnosticRouteLocked(target)
+	if report.SkippedVPN {
+		d.mu.Unlock()
+		return report, nil
+	}
+	tag := report.Connection
 	if tag == "" {
 		d.mu.Unlock()
 		return DiagnosticReport{}, ErrDiagnosticConnection
@@ -115,7 +122,6 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 		node, position = d.diagnosticNodeLocked(out.Tag())
 	}
 	d.mu.Unlock()
-	report := DiagnosticReport{Connection: tag}
 	if err != nil {
 		return report, err
 	}
@@ -123,7 +129,7 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 		return report, ErrDiagnosticConnection
 	}
 	report.Connection = out.Tag()
-	if report.Connection != tag {
+	if report.Group == "" && report.Connection != tag {
 		report.Group = tag
 	}
 	report.Node = diagnosticNode(node, position)
@@ -177,24 +183,12 @@ func (d *Daemon) diagnosticReserveLocked(group, member string) bool {
 	})
 }
 
-// diagnosticOutboundLocked bypasses the compiler's reserve aliases. For a
-// managed policy, choose one activated subscription node for all three checks.
-func (d *Daemon) diagnosticOutboundLocked(target string) string {
+// diagnosticRouteLocked takes the route observation before any diagnostic dial.
+func (d *Daemon) diagnosticRouteLocked(target string) DiagnosticReport {
 	if source, node, managed := model.ParseManagedTarget(target); managed {
 		switch {
 		case node == "auto":
-			for _, selector := range d.subscriptions.selectors {
-				if selector.Tag != target || len(selector.Candidates) == 0 {
-					continue
-				}
-				active := model.ManagedTarget(source, d.subscriptions.states[source].snapshot.Selection.Node)
-				if slices.Contains(selector.Candidates, active) {
-					return active
-				}
-				// A policy on reserve has no active node. Probe its first
-				// configured candidate even if prior health is unavailable.
-				return selector.Candidates[0]
-			}
+			return d.diagnosticAutomaticLocked(source, target)
 		case model.IsSubscriptionBalance(node):
 			for _, balance := range d.subscriptions.balances {
 				if balance.Tag != target || len(balance.Candidates) == 0 {
@@ -202,22 +196,62 @@ func (d *Daemon) diagnosticOutboundLocked(target string) string {
 				}
 				for _, tag := range balance.Candidates {
 					if h := d.health[tag]; h != nil && h.known && h.ok {
-						return tag
+						return DiagnosticReport{Connection: tag}
 					}
 				}
-				return balance.Candidates[0]
+				return DiagnosticReport{Connection: balance.Candidates[0]}
 			}
 		case slices.Contains(d.subscriptions.members, target):
-			return target
+			return DiagnosticReport{Connection: target}
 		}
-		return ""
+		return DiagnosticReport{}
 	}
 	if target == model.TargetDirect || slices.ContainsFunc(d.cfg.Connections, func(c model.Connection) bool {
 		return c.ID == target && !c.Disabled
 	}) {
-		return target
+		return DiagnosticReport{Connection: target}
 	}
-	return ""
+	return DiagnosticReport{}
+}
+
+// diagnosticAutomaticLocked uses the committed selection even when a
+// candidate has recovered and is still waiting to leave the reserve.
+func (d *Daemon) diagnosticAutomaticLocked(source, target string) DiagnosticReport {
+	state := d.subscriptions.states[source]
+	selection := state.snapshot.Selection
+	report := DiagnosticReport{
+		Group: target, GroupName: cmp.Or(state.attempt.result.Metadata.Title, state.snapshot.Metadata.Title, source),
+	}
+	// With no catalog the compiler routes directly to the reserve or block.
+	inactive := d.targetAliases[target]
+	for _, selector := range d.subscriptions.selectors {
+		if selector.Tag != target {
+			continue
+		}
+		if selection.Node != "" {
+			active := model.ManagedTarget(source, selection.Node)
+			if slices.Contains(selector.Candidates, active) {
+				report.Connection = active
+			}
+			return report
+		}
+		inactive = model.TargetBlock
+		if selection.Reason == subscriptionSwitchFallback && selector.Fallback != "" {
+			inactive = selector.Fallback
+		}
+		break
+	}
+	if inactive == "" {
+		return report
+	}
+	report.Connection, report.SkippedVPN = inactive, true
+	for _, sub := range d.cfg.Subscriptions {
+		if sub.ID == source && cmp.Or(d.targetAliases[sub.Fallback], sub.Fallback) == inactive {
+			report.Reserve = sub.Fallback
+			break
+		}
+	}
+	return report
 }
 
 func diagnosticProfileChecks(ctx, engineContext context.Context, dial profileDial) []DiagnosticResult {

@@ -566,6 +566,12 @@ func TestSubscriptionWithoutNodesStartsOnFallback(t *testing.T) {
 	if got := reopened.Subscriptions()[0]; got.State != "pending" || got.Fallback != "home" {
 		t.Fatalf("pending status: %+v", got)
 	}
+	const automatic = "subscription:sample:auto"
+	result, err := reopened.DiagnosticTargetIfCurrent(t.Context(), automatic, model.ConfigRevision(reopened.Config()))
+	if err != nil || !result.SkippedVPN || result.Group != automatic || result.Connection != "home" || result.Reserve != "home" || len(result.Results) != 0 {
+		t.Fatalf("missing catalog did not report the active reserve, got %q, skipped %t, error %v",
+			result.Connection, result.SkippedVPN, err)
+	}
 }
 
 func TestSubscriptionReserveEditKeepsListAndHealth(t *testing.T) {

@@ -73,13 +73,13 @@ type DiagnosticNode struct {
 	Position int
 }
 
-// DiagnosticCheckResult ties probe timings to the member actually dialed.
+// DiagnosticCheckResult records the selected route and any probes it ran.
 type DiagnosticCheckResult struct {
-	Probes      []DiagnosticProbe
-	Node        DiagnosticNode
-	CheckedAt   time.Time
-	Group, Leaf string
-	SkippedVPN  bool
+	Probes                          []DiagnosticProbe
+	Node                            DiagnosticNode
+	CheckedAt                       time.Time
+	Group, GroupName, Leaf, Reserve string
+	SkippedVPN                      bool
 }
 
 // DiscoveredDevice is an observation from the LAN snapshot. The applied

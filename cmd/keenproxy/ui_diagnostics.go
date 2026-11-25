@@ -52,7 +52,8 @@ func (d uiDeps) CheckDiagnosticTarget(ctx context.Context, target, revision stri
 	}
 	return ui.DiagnosticCheckResult{
 		Probes: probes, Node: ui.DiagnosticNode(report.Node), CheckedAt: report.CheckedAt,
-		Group: report.Group, Leaf: report.Connection, SkippedVPN: report.SkippedVPN,
+		Group: report.Group, GroupName: report.GroupName, Leaf: report.Connection,
+		Reserve: report.Reserve, SkippedVPN: report.SkippedVPN,
 	}, nil
 }
 

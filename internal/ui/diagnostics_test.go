@@ -56,7 +56,9 @@ type diagnosticsFixture struct {
 	pinned     DiagnosticNode
 	checkedAt  time.Time
 	group      string
+	groupName  string
 	leaf       string
+	reserve    string
 	skippedVPN bool
 	probes     []DiagnosticProbe
 	probeErr   error
@@ -77,7 +79,7 @@ func (f *diagnosticsFixture) CheckDiagnosticTarget(_ context.Context, target, _ 
 	f.checked = append(f.checked, target)
 	result := DiagnosticCheckResult{
 		Node: f.pinned, Probes: f.probes, CheckedAt: f.checkedAt,
-		Group: f.group, Leaf: f.leaf, SkippedVPN: f.skippedVPN,
+		Group: f.group, GroupName: f.groupName, Leaf: f.leaf, Reserve: f.reserve, SkippedVPN: f.skippedVPN,
 	}
 	for _, sub := range f.subs {
 		for i, node := range sub.Nodes {
@@ -190,15 +192,18 @@ func TestDiagnosticsPinnedLabelHidesCredentialsForBothRoles(t *testing.T) {
 
 func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
 	first, second := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	auto := model.ManagedTarget("main", "auto")
 	cfg := &model.Config{
-		Networks:      []model.Network{{Name: "Home", Target: model.ManagedTarget("main", "auto")}},
+		Networks:      []model.Network{{Name: "Home", Target: auto}},
 		Subscriptions: []subscription.Source{{ID: "main"}},
 	}
 	f := &diagnosticsFixture{
-		fakeDeps: fakeDeps{config: cfg}, probes: []DiagnosticProbe{{Kind: "http", OK: true, LatencyMS: 38}},
+		fakeDeps: fakeDeps{config: cfg}, group: auto, groupName: "Office <provider>", leaf: model.ManagedTarget("main", first),
+		probes:    []DiagnosticProbe{{Kind: "http", OK: true, LatencyMS: 38}},
 		checkedAt: time.Date(2026, 11, 1, 10, 2, 0, 0, time.Local),
 		subs: []AppliedSubscription{
-			{ID: "main", ActiveNode: first, Nodes: []SubscriptionNode{{ID: first, Name: "First region"}, {ID: second, Name: "Second region"}}},
+			{ID: "main", Metadata: subscription.Metadata{Title: "Office <provider>"}, ActiveNode: first,
+				Nodes: []SubscriptionNode{{ID: first, Name: "First region"}, {ID: second, Name: "Second region"}}},
 		},
 	}
 	h := diagnosticsHandler(f)
@@ -208,6 +213,7 @@ func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
 		t.Fatalf("first check returned HTTP %d", firstCheck.Code)
 	}
 	f.subs[0].ActiveNode = second
+	f.leaf = model.ManagedTarget("main", second)
 	f.checkedAt = f.checkedAt.Add(time.Minute)
 	secondCheck := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", form)
 	if secondCheck.Code != http.StatusSeeOther {
@@ -225,10 +231,50 @@ func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
 		for _, path := range []string{location, fragment} {
 			w := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
 			body := w.Body.String()
-			if w.Code != http.StatusOK || !strings.Contains(body, check.want) || strings.Contains(body, check.other) ||
+			if w.Code != http.StatusOK || !strings.Contains(body, "Office &lt;provider&gt; → "+check.want) || strings.Contains(body, check.other) ||
 				!strings.Contains(body, check.time) {
 				t.Errorf("the result for %s lost the actual tested identity", check.want)
 			}
+		}
+	}
+}
+
+func TestDiagnosticsReportsAutomaticSubscriptionReserve(t *testing.T) {
+	auto := model.ManagedTarget("main", "auto")
+	cfg := &model.Config{
+		Networks:      []model.Network{{Name: "Home", Target: auto}},
+		Subscriptions: []subscription.Source{{ID: "main", Fallback: "office-backup"}},
+		Connections:   []model.Connection{{ID: "office-backup", Name: "Office <backup>"}},
+	}
+	f := &diagnosticsFixture{
+		fakeDeps: fakeDeps{config: cfg}, group: auto, groupName: "Office <provider>",
+		leaf: "office-backup", reserve: "office-backup", skippedVPN: true,
+		subs:   []AppliedSubscription{{ID: "main", Metadata: subscription.Metadata{Title: "Office <provider>"}, SwitchReason: "fallback"}},
+		probes: []DiagnosticProbe{{Kind: "http", OK: true, LatencyMS: 38}},
+	}
+	h := diagnosticsHandler(f)
+	post := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", url.Values{"rev": {Revision(cfg)}})
+	if post.Code != http.StatusSeeOther {
+		t.Fatalf("automatic reserve check returned HTTP %d", post.Code)
+	}
+	for _, cookie := range post.Result().Cookies() {
+		if cookie.Value == "flash_diag_checked" {
+			t.Error("the automatic reserve produced a completion flash")
+		}
+	}
+	// The result keeps the reserve observed at POST even after a same-revision recovery.
+	f.subs[0].SwitchReason = "recovered"
+	f.subs[0].Metadata.Title = "Renamed provider"
+	f.groupName = "Renamed provider"
+	f.reserve, f.skippedVPN = "", false
+	location := post.Header().Get("Location")
+	fragment := strings.Replace(location, "/diagnostics?", "/fragments/diagnostics/check?", 1)
+	for _, path := range []string{location, fragment} {
+		w := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
+		body := w.Body.String()
+		if w.Code != http.StatusOK || !strings.Contains(body, "Office &lt;provider&gt; → reserve Office &lt;backup&gt;") ||
+			!strings.Contains(body, "The main VPN path is not in use. No VPN check was run.") || strings.Contains(body, "38 ms") {
+			t.Error("the result did not identify the automatic subscription's reserve and skipped probes")
 		}
 	}
 }
