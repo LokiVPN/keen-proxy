@@ -377,6 +377,68 @@ func TestDiagnosticAutomaticTargetFollowsSubscriptionSelection(t *testing.T) {
 	}
 }
 
+func TestDiagnosticManagedTargetsFollowTheAppliedReserve(t *testing.T) {
+	directHits := useLocalDiagnostic(t)
+	port, nodeHits := useLocalDiagnosticSOCKS(t)
+	id := strings.Repeat("a", 32)
+	node := subscription.Node{ID: id, Link: "socks5://127.0.0.1:" + strconv.Itoa(port) + "#Available"}
+	const source = "main"
+	for _, tc := range []struct {
+		name, selection, reserve string
+		nodes                    []subscription.Node
+	}{
+		{"nonempty round robin without an eligible TCP member", model.SubscriptionRoundRobin, model.TargetDirect, []subscription.Node{node}},
+		{"empty by site without a reserve", model.SubscriptionConsistentHash, "", nil},
+		{"empty by session with a manual reserve", model.SubscriptionStickySession, "reserve", nil},
+		{"pinned member removed from a nonempty catalog", strings.Repeat("b", 32), model.TargetDirect, []subscription.Node{node}},
+		{"pinned member removed from an empty catalog", strings.Repeat("b", 32), "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := model.ManagedTarget(source, tc.selection)
+			cfg := &model.Config{
+				Networks:      []model.Network{{Name: "Home", Target: target}},
+				Subscriptions: []subscription.Source{{ID: source, Fallback: tc.reserve}},
+				Connections:   []model.Connection{{ID: "reserve", Type: model.ConnLink, Link: node.Link}},
+			}
+			cfg.Defaults()
+			compiled, err := compile.Compile(compile.Input{Config: cfg, Subscriptions: map[string][]subscription.Node{source: tc.nodes}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := compile.RuntimeValidationConfig(compiled)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := New(Options{})
+			d.cfg, d.targetAliases = cfg, compiled.TargetAliases
+			d.subscriptions.states = map[string]appliedSubscription{source: {source: cfg.Subscriptions[0], snapshot: subscriptionSnapshot{
+				Nodes: tc.nodes, Metadata: subscription.Metadata{Title: "Office subscription"},
+			}}}
+			t.Cleanup(func() { _ = d.eng.Close() })
+			if _, err := d.eng.Apply(raw); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.restoreSubscriptionSelectorsLocked(compiled, false, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			// An observation alone cannot make the immutable TCP pool eligible.
+			d.health[model.ManagedTarget(source, id)] = &health{known: true, ok: true}
+			report, err := d.DiagnosticTargetIfCurrent(t.Context(), target, model.ConfigRevision(d.Config()))
+			want := tc.reserve
+			if want == "" {
+				want = model.TargetBlock
+			}
+			if err != nil || !report.SkippedVPN || report.Group != target || report.GroupName != "Office subscription" ||
+				report.Connection != want || report.Reserve != tc.reserve || !report.CheckedAt.IsZero() || len(report.Results) != 0 {
+				t.Errorf("expected path via %s with no probes, got %+v, error %v", want, report, err)
+			}
+		})
+	}
+	if directHits.Load() != 0 || nodeHits.Load() != 0 {
+		t.Error("diagnostics dialed through a reserve or an unused candidate")
+	}
+}
+
 // startCatalogFreeDiagnostic exercises startup and Apply with a saved managed
 // target whose catalog has never been fetched.
 func startCatalogFreeDiagnostic(t *testing.T, target string, failActivation, paused bool) *Daemon {
@@ -439,7 +501,7 @@ func TestDiagnosticTargetKeepsReserveOutOfTheCheck(t *testing.T) {
 			t.Errorf("target %s resolved to %q, error %v, want %q", target, report.Connection, err, want)
 		}
 	}
-	for target, want := range map[string]string{"primary": "primary", tag: tag, balance: tag} {
+	for target, want := range map[string]string{"primary": "primary", tag: tag, balance: ""} {
 		assertTarget(target, want)
 	}
 	state := appliedSubscription{}
@@ -447,8 +509,12 @@ func TestDiagnosticTargetKeepsReserveOutOfTheCheck(t *testing.T) {
 	d.subscriptions.states = map[string]appliedSubscription{"main": state}
 	d.health = map[string]*health{second: {known: true, ok: true}}
 	assertTarget(auto, second)
-	assertTarget(balance, second)
-	for _, target := range []string{missing, "disabled", "unknown", model.TargetBlock} {
+	assertTarget(balance, "")
+	report, err := d.DiagnosticTargetIfCurrent(t.Context(), missing, rev)
+	if err != nil || report.Connection != "reserve" || !report.SkippedVPN || len(report.Results) != 0 {
+		t.Errorf("missing pin did not report the applied alias without probing, got %+v, error %v", report, err)
+	}
+	for _, target := range []string{"disabled", "unknown", model.TargetBlock} {
 		assertTarget(target, "")
 	}
 	if _, err := d.DiagnosticTargetIfCurrent(t.Context(), "primary", "stale"); !errors.Is(err, model.ErrConfigChanged) {

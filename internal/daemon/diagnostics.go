@@ -35,7 +35,7 @@ type DiagnosticReport struct {
 	Results    []DiagnosticResult
 	Group      string // group whose selected leaf is Connection
 	GroupName  string // captured display name for a subscription group
-	Reserve    string // configured reserve target selected by an automatic subscription
+	Reserve    string // configured reserve target used by the subscription
 	SkippedVPN bool   // a reserve, direct, or block leaf was selected
 	Node       DiagnosticNode
 	CheckedAt  time.Time
@@ -189,21 +189,16 @@ func (d *Daemon) diagnosticRouteLocked(target string) DiagnosticReport {
 		case node == "auto":
 			return d.diagnosticAutomaticLocked(source, target)
 		case model.IsSubscriptionBalance(node):
-			for _, balance := range d.subscriptions.balances {
-				if balance.Tag != target || len(balance.Candidates) == 0 {
-					continue
-				}
-				for _, tag := range balance.Candidates {
-					if h := d.health[tag]; h != nil && h.known && h.ok {
-						return DiagnosticReport{Connection: tag}
-					}
-				}
-				return DiagnosticReport{Connection: balance.Candidates[0]}
+			member, onReserve := d.eng.DiagnosticBalancePath(target)
+			if onReserve {
+				return d.diagnosticSubscriptionReserveLocked(source, d.diagnosticGroupLocked(source, target), member)
 			}
+			return DiagnosticReport{Connection: member}
 		case slices.Contains(d.subscriptions.members, target):
 			return DiagnosticReport{Connection: target}
+		default:
+			return d.diagnosticSubscriptionReserveLocked(source, d.diagnosticGroupLocked(source, target), d.targetAliases[target])
 		}
-		return DiagnosticReport{}
 	}
 	if target == model.TargetDirect || slices.ContainsFunc(d.cfg.Connections, func(c model.Connection) bool {
 		return c.ID == target && !c.Disabled
@@ -218,9 +213,7 @@ func (d *Daemon) diagnosticRouteLocked(target string) DiagnosticReport {
 func (d *Daemon) diagnosticAutomaticLocked(source, target string) DiagnosticReport {
 	state := d.subscriptions.states[source]
 	selection := state.snapshot.Selection
-	report := DiagnosticReport{
-		Group: target, GroupName: cmp.Or(state.attempt.result.Metadata.Title, state.snapshot.Metadata.Title, source),
-	}
+	report := d.diagnosticGroupLocked(source, target)
 	// With no catalog the compiler routes directly to the reserve or block.
 	inactive := d.targetAliases[target]
 	for _, selector := range d.subscriptions.selectors {
@@ -240,6 +233,17 @@ func (d *Daemon) diagnosticAutomaticLocked(source, target string) DiagnosticRepo
 		}
 		break
 	}
+	return d.diagnosticSubscriptionReserveLocked(source, report, inactive)
+}
+
+func (d *Daemon) diagnosticGroupLocked(source, target string) DiagnosticReport {
+	state := d.subscriptions.states[source]
+	return DiagnosticReport{
+		Group: target, GroupName: cmp.Or(state.attempt.result.Metadata.Title, state.snapshot.Metadata.Title, source),
+	}
+}
+
+func (d *Daemon) diagnosticSubscriptionReserveLocked(source string, report DiagnosticReport, inactive string) DiagnosticReport {
 	if inactive == "" {
 		return report
 	}
