@@ -95,7 +95,8 @@ type Daemon struct {
 	neighbors    map[string]netip.Addr
 	deviceNames  map[string]cachedDeviceName
 	started      time.Time
-	restored     int // number of watchdog firewall restorations
+	appliedAt    time.Time // latest successful application to the running core
+	restored     int       // number of watchdog firewall restorations
 	stats        *stats.Tracker
 	geo          geoState
 
@@ -279,6 +280,7 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 	if err := d.applyLocked(ctx, cfg); err != nil {
 		return nil, err
 	}
+	d.appliedAt = time.Now()
 	d.commitDomainCacheLocked()
 	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
 	if err := d.saveChangedSubscriptionSnapshotsLocked(cfg, before); err != nil {
@@ -446,6 +448,7 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	d.commitDomainCacheLocked()
 	d.stats.ForgetConnections(removedConnections)
 	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
+	d.appliedAt = time.Now()
 	if activation == nil && save {
 		if err := d.persistConfig(cfg, false); err != nil {
 			d.auditSubscriptionSelectionsLocked(previousSubscriptions)
@@ -1069,6 +1072,9 @@ func (d *Daemon) matchesConfigRevisionLocked(revision string) bool {
 // Status summarizes daemon, engine, interception, and connection health for the API.
 type Status struct {
 	Started       time.Time `json:"started"`
+	CoreRunning   bool      `json:"-"`
+	AppliedAt     time.Time `json:"-"`
+	Paused        bool      `json:"-"`
 	Mode          string    `json:"mode"`
 	Sources       int       `json:"sources"`
 	Connections   int       `json:"connections"`
@@ -1096,6 +1102,7 @@ func (d *Daemon) Status(ctx context.Context) Status {
 	if d.cfg == nil {
 		return st
 	}
+	st.CoreRunning, st.AppliedAt, st.Paused = d.eng.Running(), d.appliedAt, d.cfg.Paused
 	st.Mode = string(d.cfg.Intercept.Mode)
 	st.Sources = len(d.plan.Sources)
 	st.Connections = len(d.cfg.Connections)
@@ -1116,6 +1123,9 @@ func (d *Daemon) Status(ctx context.Context) Status {
 
 // Stats returns connection traffic history and summaries.
 func (d *Daemon) Stats(withSeries bool) stats.Snapshot { return d.stats.Snapshot(withSeries) }
+
+// SystemStats returns the latest CPU and RAM sample without ranking hosts.
+func (d *Daemon) SystemStats() stats.System { return d.stats.SystemUsage() }
 
 // Hosts returns per-host traffic for one connection.
 func (d *Daemon) Hosts(tag, query string, limit int) ([]stats.Host, int) {

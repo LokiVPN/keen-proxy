@@ -100,6 +100,24 @@ func TestRollbackDisablesAutoInstallOnlyWhenAccepted(t *testing.T) {
 	}
 }
 
+func TestUpdatePreferencesCompareAndSave(t *testing.T) {
+	m := fixtureManager(t)
+	initial := m.Status().Preferences
+	updated := Preferences{Enabled: true, Time: "05:30"}
+	rev := initial.Revision()
+	if err := m.SetPreferencesIfCurrent(updated, rev); err != nil {
+		t.Fatalf("save new schedule: %v", err)
+	}
+	for _, stale := range []string{rev, ""} {
+		if err := m.SetPreferencesIfCurrent(initial, stale); !errors.Is(err, ErrPreferencesChanged) {
+			t.Fatalf("write with stale or absent revision returned %v", err)
+		}
+		if got := m.Status().Preferences; got != updated {
+			t.Fatalf("stored schedule = %+v, want %+v", got, updated)
+		}
+	}
+}
+
 func TestSchedulerStopsWhenServiceStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

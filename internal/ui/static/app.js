@@ -50,6 +50,30 @@
   for (const form of document.querySelectorAll("form[data-guard][data-dirty]")) markDirty(form);
   document.documentElement.classList.add("js");
 
+  for (const button of document.querySelectorAll("[data-copy]")) {
+    button.hidden = false;
+    button.addEventListener("click", async () => {
+      const text = document.getElementById(button.dataset.copy);
+      const status = button.nextElementSibling;
+      try {
+        await navigator.clipboard.writeText(text.textContent);
+        status.textContent = button.dataset.copyDone;
+        return;
+      } catch {
+        // LAN HTTP may lack the Clipboard API. Copy the visible selection
+        // when supported and leave it selected for manual copying otherwise.
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        let copied = false;
+        try { copied = document.execCommand("copy"); } catch {}
+        status.textContent = copied ? button.dataset.copyDone : button.dataset.copySelection;
+      }
+    });
+  }
+
   async function refresh(fragment) {
     if (pending.has(fragment) || fragment.contains(document.activeElement)) return;
     pending.add(fragment);

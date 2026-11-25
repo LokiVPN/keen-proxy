@@ -421,6 +421,13 @@ func (t *Tracker) ConnectionTraffic(tag string) (active int, series []Point) {
 	return 0, nil
 }
 
+// SystemUsage snapshots just the last resource measurement.
+func (t *Tracker) SystemUsage() System {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.sys.last
+}
+
 // Snapshot returns current panel statistics, optionally including history.
 func (t *Tracker) Snapshot(withSeries bool) Snapshot {
 	t.mu.Lock()

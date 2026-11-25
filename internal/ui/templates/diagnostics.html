@@ -1,0 +1,118 @@
+{{define "diagnostics"}}{{template "page-start" .}}
+      <h1>KeenProxy</h1>
+      {{template "tabs" .}}
+      {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
+      {{if .Message}}<p class="note" role="alert">{{.Message}}</p>{{end}}
+      <section class="overview-section" aria-labelledby="diagnostics-state">
+        <div class="overview-section-head">
+          <h2 id="diagnostics-state">{{.Text.diag_state}}</h2>
+          <span class="small muted">{{printf .Text.diag_updated .Diagnostics.Updated}} · <a href="{{.Diagnostics.RefreshURL}}">{{.Text.diag_refresh}}</a></span>
+        </div>
+        <table class="tbl diagnostics-table" aria-labelledby="diagnostics-state">
+          <tbody>{{template "diagnostics-rows" .Diagnostics.State}}</tbody>
+        </table>
+      </section>
+
+      <section class="overview-section" aria-labelledby="diagnostics-check-title">
+        <div class="overview-section-head"><h2 id="diagnostics-check-title">{{.Text.diag_connection_check}}</h2></div>
+        <form class="row-btns diagnostics-check" action="/diagnostics/check" method="post">
+          <input type="hidden" name="rev" value="{{.Diagnostics.Revision}}">
+          <div class="fld">
+            <label for="diagnostics-main-target">{{.Text.diag_main_target}}</label>
+            <input id="diagnostics-main-target" type="text" value="{{.Diagnostics.Target}}" readonly>
+          </div>
+          <button class="btn" type="submit"{{if or .ViewOnly (not .Diagnostics.CanCheck)}} disabled{{end}}>{{.Text.diag_run_check}}</button>
+        </form>
+        <p class="hint">{{.Text.diag_check_hint}}</p>
+        <div{{if .Diagnostics.FragmentURL}} data-fragment="{{.Diagnostics.FragmentURL}}"{{end}}>
+          {{template "diagnostics-probes" .}}
+        </div>
+      </section>
+
+      <section class="overview-section" aria-labelledby="diagnostics-support">
+        <div class="overview-section-head"><h2 id="diagnostics-support">{{.Text.diag_support}}</h2></div>
+        <p class="lead">{{.Text.diag_support_hint}}</p>
+        <div class="row-btns">
+          {{if or .ViewOnly (not .Diagnostics.CanDownload)}}
+          <button class="btn soft" type="button" disabled>{{.Text.diag_download}}</button>
+          {{else}}
+          <a class="btn soft" href="/diagnostics/bundle.zip">{{.Text.diag_download}}</a>
+          {{end}}
+        </div>
+        <p class="hint diagnostics-build">
+          <span id="diagnostics-build">{{if .Diagnostics.Build}}{{.Diagnostics.Build}}{{else}}—{{end}}</span>
+          {{if .Diagnostics.Build}}
+          <button class="linkbtn" type="button" hidden data-copy="diagnostics-build" data-copy-done="{{.Text.diag_copied}}" data-copy-selection="{{.Text.diag_copy_selected}}">{{.Text.diag_copy}}</button>
+          <span role="status"></span>
+          {{end}}
+        </p>
+      </section>
+
+      {{with .Diagnostics.Updates}}
+      <section class="overview-section" aria-labelledby="diagnostics-updates">
+        <div class="overview-section-head"><h2 id="diagnostics-updates">{{$.Text.diag_updates}}</h2></div>
+        <div class="prov"><span>{{.Installed}}</span><span class="chip">{{.Available}}</span></div>
+        {{if not .Managed}}<p class="hint">{{$.Text.diag_updates_unavailable}}</p>{{end}}
+        {{if .Check}}<p class="hint">{{.Check}}</p>{{end}}
+        {{if .Job}}<p class="hint" role="status">{{.Job}}</p>{{end}}
+        <div class="row-btns">
+          {{if .Install}}
+          <form action="/updates/install" method="post">
+            <input type="hidden" name="target" value="{{.Latest}}">
+            <button class="btn detail-small-button" type="submit"{{if or $.ViewOnly .Busy (not .Managed)}} disabled{{end}}>{{.Install}}</button>
+          </form>
+          {{end}}
+          {{if .Rollback}}
+          <form action="/updates/rollback" method="post">
+            <input type="hidden" name="target" value="{{.Previous}}">
+            <button class="linkbtn" type="submit"{{if or $.ViewOnly .Busy (not .Managed)}} disabled{{end}}>{{.Rollback}}</button>
+          </form>
+          {{end}}
+          <form action="/updates/check" method="post">
+            <button class="linkbtn" type="submit"{{if or $.ViewOnly .Busy (not .Managed)}} disabled{{end}}>{{$.Text.diag_check_updates}}</button>
+          </form>
+        </div>
+        <form class="row-btns diagnostics-schedule" action="/updates/preferences" method="post" data-guard>
+          {{$disabled := or $.ViewOnly (not .Managed)}}
+          <input type="hidden" name="rev" value="{{.Revision}}">
+          <label class="tg">
+            <input type="checkbox" role="switch" name="enabled" value="1"{{if .Enabled}} checked{{end}}{{if $disabled}} disabled{{end}}>
+            <span class="tg-track" aria-hidden="true"></span>
+            <span class="tg-label">{{$.Text.diag_auto_install}}</span>
+          </label>
+          <div class="fld">
+            <label for="diagnostics-update-time">{{$.Text.diag_update_time}}</label>
+            <input id="diagnostics-update-time" type="time" name="time" value="{{.Time}}" required{{if $disabled}} disabled{{end}}>
+          </div>
+          <button class="btn soft" type="submit"{{if $disabled}} disabled{{end}}>{{$.Text.overview_save}}</button>
+        </form>
+        <p class="hint">{{$.Text.diag_restart_hint}}</p>
+      </section>
+      {{end}}
+{{template "page-end" .}}{{end}}
+
+{{define "diagnostics-rows"}}
+          {{range .}}
+          <tr><th scope="row">{{.Label}}</th><td>{{if .Chip.Label}}<span class="chip {{.Chip.Class}}">{{.Chip.Label}}</span>{{end}}{{if .Value}}<span>{{.Value}}</span>{{end}}</td></tr>
+          {{end}}
+{{end}}
+
+{{define "diagnostics-probes"}}
+          <table class="tbl diagnostics-table" aria-label="{{.Text.diag_connection_check}}">
+            <tbody>{{template "diagnostics-rows" .DiagnosticProbes}}</tbody>
+          </table>
+{{end}}
+
+{{define "diagnostics-confirm-update"}}{{template "page-start" .}}
+      <h1>KeenProxy</h1>
+      {{template "tabs" .}}
+      <section class="overview-section" aria-labelledby="diagnostics-confirmation">
+        <div class="overview-section-head"><h2 id="diagnostics-confirmation">{{.UpdateConfirmation.Title}}</h2></div>
+        <p class="lead">{{.UpdateConfirmation.Warning}}</p>
+        <form action="{{.UpdateConfirmation.Path}}" method="post" class="row-btns">
+          <input type="hidden" name="confirm" value="{{.UpdateConfirmation.Token}}">
+          <button class="btn" type="submit">{{.Text.diag_confirm}}</button>
+          <a class="btn soft" href="/diagnostics">{{.Text.setup_cancel}}</a>
+        </form>
+      </section>
+{{template "page-end" .}}{{end}}

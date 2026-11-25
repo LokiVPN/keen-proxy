@@ -29,7 +29,7 @@ func TestSampleProcessUsage(t *testing.T) {
 	sample(100, 20, 15, 5, 20)
 	sampler.sample(root)
 	first := sampler.last.Process
-	if first == nil || first.CPU != nil || first.RSSBytes != 20*uint64(os.Getpagesize()) {
+	if sampler.last.CPUKnown || first == nil || first.CPU != nil || first.RSSBytes != 20*uint64(os.Getpagesize()) {
 		t.Fatalf("unexpected first sample: %+v", first)
 	}
 	sample(200, 60, 19, 6, 25)
@@ -38,7 +38,7 @@ func TestSampleProcessUsage(t *testing.T) {
 	if second == nil || second.CPU == nil || *second.CPU != 5 || second.RSSBytes != 25*uint64(os.Getpagesize()) {
 		t.Fatalf("unexpected second sample: %+v", second)
 	}
-	if sampler.last.CPU != 100 || sampler.last.MemPct != 50 || sampler.last.MemMB != 256 || first.RSSBytes != 20*uint64(os.Getpagesize()) {
+	if !sampler.last.CPUKnown || sampler.last.CPU != 100 || sampler.last.MemPct != 50 || sampler.last.MemMB != 256 || first.RSSBytes != 20*uint64(os.Getpagesize()) {
 		t.Fatalf("router totals or earlier snapshot changed: %+v", sampler.last)
 	}
 	write("stat", "cpu invalid\n")

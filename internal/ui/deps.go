@@ -2,12 +2,14 @@ package ui
 
 import (
 	"context"
+	"net/http"
 	"net/netip"
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
+	"github.com/ordo-systems/keen-proxy/internal/update"
 )
 
 // Deps provides isolated configuration snapshots and management operations.
@@ -35,6 +37,32 @@ type Deps interface {
 	ConnectionHosts(id string, limit int) ([]stats.Host, int)
 	CheckConnection(ctx context.Context, id, revision string) error
 	ConnectionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error)
+	DiagnosticStatus(context.Context) DiagnosticStatus
+	CheckDiagnosticTarget(ctx context.Context, target, revision string) ([]DiagnosticProbe, error)
+	SupportBundle(http.ResponseWriter, *http.Request)
+	UpdateStatus() update.Status
+	CheckUpdates(context.Context)
+	StartUpdate(target string, rollback bool) error
+	SaveUpdatePreferences(update.Preferences, string) error
+}
+
+// DiagnosticStatus projects runtime and build facts without listener
+// addresses, profile settings, or error details.
+type DiagnosticStatus struct {
+	Started, AppliedAt          time.Time
+	Core, Firewall, DNS, Paused bool
+	Mode, GeoBuilt              string
+	GeoLoaded                   bool
+	Restorations                int
+	System                      stats.System
+	Build                       string
+}
+
+// DiagnosticProbe carries only the outcome of an allowlisted probe.
+type DiagnosticProbe struct {
+	Kind      string
+	OK        bool
+	LatencyMS int64
 }
 
 // DiscoveredDevice is an observation from the LAN snapshot. The applied

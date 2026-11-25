@@ -199,7 +199,7 @@ In [issue #39](https://github.com/ordo-systems/keen-proxy/issues/39), the target
 ## Download the diagnostic ZIP
 
 1. Reproduce the problem and note the approximate time and time zone. Open **Diagnostics** in the web panel on your router.
-2. Find **Diagnostics archive** near the top of the page, below **Build details** when shown. Choose **Download ZIP**. Open the downloaded `keenproxy-diagnostics.zip` and review its contents before sharing.
+2. With a management account, choose **Download ZIP** under **Support report**. Review the contents of the downloaded `keenproxy-diagnostics-*.zip` before sharing.
 
 | File | What it contains |
 | --- | --- |
@@ -214,7 +214,7 @@ When `iptables-restore` fails during Apply, look for **Configuration apply faile
 
 The export omits credentials, raw connection profiles, and free-form log messages. Names and addresses are removed or replaced with aliases that are consistent within one ZIP. Event times, ports, protocols, policies, and counts can still identify activity. Review the files before attaching them to an issue or sharing them privately.
 
-**Download report** on the Diagnostics screen saves `keenproxy-diagnostics.json` with a status summary and results from any checks you ran for the selected connection. ZIP download is available only from the router. For a restorable configuration, copy the YAML configuration file over SSH and store it privately.
+For a restorable configuration, copy the YAML configuration file over SSH and store it privately.
 
 ## What should a bug report include?
 

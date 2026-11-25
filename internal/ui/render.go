@@ -39,6 +39,9 @@ type pageData struct {
 	Connections             *connectionsPage
 	ConnectionDetail        *connectionDetailPage
 	ConnectionWizard        *connectionWizardPage
+	Diagnostics             diagnosticsPage
+	DiagnosticProbes        []diagnosticRow
+	UpdateConfirmation      updateConfirmationView
 	SubscriptionNodes       subscriptionNodesView
 	Traffic                 trafficView
 	ConnectionHealth        connectionHealthView

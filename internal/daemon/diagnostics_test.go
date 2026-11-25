@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -18,6 +19,49 @@ import (
 type diagnosticTransport func(*http.Request) (*http.Response, error)
 
 func (f diagnosticTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestDiagnosticTargetKeepsReserveOutOfTheCheck(t *testing.T) {
+	tag := model.ManagedTarget("main", strings.Repeat("a", 32))
+	secondNode := strings.Repeat("c", 32)
+	second := model.ManagedTarget("main", secondNode)
+	auto := model.ManagedTarget("main", "auto")
+	balance := model.ManagedTarget("main", model.SubscriptionRoundRobin)
+	missing := model.ManagedTarget("main", strings.Repeat("b", 32))
+	d := &Daemon{cfg: &model.Config{Connections: []model.Connection{
+		{ID: "primary", Fallback: "reserve"},
+		{ID: "disabled", Disabled: true, Fallback: "reserve"},
+	}}}
+	d.targetAliases = map[string]string{"primary": "failover-primary", missing: "reserve"}
+	d.subscriptions.members = []string{tag, second}
+	d.subscriptions.selectors = []compile.SubscriptionSelector{{SourceID: "main", Tag: auto, Candidates: []string{tag, second}, Fallback: "reserve"}}
+	d.subscriptions.balances = []compile.SubscriptionBalance{{Tag: balance, Candidates: []string{tag, second}, Fallback: "reserve"}}
+	rev := model.ConfigRevision(d.Config())
+	// Report.Connection identifies the outbound even when the test has no
+	// running engine. Empty selections simulate automatic routing on reserve.
+	assertTarget := func(target, want string) {
+		t.Helper()
+		report, err := d.DiagnosticTargetIfCurrent(t.Context(), target, rev)
+		if !errors.Is(err, ErrDiagnosticConnection) || report.Connection != want {
+			t.Errorf("target %s resolved to %q, error %v, want %q", target, report.Connection, err, want)
+		}
+	}
+	for target, want := range map[string]string{"primary": "primary", tag: tag, auto: tag, balance: tag} {
+		assertTarget(target, want)
+	}
+	state := appliedSubscription{}
+	state.snapshot.Selection.Node = secondNode
+	d.subscriptions.states = map[string]appliedSubscription{"main": state}
+	d.health = map[string]*health{second: {known: true, ok: true}}
+	assertTarget(auto, second)
+	assertTarget(balance, second)
+	for _, target := range []string{missing, "disabled", "unknown", model.TargetBlock} {
+		assertTarget(target, "")
+	}
+	if _, err := d.DiagnosticTargetIfCurrent(t.Context(), "primary", "stale"); !errors.Is(err, model.ErrConfigChanged) {
+		t.Errorf("outdated configuration returned %v", err)
+	}
+}
+
 func TestDiagnosticBoundsAndFailures(t *testing.T) {
 	client := &http.Client{Transport: diagnosticTransport(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Scheme == "http" {

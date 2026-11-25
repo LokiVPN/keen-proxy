@@ -17,6 +17,7 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 	"github.com/ordo-systems/keen-proxy/internal/ui"
+	"github.com/ordo-systems/keen-proxy/internal/update"
 )
 
 type managementDaemon interface {
@@ -35,11 +36,15 @@ type managementDaemon interface {
 	ConnectionHealth(id string) (daemon.ConnectionObservation, bool)
 	ConnectionTraffic(id string) (int, []stats.Point)
 	CheckConnectionIfCurrent(ctx context.Context, id, revision string) error
+	SystemStats() stats.System
+	DiagnosticTargetIfCurrent(ctx context.Context, target, revision string) (daemon.DiagnosticReport, error)
 }
 
 // uiDeps gives pages display snapshots and revision-checked management operations.
 type uiDeps struct {
-	daemon managementDaemon
+	daemon  managementDaemon
+	updates *update.Manager
+	bundle  http.HandlerFunc
 }
 
 func (d uiDeps) Config() *model.Config {

@@ -10,10 +10,11 @@ import (
 
 // System contains router resource usage displayed in the panel.
 type System struct {
-	CPU     float64       `json:"cpu"`     // %
-	MemPct  float64       `json:"mem_pct"` // Used memory percentage.
-	MemMB   int           `json:"mem_mb"`  // Total memory in MiB.
-	Process *ProcessUsage `json:"process,omitempty"`
+	CPU      float64       `json:"cpu"`     // %
+	CPUKnown bool          `json:"-"`       // at least two comparable samples
+	MemPct   float64       `json:"mem_pct"` // Used memory percentage.
+	MemMB    int           `json:"mem_mb"`  // Total memory in MiB.
+	Process  *ProcessUsage `json:"process,omitempty"`
 }
 
 // ProcessUsage covers the daemon and its embedded engine. CPU is absent until
@@ -37,6 +38,7 @@ func (s *systemSampler) sample(root string) {
 			elapsed := total - s.lastTotal
 			busy := elapsed - min(elapsed, idle-s.lastIdle)
 			s.last.CPU = round1(float64(busy) / float64(elapsed) * 100)
+			s.last.CPUKnown = true
 		}
 		s.lastIdle, s.lastTotal = idle, total
 	}

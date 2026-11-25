@@ -3,6 +3,8 @@ package update
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,16 +25,24 @@ const (
 )
 
 var (
-	ErrUnavailable = errors.New("updates require a managed installation")
-	ErrPreferences = errors.New("expected a router-local time in HH:MM format")
-	ErrTarget      = errors.New("the requested release is no longer available")
-	ErrBusy        = errors.New("an update is already running")
+	ErrUnavailable        = errors.New("updates require a managed installation")
+	ErrPreferences        = errors.New("expected a router-local time in HH:MM format")
+	ErrPreferencesChanged = errors.New("update preferences changed")
+	ErrTarget             = errors.New("the requested release is no longer available")
+	ErrBusy               = errors.New("an update is already running")
 )
 
 // Preferences schedules optional daily installation in the router's local time.
 type Preferences struct {
 	Enabled bool   `json:"enabled"`
 	Time    string `json:"time"`
+}
+
+// Revision identifies the editable schedule, independent of the scheduler's
+// daily attempt record and the applied routing configuration.
+func (p Preferences) Revision() string {
+	sum := sha256.Sum256([]byte(strconv.FormatBool(p.Enabled) + " " + p.Time))
+	return hex.EncodeToString(sum[:])
 }
 
 type schedule struct {
@@ -200,6 +211,19 @@ func (m *Manager) confirmRollback(ctx context.Context, current installState) {
 
 // SetPreferences writes scheduler settings independently of the routing draft.
 func (m *Manager) SetPreferences(p Preferences) error {
+	return m.setPreferences(p, "")
+}
+
+// SetPreferencesIfCurrent checks the displayed revision under the same lock
+// used by rollback and the existing preferences writer.
+func (m *Manager) SetPreferencesIfCurrent(p Preferences, revision string) error {
+	if revision == "" {
+		return ErrPreferencesChanged
+	}
+	return m.setPreferences(p, revision)
+}
+
+func (m *Manager) setPreferences(p Preferences, revision string) error {
 	if m.installed().Current == "" {
 		return ErrUnavailable
 	}
@@ -211,6 +235,9 @@ func (m *Manager) SetPreferences(p Preferences) error {
 	s, err := m.settings()
 	if err != nil {
 		return err
+	}
+	if revision != "" && revision != s.Preferences.Revision() {
+		return ErrPreferencesChanged
 	}
 	s.Preferences = p
 	return m.save(s)

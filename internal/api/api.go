@@ -80,7 +80,7 @@ var publicRoutes = map[string]bool{
 func (s *Server) routes() []route {
 	return append([]route{
 		{"POST /api/diagnostics/check", http.HandlerFunc(s.diagnosticCheck)},
-		{"GET /api/diagnostics/bundle", http.HandlerFunc(s.supportBundle)},
+		{"GET /api/diagnostics/bundle", http.HandlerFunc(s.ServeSupportBundle)},
 		{"GET /api/diagnostics/tproxy", http.HandlerFunc(s.tproxyReadiness)},
 		{"POST /api/diagnostics/tproxy/retry", http.HandlerFunc(s.retryTProxy)},
 		{"GET /api/subscriptions/status", http.HandlerFunc(s.subscriptionStatus)},
@@ -307,7 +307,7 @@ func logoutNavigation(r *http.Request) bool {
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		daemon.Status
-		Build buildIdentity `json:"build"`
+		Build BuildIdentity `json:"build"`
 	}{s.D.Status(r.Context()), runningBuild})
 }
 

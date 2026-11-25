@@ -122,7 +122,7 @@ On Entware, the service tries to raise the daemon's open-file limit to at least 
 
 ## Update from the panel
 
-On a managed Entware or native OpenWrt installation, **Settings → Updates** shows the installed version, the latest available stable release, and the previous installed version when recorded. Upgrade once with the command-line bootstrap if the current build predates panel updates. To make that older release a rollback target, first rerun the current bootstrap with the exact tag and build variant already installed, then upgrade. Native OpenWrt additionally requires that target release's procd asset.
+On a managed Entware or native OpenWrt installation, **Diagnostics → Updates** shows the installed version, the latest available stable release, and the previous installed version when recorded. Upgrade once with the command-line bootstrap if the current build predates panel updates. To make that older release a rollback target, first rerun the current bootstrap with the exact tag and build variant already installed, then upgrade. Native OpenWrt additionally requires that target release's procd asset.
 
 Update actions and schedule changes require an authorized management session in [KeeneticOS sign-in mode](development.md#keenetic-auth).
 

@@ -33,18 +33,19 @@ type Options struct {
 }
 
 type pages struct {
-	deps             Deps
-	opts             Options
-	setupDrafts      *setupDrafts
-	connectionDrafts *connectionDrafts
-	deviceFormKey    string
+	deps              Deps
+	opts              Options
+	setupDrafts       *setupDrafts
+	connectionDrafts  *connectionDrafts
+	diagnosticTickets *diagnosticTickets
+	deviceFormKey     string
 }
 
 // New builds the page handler for the central HTTP server to authorize.
 func New(deps Deps, opts Options) http.Handler {
 	p := pages{
 		deps: deps, opts: opts, setupDrafts: &setupDrafts{},
-		connectionDrafts: &connectionDrafts{}, deviceFormKey: rand.Text(),
+		connectionDrafts: &connectionDrafts{}, diagnosticTickets: &diagnosticTickets{}, deviceFormKey: rand.Text(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.home)
@@ -74,6 +75,14 @@ func New(deps Deps, opts Options) http.Handler {
 	mux.HandleFunc("GET /fragments/connection/{id}/health", p.connectionDetailFragment("connection-health"))
 	mux.HandleFunc("GET /fragments/connection/{id}/speed", p.connectionDetailFragment("overview-traffic"))
 	mux.HandleFunc("GET /fragments/connection/{id}/hosts", p.connectionDetailFragment("connection-hosts"))
+	mux.HandleFunc("GET /diagnostics", p.diagnosticsGet)
+	mux.HandleFunc("POST /diagnostics/check", p.diagnosticsCheck)
+	mux.HandleFunc("GET /fragments/diagnostics/check", p.diagnosticsCheckFragment)
+	mux.HandleFunc("GET /diagnostics/bundle.zip", p.diagnosticsBundle)
+	mux.HandleFunc("POST /updates/check", p.updatesCheck)
+	mux.HandleFunc("POST /updates/install", p.updateAction(false))
+	mux.HandleFunc("POST /updates/rollback", p.updateAction(true))
+	mux.HandleFunc("POST /updates/preferences", p.updatePreferences)
 	mux.HandleFunc("GET /static/", serveAsset)
 	mux.HandleFunc("GET /", p.notFound)
 

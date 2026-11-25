@@ -230,8 +230,9 @@ func serveAPI(ctx context.Context, cfg *model.Config, d managementDaemon, update
 	}
 	management := &api.Server{
 		D: d, Log: log, Updates: updates, Keenetic: keenetic, Unavailable: unavailable,
-		Pages: ui.New(uiDeps{daemon: d}, opts), PageError: opts.AccessError,
+		PageError: opts.AccessError,
 	}
+	management.Pages = ui.New(uiDeps{daemon: d, updates: updates, bundle: management.ServeSupportBundle}, opts)
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,
 		Handler:           management.Handler(),

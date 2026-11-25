@@ -26,6 +26,10 @@ func TestApplyRestoresPreviousCoreOnStartFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("saved core was not running")
 	}
+	initialStatus := d.Status(t.Context())
+	if !initialStatus.CoreRunning || initialStatus.AppliedAt.IsZero() {
+		t.Fatal("startup did not publish core state and configuration apply time")
+	}
 	revision := model.ConfigRevision(d.Config())
 	candidate := d.Config()
 	candidate.Connections[0] = model.Connection{ID: "candidate", Type: model.ConnSingBox, Endpoint: map[string]any{
@@ -49,6 +53,9 @@ func TestApplyRestoresPreviousCoreOnStartFailure(t *testing.T) {
 	}
 	if _, _, found := d.eng.Outbound("candidate"); found || model.ConfigRevision(d.Config()) != revision {
 		t.Fatal("the failed candidate remained active")
+	}
+	if st := d.Status(ctx); !st.CoreRunning || !st.AppliedAt.Equal(initialStatus.AppliedAt) {
+		t.Fatal("a failed apply changed the last successful configuration time")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) {

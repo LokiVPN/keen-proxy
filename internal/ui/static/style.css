@@ -622,6 +622,17 @@
 }
 .wizard-drop input:disabled { color: var(--disabled-text); cursor: not-allowed; }
 
+.diagnostics-table { table-layout: fixed; }
+.diagnostics-table th, .diagnostics-table td { border-bottom: 1px solid var(--line); }
+.diagnostics-table th { width: 42%; color: var(--gray); font-weight: 400; }
+.diagnostics-table .chip + span { margin-inline-start: 8px; color: var(--gray); }
+.diagnostics-check .fld { flex: 1 1 320px; min-width: 0; margin-top: 0; }
+.diagnostics-check input { text-overflow: ellipsis; }
+.diagnostics-schedule { margin-top: 28px; gap: 12px 24px; }
+.diagnostics-schedule .fld { margin-top: 0; }
+.kp .diagnostics-build { margin-top: 12px; }
+.diagnostics-build button, .diagnostics-build [role="status"] { margin-inline-start: 6px; }
+
 .chart {
   display: grid;
   grid-template-columns: minmax(28px, auto) minmax(0, 1fr);
@@ -681,6 +692,7 @@
   .detail-title h1 { flex-basis: 120px; }
   .wizard-grid { grid-template-columns: minmax(0, 1fr); }
   .wizard-buttons .btn { flex: 1 1 auto; }
+  .diagnostics-check .fld { flex-basis: 100%; }
   .connections-node .clip, .connections-manual .res-inline .clip {
     display: -webkit-box;
     -webkit-box-orient: vertical;

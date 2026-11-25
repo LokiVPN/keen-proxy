@@ -209,13 +209,13 @@ The change bar appears whenever the draft differs from the saved configuration. 
 
 ## 6. Verify the result
 
-Open **Diagnostics** to see core uptime, applied configuration, interception, DNS settings, GeoIP, and the firewall restoration counter. Select an applied connection and choose **Run checks** to test HTTP, HTTPS with certificate verification, and a 64 KiB transfer separately. A new or edited profile must be applied first. The results leave the active failover selection unchanged. The DNS row describes the configured path. Use [a test from the affected device](network-flow.md#how-to-trace-one-request) to verify the actual path. The browser demo labels its check results as simulated and hides the ZIP download button.
+Open **Diagnostics → State** to see whether the core and DNS listener are running, the interception mode, when configuration was applied, the country database, firewall repairs since startup, and CPU and RAM for the router and KeenProxy.
 
-![Separate HTTP, HTTPS, and transfer diagnostics](../assets/screenshots/en-diagnostics.png)
+Choose **Run check** to test HTTP, HTTPS with certificate verification, and a 64 KiB transfer through the applied main connection. Automatic selection and balancing test one subscription node for all three checks. The check leaves the active route selection unchanged and bypasses its reserve. The DNS row describes the listener. Use [a test from the affected device](network-flow.md#how-to-trace-one-request) to verify its DNS and traffic paths.
 
 ### Export journals and diagnostics { #export-journals }
 
-On the router, open **Diagnostics → Diagnostics archive → Download ZIP**. See [what each download contains and what to review before sharing](troubleshooting.md#download-the-diagnostic-zip).
+With a management account, open **Diagnostics → Support report → Download ZIP**. See [what the download contains and what to review before sharing](troubleshooting.md#download-the-diagnostic-zip).
 
 Watchdog recovery events include the failed firewall check and the verification result. The ZIP retains safe structured evidence. See [watchdog diagnostics](troubleshooting.md#why-does-the-watchdog-restore-interception-rules).
 
@@ -256,6 +256,6 @@ Only positive whole MiB values are accepted. To remove the override, omit `memor
 
 ## 8. Install or roll back a release
 
-The panel footer shows the running release and build variant, architecture, and short commit hash. A local build may lack a release tag or commit hash. **Settings → Updates** also shows the available update and the previous version when known. **Diagnostics → Build details** lets you copy the running build identity. The diagnostics ZIP includes the same information in `status.json`.
+**Diagnostics → Support report** shows the running release, build variant, architecture, and short commit hash. Choose **Copy** to copy the build identity. A local build may lack a release tag or commit hash. The diagnostics ZIP includes the same information in `status.json`.
 
-Open **Settings → Updates**. Apply or discard any routing draft before installing or rolling back. Confirm the version and wait for the service to reconnect. You can save a time for automatic installation or leave it off and install releases when ready. See [the update guide](getting-started.md#update-from-the-panel) for first-time setup and rollback requirements.
+Open **Diagnostics → Updates** to check for releases, install an available update, or roll back to the previous version when recorded. Confirm the version on the next screen and wait for the service to reconnect. To schedule installation, enable **Install automatically**, choose a time in the router's time zone, and save. See [the update guide](getting-started.md#update-from-the-panel) for first-time setup and rollback requirements.

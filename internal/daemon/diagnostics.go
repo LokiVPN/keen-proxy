@@ -72,10 +72,86 @@ func (d *Daemon) DiagnosticChecks(ctx context.Context, id string) (DiagnosticRep
 	if !ok {
 		return report, ErrDiagnosticConnection
 	}
-	transport := &http.Transport{DialContext: diagnosticDialer(engineContext, out.DialContext), DisableKeepAlives: true, ResponseHeaderTimeout: diagnosticTimeout, TLSHandshakeTimeout: diagnosticTimeout, DisableCompression: true}
-	defer transport.CloseIdleConnections()
-	report.Results = runDiagnosticChecks(ctx, &http.Client{Transport: transport, Timeout: diagnosticTimeout})
+	report.Results = diagnosticProfileChecks(ctx, engineContext, out.DialContext)
 	return report, nil
+}
+
+// DiagnosticTargetIfCurrent checks the primary outbound of an applied target
+// against the same revision the page displayed. It leaves selection and
+// recorded health untouched.
+func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision string) (DiagnosticReport, error) {
+	release, err := acquireDiagnosticSlot(ctx)
+	if err != nil {
+		return DiagnosticReport{}, err
+	}
+	defer release()
+	d.mu.Lock()
+	if !d.matchesConfigRevisionLocked(revision) {
+		d.mu.Unlock()
+		return DiagnosticReport{}, model.ErrConfigChanged
+	}
+	tag := d.diagnosticOutboundLocked(target)
+	if tag == "" {
+		d.mu.Unlock()
+		return DiagnosticReport{}, ErrDiagnosticConnection
+	}
+	out, engineContext, running := d.eng.Outbound(tag)
+	d.mu.Unlock()
+	report := DiagnosticReport{Connection: tag}
+	if !running {
+		return report, ErrDiagnosticConnection
+	}
+	report.Results = diagnosticProfileChecks(ctx, engineContext, out.DialContext)
+	return report, nil
+}
+
+// diagnosticOutboundLocked bypasses the compiler's reserve aliases. For a
+// managed policy, choose one activated subscription node for all three checks.
+func (d *Daemon) diagnosticOutboundLocked(target string) string {
+	if source, node, managed := model.ParseManagedTarget(target); managed {
+		switch {
+		case node == "auto":
+			for _, selector := range d.subscriptions.selectors {
+				if selector.Tag != target || len(selector.Candidates) == 0 {
+					continue
+				}
+				active := model.ManagedTarget(source, d.subscriptions.states[source].snapshot.Selection.Node)
+				if slices.Contains(selector.Candidates, active) {
+					return active
+				}
+				// A policy on reserve has no active node. Probe its first
+				// configured candidate even if prior health is unavailable.
+				return selector.Candidates[0]
+			}
+		case model.IsSubscriptionBalance(node):
+			for _, balance := range d.subscriptions.balances {
+				if balance.Tag != target || len(balance.Candidates) == 0 {
+					continue
+				}
+				for _, tag := range balance.Candidates {
+					if h := d.health[tag]; h != nil && h.known && h.ok {
+						return tag
+					}
+				}
+				return balance.Candidates[0]
+			}
+		case slices.Contains(d.subscriptions.members, target):
+			return target
+		}
+		return ""
+	}
+	if target == model.TargetDirect || slices.ContainsFunc(d.cfg.Connections, func(c model.Connection) bool {
+		return c.ID == target && !c.Disabled
+	}) {
+		return target
+	}
+	return ""
+}
+
+func diagnosticProfileChecks(ctx, engineContext context.Context, dial profileDial) []DiagnosticResult {
+	transport := &http.Transport{DialContext: diagnosticDialer(engineContext, dial), DisableKeepAlives: true, ResponseHeaderTimeout: diagnosticTimeout, TLSHandshakeTimeout: diagnosticTimeout, DisableCompression: true}
+	defer transport.CloseIdleConnections()
+	return runDiagnosticChecks(ctx, &http.Client{Transport: transport, Timeout: diagnosticTimeout})
 }
 
 // profileDial opens a connection through one specific applied engine outbound.
