@@ -20,7 +20,7 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 	const password = "fixture-password-keep-private"
 	const combinedPassword = "hysteria-fixture:keep-private"
 	const cookieValue = "xhttp-fixture-keep-private"
-	labels := []string{strings.ToUpper(canonical), "%61" + compact[1:], strings.ToUpper(password), combinedPassword, cookieValue}
+	labels := []string{strings.ToUpper(canonical), "%61" + compact[1:], strings.ToUpper(password), cookieValue, "", combinedPassword}
 	const xhttpID = "119379fe-06d0-4982-bd4b-e5c530602a9c"
 	xhttp := url.Values{"type": {"xhttp"}, "extra": {`{"headers":{"cOoKiE":["pref=basic; session=\"` + cookieValue + `\""]}}`}}
 	provider := new(subscriptionTestProvider)
@@ -29,16 +29,25 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 		"vless://" + canonical + "@second.example.test:443#" + url.PathEscape("Region "+labels[1]),
 		"socks5://" + url.UserPassword("fixture-operator", base64.StdEncoding.EncodeToString([]byte(password))).String() +
 			"@third.example.test:1080#" + url.PathEscape("Region "+labels[2]),
+		"vless://" + xhttpID + "@fourth.example.test:443?" + xhttp.Encode() + "#" + url.PathEscape("Region "+labels[3]),
+		"socks5://fifth.example.test:1080#Safe%20region",
 		"hysteria2://" + url.UserPassword("fixture-hy2", combinedPassword).String() +
-			"@fourth.example.test:443#" + url.PathEscape("Region "+labels[3]),
-		"vless://" + xhttpID + "@fifth.example.test:443?" + xhttp.Encode() + "#" + url.PathEscape("Region "+labels[4]),
-		"socks5://sixth.example.test:1080#Safe%20region",
+			"@sixth.example.test:443#" + url.PathEscape("Region "+labels[5]),
 	}, "\n")})
 	d, cfg := newSubscriptionTestDaemon(t, provider)
 	source := cfg.Subscriptions[0]
 	cfg.RouteHomeThroughSubscription(source.ID, netip.MustParsePrefix("192.0.2.0/24"))
+	wantNames := []string{"Node 1", "Node 2", "Node 3", "Node 4", "Safe region", "Node 6"}
+	// Fetch projects names before the daemon filters unsupported protocols.
+	// This covers the Hysteria2 label even on builds without a QUIC registry.
+	catalog := d.subscriptions.fetcher.Fetch(t.Context(), source)
+	if len(catalog.Nodes) != len(wantNames) || catalog.Nodes[5].Name != wantNames[5] {
+		t.Fatal("provider catalog did not mask the Hysteria2 credential")
+	}
+	if !validSubscriptionNodes(t.Context(), catalog.Nodes[5:]) {
+		wantNames = wantNames[:5]
+	}
 	preview := d.PreviewSubscriptionDetails(t.Context(), source).Status
-	wantNames := []string{"Node 1", "Node 2", "Node 3", "Node 4", "Node 5", "Safe region"}
 	if len(preview.Nodes) != len(wantNames) {
 		t.Fatalf("expected %d valid preview nodes, got %d", len(wantNames), len(preview.Nodes))
 	}
@@ -61,7 +70,7 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 		t.Errorf("Setup preview returned HTTP %d or omitted the safe node names", checked.Code)
 	}
 	for _, private := range labels {
-		if strings.Contains(body, private) {
+		if private != "" && strings.Contains(body, private) {
 			t.Error("Setup preview disclosed a node's dial credential")
 		}
 	}
@@ -92,7 +101,10 @@ func TestSubscriptionNodeCredentialsStayOutOfCatalogViews(t *testing.T) {
 	assertViews()
 	// Recreate a snapshot from before the catalog-name protection existed.
 	state := d.subscriptions.states[source.ID]
-	for i := 2; i < len(labels); i++ {
+	for i := 2; i < len(state.snapshot.Nodes); i++ {
+		if labels[i] == "" {
+			continue
+		}
 		node := &state.snapshot.Nodes[i]
 		node.Link, _, _ = strings.Cut(node.Link, "#")
 		node.Name = "Legacy " + labels[i]
