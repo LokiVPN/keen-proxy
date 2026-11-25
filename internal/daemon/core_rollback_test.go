@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/netfilter"
 )
@@ -97,7 +98,7 @@ func assertProtectedWatchdogRecovery(t *testing.T, d *Daemon, runner *applyCance
 	// Check the packet path at each command boundary, including a successful
 	// chain restore followed by a failed DNS jump insertion or verification.
 	gap := false
-	runner.observe = func() {
+	runner.observe = func(_, _ string, _ ...string) {
 		if (!runner.jumps[tcp] && !runner.drops("FORWARD", forwardDrop)) ||
 			(!runner.jumps[dns] && (!dropsDNS("INPUT") || !dropsDNS("FORWARD"))) {
 			gap = true
@@ -196,8 +197,31 @@ func TestWatchdogClearsGuardAfterVerifiedRecovery(t *testing.T) {
 		t.Fatalf("expected candidate and rollback restore failures, got %v", err)
 	}
 	runner.loseDNSAtGuardRemoval = true
+	commands := 0
+	runner.observe = func(input, name string, args ...string) {
+		if runner.loseDNSAtGuardRemoval || commands == 3 {
+			return
+		}
+		commands++
+		switch commands {
+		case 1:
+			if name != "iptables-restore" || !strings.HasPrefix(input, "*filter\n") || runner.drops("INPUT", rollbackDNSDrop) {
+				t.Error("DNS jump loss was not injected into the filter-only commit that removed the drops")
+			}
+		case 2:
+			if name != "iptables" || len(args) < 7 || args[2] != "nat" || args[3] != "-C" || args[4] != "PREROUTING" || args[6] != netfilter.ChainDNS {
+				t.Errorf("first command after the unprotected commit did not check the DNS jump: %s %v", name, args)
+			}
+		case 3:
+			if name != "iptables-restore" || !strings.HasPrefix(input, "*filter\n") ||
+				!runner.drops("INPUT", "-p tcp --dport 53"+newOriginalDrop) || !runner.drops("INPUT", rollbackDNSDrop) {
+				t.Error("failed DNS probe did not immediately restore both INPUT DNS drops")
+			}
+		}
+	}
 	d.watch(t.Context())
-	if status := d.Status(t.Context()); runner.loseDNSAtGuardRemoval || status.Firewall || status.Restored != 0 ||
+	runner.observe = nil
+	if status := d.Status(t.Context()); commands != 3 || status.Firewall || status.Restored != 0 ||
 		!runner.drops("INPUT", rollbackDNSDrop) {
 		t.Fatal("a DNS jump loss during guard removal did not re-arm protection before retry")
 	}
@@ -225,6 +249,49 @@ func TestWatchdogGuardsAnOrdinaryDNSOnlyLoss(t *testing.T) {
 	d.watch(t.Context())
 	if status := d.Status(t.Context()); !status.Firewall || status.Restored != 1 || strings.Contains(runner.filterRules, "-j DROP") {
 		t.Fatal("DNS-only recovery left temporary drops after verifying the restored jump")
+	}
+}
+
+func TestWatchdogRetriesDNSLossAfterInsertion(t *testing.T) {
+	for _, tc := range []struct {
+		name, outcome string
+		losses        int
+	}{
+		{"one-shot loss", "restored", 1},
+		{"loss on both attempts", "verify_failed", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := newRecoveryTestFirewall()
+			d := startRollbackGuardFixture(t, runner)
+			dns := [3]string{"nat", "PREROUTING", netfilter.ChainDNS}
+			delete(runner.jumps, dns)
+			runner.dnsLossesAfterInsert = tc.losses
+			d.watch(t.Context())
+
+			var event *journal.FirewallEvent
+			for _, entry := range d.Journal(journal.Audit).Find(journal.Query{}, nil).Entries {
+				if entry.Firewall != nil {
+					event = entry.Firewall
+					break
+				}
+			}
+			if event == nil || event.Outcome != tc.outcome || event.ApplyError != "" {
+				t.Fatalf("firewall outcome = %+v, want %s without an apply error", event, tc.outcome)
+			}
+			if runner.dnsLossesAfterInsert != 0 {
+				t.Fatal("watchdog did not consume the injected DNS jump losses in one recovery")
+			}
+			status := d.Status(t.Context())
+			if tc.losses == 1 {
+				if event.After != nil || !status.Firewall || status.Restored != 1 || !runner.jumps[dns] ||
+					strings.Contains(runner.filterRules, "-j DROP") {
+					t.Fatal("one-shot jump loss did not recover and clear the drops on the bounded retry")
+				}
+			} else if event.After == nil || event.After.Target != netfilter.ChainDNS || status.Firewall || status.Restored != 0 ||
+				runner.jumps[dns] || !runner.drops("INPUT", rollbackDNSDrop) {
+				t.Fatal("persistent verification failure lost the failed DNS probe or the active guard")
+			}
+		})
 	}
 }
 
@@ -266,12 +333,13 @@ type applyCancellationFirewall struct {
 	loseDNSOnCheck        bool
 	rebuildDuringRelease  bool
 	loseDNSAtGuardRemoval bool
-	observe               func()
+	dnsLossesAfterInsert  int
+	observe               func(input, name string, args ...string)
 }
 
 func (r *applyCancellationFirewall) Run(ctx context.Context, input, name string, args ...string) error {
 	if r.observe != nil {
-		defer r.observe()
+		defer r.observe(input, name, args...)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -301,6 +369,10 @@ func (r *applyCancellationFirewall) Run(ctx context.Context, input, name string,
 	}
 	if err := r.recoveryFirewall.Run(ctx, input, name, args...); err != nil {
 		return err
+	}
+	if r.dnsLossesAfterInsert > 0 && name == "iptables" && args[3] == "-I" && args[len(args)-1] == netfilter.ChainDNS {
+		r.dnsLossesAfterInsert--
+		delete(r.jumps, [3]string{"nat", "PREROUTING", netfilter.ChainDNS})
 	}
 	if _, rules, found := strings.Cut(input, "*filter\n"); found {
 		if r.loseDNSAtGuardRemoval && strings.Contains(r.filterRules, "-j DROP") && !strings.Contains(rules, "-j DROP") {

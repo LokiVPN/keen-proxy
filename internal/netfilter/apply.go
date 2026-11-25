@@ -59,30 +59,42 @@ func (f *Firewall) Apply(ctx context.Context, p Plan) error {
 
 // ApplyProtected assumes Protect has installed the rollback guard. It loads
 // interception before changing the filter, which still drops traffic that
-// would bypass the replacement plan. The caller verifies the final install.
-func (f *Firewall) ApplyProtected(ctx context.Context, p Plan) error {
+// would bypass the replacement plan. A failed jump check is a verification
+// result so the caller can retry after a firmware rebuild.
+func (f *Firewall) ApplyProtected(ctx context.Context, p Plan) (*CheckFailure, error) {
 	var rules strings.Builder
 	p.renderPrerouting(&rules)
 	if err := f.restore(ctx, rules.String()); err != nil {
-		return err
+		return nil, err
 	}
 	if err := f.installJumps(ctx, p.preroutingJumps()); err != nil {
-		return err
+		return nil, err
 	}
 	if failure := f.Check(ctx, p); failure != nil {
-		return fmt.Errorf("verify interception before guarded handoff: %s", failure.Error)
+		return failure, nil
 	}
 	rules.Reset()
 	p.renderFilter(&rules, true)
-	return f.restore(ctx, rules.String())
+	return nil, f.restore(ctx, rules.String())
 }
 
-// ReleaseProtection restores the ordinary filter after the caller verifies
-// the interception entry jumps.
-func (f *Firewall) ReleaseProtection(ctx context.Context, p Plan) error {
+// ReleaseProtection restores the ordinary filter and immediately verifies
+// the entry jumps. Probe DNS first because another local resolver can receive
+// queries as soon as the drops are removed if that jump has disappeared.
+func (f *Firewall) ReleaseProtection(ctx context.Context, p Plan) (*CheckFailure, error) {
 	var rules strings.Builder
 	p.renderFilter(&rules, false)
-	return f.restore(ctx, rules.String())
+	jumps := p.Jumps()
+	for i, j := range jumps {
+		if j.To == ChainDNS {
+			jumps[0], jumps[i] = j, jumps[0]
+			break
+		}
+	}
+	if err := f.restore(ctx, rules.String()); err != nil {
+		return nil, err
+	}
+	return f.checkJumps(ctx, jumps), nil
 }
 
 // Protect installs temporary drops in the normal filter chains. DNSListen

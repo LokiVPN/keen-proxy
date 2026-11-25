@@ -37,25 +37,23 @@ func (d *Daemon) installFirewall(ctx context.Context) error {
 func (d *Daemon) applyFirewall(ctx context.Context, verify bool) (*netfilter.CheckFailure, error) {
 	f := d.opt.Firewall
 	guarded := d.planGuard != nil
+	var after *netfilter.CheckFailure
 	var err error
 	if !guarded {
 		err = f.Apply(ctx, d.plan)
 	} else if err = d.armFirewallGuard(ctx, d.plan.DNSListen); err == nil {
-		err = f.ApplyProtected(ctx, d.plan)
+		after, err = f.ApplyProtected(ctx, d.plan)
 	}
 	if err != nil {
 		d.planPending = true
-		return nil, err
+		return after, err
 	}
-	var after *netfilter.CheckFailure
-	if verify || guarded {
+	if after == nil && (verify || guarded) {
 		after = f.Check(ctx, d.plan)
 	}
 	if guarded {
 		if after == nil {
-			if err = f.ReleaseProtection(ctx, d.plan); err == nil {
-				after = f.Check(ctx, d.plan)
-			}
+			after, err = f.ReleaseProtection(ctx, d.plan)
 		}
 		if after != nil || err != nil {
 			d.planOn, d.planPending = false, true
