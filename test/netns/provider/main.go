@@ -2,7 +2,7 @@
 // HTTPS for integration tests. It writes a self-signed certificate for the
 // listen address, which KeenProxy trusts through SSL_CERT_FILE:
 //
-//	provider 198.51.100.2:8444 ca.pem nodes.txt profile.json [/path nodes.txt profile.json]...
+//	provider [-dat-dir dir] 198.51.100.2:8444 ca.pem nodes.txt profile.json [/path nodes.txt profile.json]...
 package main
 
 import (
@@ -14,28 +14,37 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"flag"
 	"log"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 // main serves the default /sub and any additional fixtures with one certificate.
 func main() {
-	if len(os.Args) < 5 || (len(os.Args)-5)%3 != 0 {
-		log.Fatal("usage: provider listen cert nodes profile [path nodes profile]...")
+	datDir := flag.String("dat-dir", "", "serve .dat fixtures from this directory at /data/")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 4 || (len(args)-4)%3 != 0 {
+		log.Fatal("usage: provider [-dat-dir dir] listen cert nodes profile [path nodes profile]...")
 	}
-	listen, certPath := os.Args[1], os.Args[2]
+	listen, certPath := args[0], args[1]
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		log.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	serveSubscription(mux, "/sub", os.Args[3], os.Args[4])
-	for i := 5; i < len(os.Args); i += 3 {
-		serveSubscription(mux, os.Args[i], os.Args[i+1], os.Args[i+2])
+	serveSubscription(mux, "/sub", args[2], args[3])
+	for i := 4; i < len(args); i += 3 {
+		serveSubscription(mux, args[i], args[i+1], args[i+2])
+	}
+	if *datDir != "" {
+		mux.Handle("GET /data/", datHandler(*datDir))
 	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -53,6 +62,19 @@ func main() {
 		log.Printf("%s %s", r.Method, r.URL.Path)
 		mux.ServeHTTP(w, r)
 	})))
+}
+
+// datHandler opens the file for each request so the workload can model a
+// missing file becoming available at the same URL before a scheduled retry.
+func datHandler(dir string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name, ok := strings.CutPrefix(r.URL.Path, "/data/")
+		if !ok || filepath.Base(name) != name || !strings.HasSuffix(name, ".dat") {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(dir, name))
+	})
 }
 
 // serveSubscription freezes the nodes and routing header from fixture files.

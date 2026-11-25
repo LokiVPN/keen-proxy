@@ -1,0 +1,49 @@
+package main
+
+import (
+	"log"
+	"os"
+	"runtime/metrics"
+	"strconv"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+// The provider-only build overlays this file into the daemon. A private
+// time series gives heap samples even when no natural GC falls in a phase.
+func init() {
+	path := os.Getenv("KEENPROXY_FIXTURE_HEAP")
+	if path == "" {
+		return
+	}
+	output, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		log.Fatal(err)
+	}
+	go writeHeapSamples(output)
+}
+
+func writeHeapSamples(output *os.File) {
+	samples := []metrics.Sample{
+		{Name: "/memory/classes/heap/objects:bytes"},
+		{Name: "/gc/heap/allocs:bytes"},
+		{Name: "/gc/gomemlimit:bytes"},
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	for range ticker.C {
+		metrics.Read(samples)
+		var now unix.Timespec
+		if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+			log.Fatal(err)
+		}
+		var buf [128]byte
+		line := strconv.AppendInt(buf[:0], now.Nano(), 10)
+		for _, sample := range samples {
+			line = strconv.AppendUint(append(line, ','), sample.Value.Uint64(), 10)
+		}
+		if _, err := output.Write(append(line, '\n')); err != nil {
+			log.Fatal(err)
+		}
+	}
+}

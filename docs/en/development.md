@@ -75,6 +75,22 @@ If a local comparison fails while the **Memory regression** job passes:
 3. Investigate the failed phase and distinguish a reproducible increase from an identified environmental cause. If such a cause is corrected, record a separate measurement and retain the original failure and explanation. Do not retry merely until a run passes, force GC, or change thresholds/baseline to hide the result.
 4. If the discrepancy remains unexplained, keep the local build blocked and review the evidence. Do not bypass the local gate with `-o`, `build-router-ci`, `build-router-lite-ci`, direct build commands, or a previously successful CI result. A passing **Router builds** check does not certify memory.
 
+### Provider rules memory
+
+Run the candidate-only provider workload from the repository root with Docker available.
+
+```sh
+sh test/memory/run.sh --provider
+```
+
+Each size runs twice with a fresh candidate daemon, first with `provider_rules` on and then with `provider_rules.off: true`. Both use the same synthetic HTTPS subscription with a Happ routing header, two WireGuard tunnels, and fixture data. The realistic-size geosite and GeoIP files are 10,900,000 and 16,300,000 bytes respectively, with 20,000 referenced domains and 35,000 referenced prefixes. The limit files are exactly 16 MiB each, with 100,000 referenced domains and 200,000 referenced prefixes. The realistic wire sizes are rounded from published assets. [Geosite size](https://github.com/Loyalsoldier/v2ray-rules-dat/blob/release/geosite.dat) · [GeoIP size](https://github.com/Loyalsoldier/v2ray-rules-dat/blob/release/geoip.dat)
+
+The workload checks the first Apply with both downloads, a successful refresh that reuses the files, and an Apply against a fresh source URL with one file temporarily missing. The scheduled geo retry must restore that file without refetching the subscription. The rules-off control waits for the same retry interval. The watchdog must acknowledge 20 changes to a synthetic ARP table. A LAN client verifies replies for 4,096 distinct provider names while TCP and UDP payloads advance on both tunnels. With rules on, the DNS fallback file must contain all 4,096 answer addresses. With rules off, the file must be absent. A scheduled node failover must save the new selection while preserving the subscription payload and the saved configuration.
+
+The isolated container uses 2 GiB with swap disabled, a 2 CPU quota, and CPU affinity `0-1`. The measurement verifies the daemon's soft Go limit of 320 MiB. RSS and lifetime `VmHWM` must each stay strictly below 384 MiB. Procfs samples capture RSS, high-water RSS, and process CPU ticks at phase boundaries. A test-only sampler records current heap and cumulative allocations every 20 ms using Go runtime metrics without forcing GC. The report includes rules-on minus rules-off deltas for the paired phases. Heap and CPU deltas are diagnostic. Missing measurements, failed phase checks, process or container failure, and cleanup errors fail the run.
+
+Find the report at `.agents-work/memory-regression/run.*/results/provider/provider.json`, alongside container state, logs, and per-case artifacts with raw heap samples. The WireGuard comparison and the continuous AWG stress gate have their own commands and results.
+
 ### AWG memory stress
 
 `make memory-stress` (`sh test/memory/run.sh --stress`) is a separate gate. It builds only the current daemon and the test server, copies the fixture, and does not archive, build, or run the comparison reference. The result is not an input to the comparison report.
