@@ -70,16 +70,23 @@ func (f *Firewall) ApplyProtected(ctx context.Context, p Plan) error {
 		return err
 	}
 	if failure := f.Check(ctx, p); failure != nil {
-		return fmt.Errorf("verify interception before clearing rollback protection: %s", failure.Error)
+		return fmt.Errorf("verify interception before guarded handoff: %s", failure.Error)
 	}
 	rules.Reset()
-	p.GuardUnintercepted = true
-	p.renderFilter(&rules)
+	p.renderFilter(&rules, true)
 	return f.restore(ctx, rules.String())
 }
 
-// Protect guards the sources of the previous plan after a failed rollback.
-// It uses only the filter table and shares the normal filter hooks.
+// ReleaseProtection restores the ordinary filter after the caller verifies
+// the interception entry jumps.
+func (f *Firewall) ReleaseProtection(ctx context.Context, p Plan) error {
+	var rules strings.Builder
+	p.renderFilter(&rules, false)
+	return f.restore(ctx, rules.String())
+}
+
+// Protect installs temporary drops in the normal filter chains. DNSListen
+// is unset when the frontend is unavailable and cannot accept local DNS.
 func (f *Firewall) Protect(ctx context.Context, p Plan) error {
 	if err := f.restore(ctx, p.renderProtection()); err != nil {
 		return err

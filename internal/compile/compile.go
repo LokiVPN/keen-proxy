@@ -4,7 +4,6 @@ package compile
 
 import (
 	"encoding/json"
-	"fmt"
 	"maps"
 	"net"
 	"net/netip"
@@ -197,7 +196,7 @@ func Compile(in Input) (Output, error) {
 			DNSBypassSources:  dnsBypass,
 			Mode:              c.Intercept.Mode,
 			LAN:               c.LAN.Interface,
-			DNSPort:           mustPort(c.DNS.Listen),
+			DNSListen:         netip.MustParseAddrPort(c.DNS.Listen),
 			TCPPort:           c.Intercept.TCPPort,
 			UDPPort:           c.Intercept.UDPPort,
 			FWMark:            c.Intercept.FWMark,
@@ -775,15 +774,6 @@ func outboundTag(target string, tags map[string]string) string {
 		return t
 	}
 	return target
-}
-
-// mustPort relies on prior model validation and panics on an invalid listen address.
-func mustPort(addr string) uint16 {
-	ap, err := netip.ParseAddrPort(addr)
-	if err != nil {
-		panic(fmt.Sprintf("address %q was not checked by Validate: %v", addr, err))
-	}
-	return ap.Port()
 }
 
 // CountryRuleSet builds geoip-<code>.json with a nonmatching placeholder when

@@ -170,7 +170,7 @@ func TestPlanFromModel(t *testing.T) {
 	if len(p.Excluded) != 1 || p.Excluded[0].String() != "192.168.7.88" {
 		t.Errorf("Excluded = %v", p.Excluded)
 	}
-	if p.DNSPort != 5354 || p.LAN != "br0" {
+	if p.DNSListen.String() != "0.0.0.0:5354" || p.LAN != "br0" {
 		t.Errorf("plan: %+v", p)
 	}
 	found := false

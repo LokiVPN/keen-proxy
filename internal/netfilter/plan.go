@@ -25,14 +25,12 @@ const (
 // Plan contains interception inputs produced by internal/compile.
 type Plan struct {
 	BlockEncryptedDNS bool
-	// GuardUnintercepted retains the guarded recovery filter on later installs.
-	GuardUnintercepted bool
-	Mode               model.InterceptMode
-	LAN                string // client ingress interface, such as br0
-	DNSPort            uint16
-	TCPPort            uint16
-	UDPPort            uint16
-	FWMark             uint32
+	Mode              model.InterceptMode
+	LAN               string         // client ingress interface, such as br0
+	DNSListen         netip.AddrPort // effective frontend binding when used for recovery
+	TCPPort           uint16
+	UDPPort           uint16
+	FWMark            uint32
 	// DNSBypassSources exempts only LAN TCP/UDP destination port 53.
 	DNSBypassSources []netip.Addr
 	// Sources lists participating addresses and networks; other devices bypass
@@ -93,7 +91,7 @@ func filterJumps() []Jump {
 func (p Plan) Render() string {
 	var b strings.Builder
 	p.renderPrerouting(&b)
-	p.renderFilter(&b)
+	p.renderFilter(&b, false)
 	return b.String()
 }
 
@@ -118,7 +116,7 @@ func (p Plan) renderPrerouting(b *strings.Builder) {
 		}
 		for _, s := range p.Sources {
 			for _, proto := range []string{"udp", "tcp"} {
-				w("-A %s %s -s %s -p %s -m %s --dport 53 -j REDIRECT --to-ports %d", ChainDNS, in, s, proto, proto, p.DNSPort)
+				w("-A %s %s -s %s -p %s -m %s --dport 53 -j REDIRECT --to-ports %d", ChainDNS, in, s, proto, proto, p.DNSListen.Port())
 			}
 		}
 	}
@@ -129,8 +127,12 @@ func (p Plan) renderPrerouting(b *strings.Builder) {
 		for _, e := range p.Excluded {
 			w("-A %s -s %s -j RETURN", ChainTCP, host(e))
 		}
-		// DNS owns port 53 regardless of the order of the two NAT hooks.
-		w("-A %s %s -p tcp -m tcp --dport 53 -j RETURN", ChainTCP, in)
+		for _, source := range p.DNSBypassSources {
+			w("-A %s %s -s %s -p tcp -m tcp --dport 53 -j RETURN", ChainTCP, in, host(source))
+		}
+		// Give the DNS rules priority even when the TCP hook is first. If
+		// the DNS chain did not redirect, retain ordinary TCP interception.
+		w("-A %s %s -p tcp -m tcp --dport 53 -j %s", ChainTCP, in, ChainDNS)
 		for _, s := range p.Sources {
 			w("-A %s %s -s %s -p tcp -j REDIRECT --to-ports %d", ChainTCP, in, s, p.TCPPort)
 		}
@@ -159,7 +161,7 @@ func (p Plan) renderPrerouting(b *strings.Builder) {
 	}
 }
 
-func (p Plan) renderFilter(b *strings.Builder) {
+func (p Plan) renderFilter(b *strings.Builder, recovery bool) {
 	w := func(format string, a ...any) { fmt.Fprintf(b, format+"\n", a...) }
 	in := "-i " + p.LAN
 	w("*filter")
@@ -182,79 +184,58 @@ func (p Plan) renderFilter(b *strings.Builder) {
 	for _, s := range p.Sources {
 		w("-A %s %s -s %s -p udp -m udp --dport 443 -j REJECT --reject-with icmp-port-unreachable", ChainQUIC, in, s)
 	}
-	if p.GuardUnintercepted && len(p.Sources) > 0 {
-		p.renderHandoffDrops(b)
+	if recovery && len(p.Sources) > 0 {
+		p.renderRecoveryDrops(b)
 	}
 	w("COMMIT")
 }
 
-// renderHandoffDrops keeps eligible packets from taking a direct path if
-// firmware replaces prerouting between the entry checks and the filter commit.
+// renderRecoveryDrops protects new LAN flows while prerouting is unverified.
 // A successfully intercepted application packet never reaches FORWARD.
-func (p Plan) renderHandoffDrops(b *strings.Builder) {
+func (p Plan) renderRecoveryDrops(b *strings.Builder) {
 	w := func(format string, a ...any) { fmt.Fprintf(b, format+"\n", a...) }
 	in := "-i " + p.LAN
-	dnsChain := ChainDNSGuard
-	if p.DNSPort == 53 {
-		// A live frontend on port 53 can receive local DNS on INPUT. Only
-		// forwarded port 53 packets bypass that frontend in this case.
-		dnsChain = ChainQUIC
-	} else if !p.BlockEncryptedDNS {
-		for _, addr := range p.Excluded {
-			w("-A %s %s -s %s -j RETURN", ChainDNSGuard, in, host(addr))
+	const originalNew = "-m conntrack --ctstate NEW --ctdir ORIGINAL"
+	front := p.DNSListen.Addr().Unmap()
+	for _, chain := range []string{ChainDNSGuard, ChainQUIC} {
+		// A wildcard frontend on port 53 already handles all local DNS.
+		if chain == ChainDNSGuard && p.DNSListen.Port() == 53 && front.IsUnspecified() {
+			continue
 		}
-	}
-	for _, addr := range p.DNSBypassSources {
-		for _, proto := range []string{"tcp", "udp"} {
-			w("-A %s %s -s %s -p %s --dport 53 -j RETURN", dnsChain, in, host(addr), proto)
+		if chain == ChainDNSGuard && !p.BlockEncryptedDNS {
+			for _, addr := range p.Excluded {
+				w("-A %s %s -s %s -j RETURN", chain, in, host(addr))
+			}
 		}
-	}
-	for _, source := range p.Sources {
+		// DNAT is a conntrack virtual state. Exempt it before matching NEW
+		// because a newly destination-translated flow has both states.
+		w("-A %s %s -m conntrack --ctstate DNAT -j RETURN", chain, in)
 		for _, proto := range []string{"tcp", "udp"} {
-			w("-A %s %s -s %s -p %s --dport 53 -j DROP", dnsChain, in, source, proto)
+			if chain == ChainDNSGuard && p.DNSListen.Port() == 53 && front.Is4() {
+				w("-A %s %s -d %s -p %s --dport 53 -j RETURN", chain, in, host(front), proto)
+			}
+			for _, addr := range p.DNSBypassSources {
+				w("-A %s %s -s %s -p %s --dport 53 -j RETURN", chain, in, host(addr), proto)
+			}
+			for _, source := range p.Sources {
+				w("-A %s %s -s %s -p %s --dport 53 %s -j DROP", chain, in, source, proto, originalNew)
+			}
 		}
 	}
 	for _, dst := range p.Bypass {
 		w("-A %s -d %s -j RETURN", ChainQUIC, dst)
 	}
 	for _, source := range p.Sources {
-		w("-A %s %s -s %s -p tcp -m tcp ! --dport 53 -j DROP", ChainQUIC, in, source)
+		w("-A %s %s -s %s -p tcp %s -j DROP", ChainQUIC, in, source, originalNew)
 		if p.Mode == model.InterceptTProxy {
-			w("-A %s %s -s %s -p udp -m udp ! --dport 53 -j DROP", ChainQUIC, in, source)
+			w("-A %s %s -s %s -p udp %s -j DROP", ChainQUIC, in, source, originalNew)
 		}
 	}
 }
 
-// renderProtection blocks public forwarding and DNS for covered clients if
-// the previous interception plan could not be restored. LAN management and
-// explicitly exempt devices and DNS sources keep their existing access.
 func (p Plan) renderProtection() string {
 	var b strings.Builder
-	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
-	w("*filter")
-	w(":%s - [0:0]", ChainQUIC)
-	w(":%s - [0:0]", ChainDNSGuard)
-	in := "-i " + p.LAN
-	for _, addr := range p.Excluded {
-		w("-A %s %s -s %s -j RETURN", ChainQUIC, in, host(addr))
-		w("-A %s %s -s %s -j RETURN", ChainDNSGuard, in, host(addr))
-	}
-	for _, dst := range p.Bypass {
-		w("-A %s -d %s -j RETURN", ChainQUIC, dst)
-	}
-	for _, addr := range p.DNSBypassSources {
-		w("-A %s %s -s %s -j RETURN", ChainDNSGuard, in, host(addr))
-		for _, proto := range []string{"udp", "tcp"} {
-			w("-A %s %s -s %s -p %s --dport 53 -j RETURN", ChainQUIC, in, host(addr), proto)
-		}
-	}
-	for _, src := range p.Sources {
-		w("-A %s %s -s %s -j DROP", ChainQUIC, in, src)
-		for _, proto := range []string{"udp", "tcp"} {
-			w("-A %s %s -s %s -p %s --dport 53 -j DROP", ChainDNSGuard, in, src, proto)
-		}
-	}
-	w("COMMIT")
+	p.renderFilter(&b, true)
 	return b.String()
 }
 

@@ -790,7 +790,7 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	// Mode changes retire the old prerouting chains. Keep recovery drops
 	// attached until the replacement can take over.
 	if hadPlan && d.plan.Mode != out.Plan.Mode {
-		d.removeFirewall(d.planGuard != nil || d.plan.GuardUnintercepted)
+		d.removeFirewall(d.planGuard != nil)
 	}
 	d.setFirewallPlan(out.Plan)
 	if err := d.installFirewall(ctx); err != nil {
@@ -934,8 +934,13 @@ func (d *Daemon) startDNS() error {
 	}
 	cfg.OnRoute = d.recordDNSRoute
 	cfg.OnBlock = d.recordDNSBlock
-	d.dns = dnsfront.New(cfg)
-	return d.dns.Start()
+	frontend := dnsfront.New(cfg)
+	if err := frontend.Start(); err != nil {
+		_ = frontend.Close()
+		return err
+	}
+	d.dns = frontend
+	return nil
 }
 
 // watch refreshes neighbor addresses and restores missing interception rules.

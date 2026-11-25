@@ -40,7 +40,8 @@ for row in 'nat PREROUTING KEENPROXY_DNS' 'nat PREROUTING KEENPROXY_TCP' \
     set -- $row
     while /opt/sbin/iptables -w -t "$1" -D "$2" -j "$3" 2>/dev/null; do :; done
 done
-for row in 'nat KEENPROXY_DNS' 'nat KEENPROXY_TCP' \
+# The TCP chain can jump to DNS, so remove it before deleting DNS.
+for row in 'nat KEENPROXY_TCP' 'nat KEENPROXY_DNS' \
            'filter KEENPROXY_DNS_GUARD' 'filter KEENPROXY_QUIC'; do
     set -- $row
     if /opt/sbin/iptables -w -t "$1" -S "$2" >/dev/null 2>&1; then
