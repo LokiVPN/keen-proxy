@@ -98,23 +98,74 @@ func generate(dir string, size fixtureSize) error {
 	return os.WriteFile(filepath.Join(dir, "hosts"), []byte(hosts.String()), 0o600)
 }
 
-func verifyDNS(server, blockAnswer string) error {
+type dnsEvidence struct {
+	VerifiedNames int              `json:"verified_names"`
+	BlockAnswer   string           `json:"block_answer"`
+	Tunnels       []tunnelEvidence `json:"tunnels"`
+}
+
+// awaitDNSStart lets the controller confirm both sets of active TCP streams
+// using daemon stats after warmup, before issuing the measured query schedule.
+func awaitDNSStart(dir string) error {
+	if err := os.WriteFile(filepath.Join(dir, "dns-ready"), nil, 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, err := os.Stat(filepath.Join(dir, "dns-start"))
+		if err == nil || !os.IsNotExist(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for two-tunnel readiness check")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func verifyDNS(server, blockAnswer, dir string, targets []string) (dnsEvidence, error) {
+	result := dnsEvidence{BlockAnswer: blockAnswer}
+	tunnels := make([]*tunnel, 0, len(targets))
+	for _, target := range targets {
+		t, err := openTunnel(target)
+		if err != nil {
+			return result, err
+		}
+		defer t.close()
+		tunnels = append(tunnels, t)
+	}
+	for _, t := range tunnels {
+		if err := t.exchange(0); err != nil {
+			return result, err
+		}
+	}
+	if err := awaitDNSStart(dir); err != nil {
+		return result, err
+	}
 	client := dns.Client{Timeout: 2 * time.Second}
 	conn, err := client.Dial(server)
 	if err != nil {
-		return err
+		return result, err
 	}
 	defer conn.Close()
 	for i := range dnsNames {
 		if err := checkAnswer(&client, conn, domain(i), answer(i).String()); err != nil {
-			return err
+			return result, err
 		}
-		// Pace the burst over several TCP/UDP traffic counter publications.
-		if (i+1)%64 == 0 {
+		result.VerifiedNames++
+		if (i+1)%dnsBatch == 0 {
+			for _, t := range tunnels {
+				if err := t.exchange((i + 1) / dnsBatch); err != nil {
+					return result, err
+				}
+			}
 			time.Sleep(40 * time.Millisecond)
 		}
 	}
-	return checkAnswer(&client, conn, blockedName, blockAnswer)
+	for _, t := range tunnels {
+		result.Tunnels = append(result.Tunnels, t.evidence)
+	}
+	return result, checkAnswer(&client, conn, blockedName, blockAnswer)
 }
 
 func checkAnswer(client *dns.Client, conn *dns.Conn, name, address string) error {
@@ -145,13 +196,17 @@ func main() {
 				}
 				return
 			}
-		case "dns":
-			if err := verifyDNS(os.Args[2], os.Args[3]); err != nil {
-				log.Fatal(err)
-			}
-			fmt.Println(dnsNames)
-			return
 		}
 	}
-	log.Fatal("usage: providerload generate real|limit directory or providerload dns server expected-block-answer")
+	if len(os.Args) == 7 && os.Args[1] == "dns" {
+		result, err := verifyDNS(os.Args[2], os.Args[3], os.Args[4], os.Args[5:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	log.Fatal("usage: providerload generate real|limit directory or providerload dns server block-answer directory tunnel1 tunnel2")
 }

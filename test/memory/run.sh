@@ -451,8 +451,20 @@ import sys
 from pathlib import Path
 
 root, output = map(Path, sys.argv[1:])
+daemon = root / "internal/daemon"
+snapshots = daemon / "subscription_snapshots.go"
+source = snapshots.read_text()
+# Checkpoint after marshaling, while the encoded buffer is still live, and
+# before the fixture can observe the saved snapshot.
+anchor = ("\traw, err := json.Marshal(snapshots)\n"
+          "\tif err != nil {\n\t\treturn errSubscriptionSnapshot\n\t}\n")
+if source.count(anchor) != 1:
+    raise SystemExit("provider heap checkpoint could not locate the snapshot write")
+measured = output / snapshots.name
+measured.write_text(source.replace(anchor, anchor + "\trecordProviderSnapshotHeap()\n"))
 (output / "provider-overlay.json").write_text(json.dumps({"Replace": {
-    str(root / "cmd/keenproxy/provider_fixture_metrics.go"): str(output / "fixture/provider_metrics.go.in"),
+    str(daemon / "provider_fixture_metrics.go"): str(output / "fixture/provider_metrics.go.in"),
+    str(snapshots): str(measured),
 }}))
 PY
     set -- -overlay "$OUT/provider-overlay.json"
@@ -478,12 +490,14 @@ import hashlib
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
+binaries = sys.argv[2:]
+provider_assets = {"provider.py", "provider_metrics.go.in"}
 with (root / 'manifest.txt').open('a') as manifest:
-    for binary in sys.argv[2:]:
+    for binary in binaries:
         digest = hashlib.sha256((root / 'bin' / binary).read_bytes()).hexdigest()
         manifest.write(f'{binary}_sha256={digest}\n')
     for path in sorted((root / 'fixture').iterdir()):
-        if path.is_file():
+        if path.is_file() and ("provider" in binaries or path.name not in provider_assets):
             manifest.write(f'fixture_{path.name}_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}\n')
 PY
 

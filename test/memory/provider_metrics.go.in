@@ -1,17 +1,23 @@
-package main
+package daemon
 
 import (
 	"log"
 	"os"
 	"runtime/metrics"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// The provider-only build overlays this file into the daemon. A private
-// time series gives heap samples even when no natural GC falls in a phase.
+var providerHeap struct {
+	mu     sync.Mutex
+	output *os.File
+}
+
+// The provider-only build overlays this collector into the daemon. Take
+// periodic samples and checkpoints at the production snapshot save boundary.
 func init() {
 	path := os.Getenv("KEENPROXY_FIXTURE_HEAP")
 	if path == "" {
@@ -21,29 +27,44 @@ func init() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	go writeHeapSamples(output)
+	providerHeap.output = output
+	go func() {
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			writeProviderHeap(0)
+		}
+	}()
 }
 
-func writeHeapSamples(output *os.File) {
+// recordProviderSnapshotHeap observes the encoded buffer before it is published.
+func recordProviderSnapshotHeap() {
+	if providerHeap.output != nil {
+		writeProviderHeap(1)
+	}
+}
+
+// Serialize reads and writes so concurrent samples land in timestamp order.
+func writeProviderHeap(snapshot uint64) {
+	providerHeap.mu.Lock()
+	defer providerHeap.mu.Unlock()
 	samples := []metrics.Sample{
 		{Name: "/memory/classes/heap/objects:bytes"},
 		{Name: "/gc/heap/allocs:bytes"},
 		{Name: "/gc/gomemlimit:bytes"},
 	}
-	ticker := time.NewTicker(20 * time.Millisecond)
-	for range ticker.C {
-		metrics.Read(samples)
-		var now unix.Timespec
-		if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
-			log.Fatal(err)
-		}
-		var buf [128]byte
-		line := strconv.AppendInt(buf[:0], now.Nano(), 10)
-		for _, sample := range samples {
-			line = strconv.AppendUint(append(line, ','), sample.Value.Uint64(), 10)
-		}
-		if _, err := output.Write(append(line, '\n')); err != nil {
-			log.Fatal(err)
-		}
+	var now unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+		log.Fatal(err)
+	}
+	metrics.Read(samples)
+	var buf [128]byte
+	line := strconv.AppendInt(buf[:0], now.Nano(), 10)
+	for _, sample := range samples {
+		line = strconv.AppendUint(append(line, ','), sample.Value.Uint64(), 10)
+	}
+	line = strconv.AppendUint(append(line, ','), snapshot, 10)
+	if _, err := providerHeap.output.Write(append(line, '\n')); err != nil {
+		log.Fatal(err)
 	}
 }

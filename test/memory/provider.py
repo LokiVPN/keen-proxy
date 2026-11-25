@@ -27,6 +27,7 @@ NODE_PORTS = (8445, 8446)
 NEIGHBOR_MAC = "02:00:00:00:00:42"
 NEIGHBOR_CHANGES = 20
 DNS_NAMES = 4096
+DNS_PUBLICATION_SECONDS = 3
 GO_LIMIT = 320 * 1024 * 1024
 
 
@@ -72,25 +73,30 @@ def check_rules(snapshot, size, enabled, expect_ip=True):
             "domains": len(site["suffix"]), "prefixes": len(ip.get("cidr", []))}
 
 
-def phase_metrics(proc, heap, ticks):
+def phase_metrics(proc, heap, ticks, window, snapshot_required):
     start, end = proc[0], proc[-1]
-    before = [row for row in heap if row[0] <= start["time_ns"]]
-    during = [row for row in heap if start["time_ns"] < row[0] <= end["time_ns"]]
-    require(before and during, "missing heap measurements at the phase boundary")
+    started, finished = window
+    before = [row for row in heap if row[0] < started]
+    during = [row for row in heap if started <= row[0] <= finished]
+    require(before and during, "missing heap measurements inside the operation or before it")
     heap = before[-1:] + during
-    require(all(0 < row[1] <= row[2] and row[3] == GO_LIMIT for row in heap),
+    require(all(len(row) == 5 and 0 < row[1] <= row[2] and row[3] == GO_LIMIT and row[4] in (0, 1) for row in heap),
             "invalid heap sample or runtime Go limit differs from 320 MiB")
     require(all(a[0] < b[0] and a[2] <= b[2] for a, b in zip(heap, heap[1:])),
             "heap time or allocation counter went backwards")
+    checkpoints = sum(row[4] for row in during)
+    require(not snapshot_required or checkpoints > 0, "missing heap checkpoint during snapshot save")
     require(not any(stress.exceeds_rss(row) for row in proc), "daemon RSS or VmHWM reached 384 MiB")
-    elapsed = (end["time_ns"] - start["time_ns"]) / 1_000_000_000
+    elapsed = (finished - started) / 1_000_000_000
     cpu = end["cpu_ticks"] - start["cpu_ticks"]
-    require(elapsed > 0 and cpu >= 0 and end["hwm_bytes"] >= start["hwm_bytes"],
+    require(start["time_ns"] <= started < finished <= end["time_ns"]
+            and cpu >= 0 and end["hwm_bytes"] >= start["hwm_bytes"],
             "invalid process metric interval")
     return {**stress.summarize(proc, elapsed, cpu, ticks),
             "heap_start_bytes": heap[0][1], "heap_end_bytes": heap[-1][1],
-            "heap_peak_bytes": max(row[1] for row in heap),
-            "heap_allocated_bytes": heap[-1][2] - heap[0][2], "heap_samples": len(during)}
+            "heap_peak_bytes": max(row[1] for row in during),
+            "heap_allocated_bytes": heap[-1][2] - heap[0][2],
+            "heap_samples": len(during), "heap_snapshot_samples": checkpoints}
 
 
 class Measurements:
@@ -106,27 +112,25 @@ class Measurements:
         scenario.wait_for(lambda: self.heap_file.stat().st_size, 5, "candidate heap sampler")
 
     def sample(self):
-        return {**self.memory(), "cpu_ticks": self.cpu(), "time_ns": time.monotonic_ns()}
+        cpu = self.cpu()
+        return {**self.memory(), "cpu_ticks": cpu, "time_ns": time.monotonic_ns()}
 
     @contextmanager
-    def phase(self, name):
+    def phase(self, name, snapshot_required=False):
         proc = self.result["proc_samples"][name] = [self.sample()]
+        window = self.result["operation_windows"][name] = [time.monotonic_ns()]
         try:
             yield
         except BaseException:
+            window.append(time.monotonic_ns())
             stress.attempt(lambda: proc.append(self.sample()), self.result, "partial_measurement_error")
             raise
-        action_ended = time.monotonic_ns()
-        # Give short operations at least one in-window runtime sample.
-        time.sleep(stress.SAMPLE_INTERVAL)
+        window.append(time.monotonic_ns())
         proc.append(self.sample())
         # The daemon is still sampling. Only parse complete lines.
         lines = self.heap_file.read_text().rpartition("\n")[0].splitlines()
         heap = [tuple(map(int, line.split(","))) for line in lines]
-        self.result["phases"][name] = {
-            **phase_metrics(proc, heap, self.ticks),
-            "operation_seconds": (action_ended - proc[0]["time_ns"]) / 1_000_000_000,
-        }
+        self.result["phases"][name] = phase_metrics(proc, heap, self.ticks, window, snapshot_required)
 
 
 class ProviderFixture(scenario.Fixture):
@@ -251,37 +255,52 @@ class ProviderFixture(scenario.Fixture):
             evidence.append(scenario.wait_for(compiled, 10, f"watchdog recompile for {address}"))
 
     def dns_under_load(self, evidence):
-        traffic = self.start_traffic()
-        before = json.loads(traffic[1].read_bytes())
         block = "0.0.0.0" if self.enabled else "198.19.0.1"
-        received = int(self.execute(self.client, self.args.load, "dns", "192.168.77.1:53", block, timeout=50))
-        after = json.loads(traffic[1].read_bytes())
-        scenario.validate_traffic(after, 32)
-        scenario.active_connections(self.stats(), loaded=True)
-        self.udp_progress.observe(after)
-        for protocol in ("tcp_bytes", "udp_bytes"):
-            require(all(after[protocol][tag] > before[protocol][tag] for tag in scenario.TAGS),
-                    "tunnel traffic did not advance during the DNS workload")
-        require(received == DNS_NAMES, "could not verify all 4096 DNS names")
-        evidence.update(verified_names=received, block_answer=block, traffic_before=before, traffic_after=after)
+        targets = [f"{target}:{scenario.PORT}" for target in scenario.TARGETS]
+        label = "provider-dns"
+        workload = self.launch(self.client, label, self.args.load, "dns", "192.168.77.1:53", block,
+                               self.directory, *targets)
+
+        def ready():
+            self.healthy()
+            if not (self.directory / "dns-ready").exists():
+                return False
+            scenario.active_connections(self.stats(), loaded=True)
+            return True
+
+        scenario.wait_for(ready, 20, "warmed TCP streams on both WireGuard tunnels")
+        (self.directory / "dns-start").touch()
+        workload.wait(timeout=50)
+        self.processes = [(name, process) for name, process in self.processes if process is not workload]
+        require(workload.returncode == 0, "DNS or tunnel echo failed; see provider-dns.log")
+        evidence.update(json.loads((self.directory / (label + ".log")).read_bytes()))
+        require(evidence["verified_names"] == DNS_NAMES and evidence["block_answer"] == block,
+                "could not verify all 4096 DNS names and the block control")
+        rounds = 1 + DNS_NAMES // 64  # Warmup, then one echo on every stream per batch.
+        expected = [{"target": target, "tcp_streams": 16, "tcp_echoes": rounds * 16, "tcp_bytes": rounds * 16 * 4096,
+                     "udp_echoes": rounds, "udp_bytes": rounds * 1024}
+                    for target in targets]
+        require(evidence["tunnels"] == expected, "incomplete fixed TCP/UDP workload")
+
+        def drained():
+            self.healthy()
+            return json.loads((self.directory / "server-active.json").read_bytes())["tcp_connections"] == 0
+
+        scenario.wait_for(drained, 10, "TCP echo sessions to close after the fixed workload")
+
+    def dns_publication(self):
         key = sha256(b"direct:geosite:fixture").hexdigest()[:16]
         rule_set = self.directory / "rule-sets" / f"dns-{key}.json"
         if self.enabled:
             hosts = (self.directory / "hosts").read_text().splitlines()[:DNS_NAMES]
             addresses = {line.split()[0] + "/32" for line in hosts}
             require(len(addresses) == DNS_NAMES, "DNS fixture reused a response address")
-
-            def all_observed():
-                data = json.loads(rule_set.read_bytes())
-                return set(data["rules"][0]["ip_cidr"]) == addresses
-
-            scenario.wait_for(all_observed, 10, "provider DNS cache to publish all 4096 answers")
-            evidence["provider_fallback_addresses"] = len(addresses)
-        else:
-            require(not rule_set.exists(), "rules-off run produced a provider DNS fallback set")
-            evidence["provider_fallback_addresses"] = 0
-        self.drain_tcp(traffic)
-        evidence["traffic_drained"] = self.finish_traffic(traffic)
+            data = json.loads(rule_set.read_bytes())
+            require(set(data["rules"][0]["ip_cidr"]) == addresses,
+                    "provider DNS cache did not publish all 4096 answers")
+            return len(addresses)
+        require(not rule_set.exists(), "rules-off run produced a provider DNS fallback set")
+        return 0
 
 
 def exercise(fixture, measurement, evidence, control_wait):
@@ -293,14 +312,14 @@ def exercise(fixture, measurement, evidence, control_wait):
         require(observed == expected, f"unexpected HTTPS requests: {dict(observed)} (expected {expected})")
         return dict(observed)
 
-    with measurement.phase("first_apply"):
+    with measurement.phase("first_apply", snapshot_required=True):
         path = fixture.apply_source(SUB)
     first = read_snapshot(path)
     expected = {SUB: 1, SITE: 1, IP: 1}
     evidence["first_apply"] = {"rules": check_rules(first, size, enabled), "requests": requests(expected)}
 
     stamp = file_stamp(path)
-    with measurement.phase("refresh_reuse"):
+    with measurement.phase("refresh_reuse", snapshot_required=True):
         fixture.refresh()
         scenario.wait_for(lambda: file_stamp(path) != stamp, 30, "refreshed subscription snapshot")
     refreshed = read_snapshot(path)
@@ -311,7 +330,7 @@ def exercise(fixture, measurement, evidence, control_wait):
     evidence["refresh_reuse"] = {"rules": reused, "requests": requests(expected)}
 
     retry_setup = time.monotonic()
-    with measurement.phase("retry_setup_apply"):
+    with measurement.phase("retry_setup_apply", snapshot_required=True):
         path = fixture.apply_source(RETRY_SUB)
     partial = read_snapshot(path)
     expected.update({RETRY_SUB: 1, SITE: 2, RETRY_IP: 1})
@@ -319,7 +338,7 @@ def exercise(fixture, measurement, evidence, control_wait):
                                      "requests": requests(expected)}
     (fixture.data / "geoip.dat").replace(fixture.data / "retry-ip.dat")
     stamp = file_stamp(path)
-    with measurement.phase("geo_retry"):
+    with measurement.phase("geo_retry", snapshot_required=enabled):
         started = time.monotonic()
         if enabled:
             scenario.wait_for(lambda: file_stamp(path) != stamp, 135, "scheduled geo-only retry")
@@ -343,13 +362,18 @@ def exercise(fixture, measurement, evidence, control_wait):
     evidence["dns_under_load"] = {}
     with measurement.phase("dns_under_load"):
         fixture.dns_under_load(evidence["dns_under_load"])
+    # Both controls have finished the same payload workload. Observe the
+    # periodic file publication over the same quiet interval in each run.
+    with measurement.phase("dns_publication"):
+        time.sleep(DNS_PUBLICATION_SECONDS)
+    evidence["dns_publication"] = {"provider_fallback_addresses": fixture.dns_publication()}
 
     before = read_snapshot(path)
     first_node, second_node = [node["id"] for node in before["nodes"]]
     selection = before.pop("selection")
     require(selection["node"] == first_node, "initial node was not selected before the outage")
     stamp, config = file_stamp(path), file_stamp(fixture.directory / "config.yaml")
-    with measurement.phase("selection_save"):
+    with measurement.phase("selection_save", snapshot_required=True):
         fixture.execute(fixture.wan, "/usr/sbin/iptables", "-w", "2", "-I", "INPUT", "-i", "eth0",
                         "-d", WAN, "-p", "tcp", "--dport", NODE_PORTS[0], "-j", "REJECT", "--reject-with", "tcp-reset")
         scenario.wait_for(lambda: file_stamp(path) != stamp, 25, "selection-only snapshot save")
@@ -370,7 +394,7 @@ def run_case(args, output, size, enabled, case, control_wait=None):
     directory = Path("/tmp") / ("keenproxy-provider-" + uuid.uuid4().hex)
     stress.install_preserve(cleanup, directory, output, {})
     fixture = ProviderFixture(args, directory, cleanup, size, enabled)
-    case.update(rules_on=enabled, success=False, phases={}, proc_samples={}, evidence={})
+    case.update(rules_on=enabled, success=False, phases={}, proc_samples={}, operation_windows={}, evidence={})
     try:
         directory.mkdir()
         fixture.setup()
@@ -398,7 +422,7 @@ def run_case(args, output, size, enabled, case, control_wait=None):
 def run(args):
     os.umask(0o077)
     output = Path(args.output).resolve()
-    result = {"schema_version": 1, "variant": "candidate", "scenario": "provider", "success": False,
+    result = {"schema_version": 2, "variant": "candidate", "scenario": "provider", "success": False,
               "limits": {"rss_hard_bytes": stress.HARD_RSS_BYTES, "soft_gomemlimit_bytes": GO_LIMIT},
               "cases": {}, "rules_on_minus_off": {}}
     try:
@@ -408,6 +432,8 @@ def run(args):
             wait = run_case(args, output.with_name(f"{size}-on.json"), size, True, on)
             run_case(args, output.with_name(f"{size}-off.json"), size, False, off, wait)
             require(on["data"] == off["data"], "rules on/off runs used different synthetic input files")
+            require(on["evidence"]["dns_under_load"]["tunnels"] == off["evidence"]["dns_under_load"]["tunnels"],
+                    "rules on/off runs verified different tunnel traffic")
             metrics = ("rss_bytes", "hwm_bytes", "heap_peak_bytes", "heap_allocated_bytes", "cpu_seconds")
             result["rules_on_minus_off"][size] = {
                 phase: {key: values[key] - off["phases"][phase][key] for key in metrics}
