@@ -122,9 +122,13 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
 		return
 	}
-	if keepProvider && mode == routingProvider {
-		// The provider table is unavailable. An earlier, still open form can
-		// send its controls, but keeping this mode leaves its rule keys intact.
+	if providerProblem == "setup_rules_withheld" && len(draft.Switches) != 0 {
+		if draft.changesSwitches(cfg.ProviderRules) {
+			p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "routing_rules_changed")
+			return
+		}
+		// A ready form can submit unchanged controls after withholding starts.
+		// Save its other edits without rewriting the stored rule keys.
 		draft.Switches = nil
 	}
 	if (draft.VPN != nil && len(draft.VPN.InvalidLines) != 0) ||
@@ -235,6 +239,19 @@ func (d routingDraft) apply(cfg *model.Config, network *model.Network, source st
 	}
 	saveRoutingList(cfg, ownVPNGroup, network.Target, d.VPN)
 	saveRoutingList(cfg, ownDirectGroup, model.TargetDirect, d.Direct)
+}
+
+// changesSwitches compares submitted states with the applied revision,
+// including legacy disabled keys represented by opaque controls.
+func (d routingDraft) changesSwitches(settings *model.ProviderRulesSettings) bool {
+	disabled := settings.DisabledRuleKeys()
+	for key, enabled := range d.Switches {
+		wasEnabled := !disabled[key]
+		if enabled != wasEnabled {
+			return true
+		}
+	}
+	return false
 }
 
 func (d routingDraft) saveSwitches(settings *model.ProviderRulesSettings) {

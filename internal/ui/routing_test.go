@@ -354,6 +354,41 @@ func TestRoutingRefusesWithheldRules(t *testing.T) {
 	}
 }
 
+func TestRoutingRefusesRuleEditsAfterWithholding(t *testing.T) {
+	const enabled, legacy = "proxy:geosite:youtube", "proxy:geosite:https://provider.example/private?key=synthetic"
+	disabled := model.RedactedProviderRuleKey(legacy)
+	for _, tc := range []struct {
+		name, mode string
+		switches   []string
+	}{
+		{name: "disable", mode: "provider"},
+		{name: "reenable a redacted rule", mode: "provider", switches: []string{enabled, disabled}},
+		{name: "disable while changing mode", mode: "own"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRoutingFixture()
+			f.cfg.ProviderRules.Disabled = []string{legacy}
+			f.rules.State = "ready"
+			f.rules.Rules = append(f.rules.Rules, RoutingRule{Key: disabled, Action: "proxy", Kind: "site", Source: "geosite:[redacted]"})
+			h := New(f, setupTestOptions(RoleManage))
+			before := f.Config()
+			page := setupRequest(h, "/routing", nil).Body.String()
+			assertContains(t, page, `name="enabled" value="`+enabled+`" checked`, `name="rule" value="`+disabled+`"`)
+
+			f.rules = RoutingRules{Source: "sample", State: "withheld"}
+			f.subs[0].RulesWithheld = true
+			w := setupRequest(h, "/routing", url.Values{
+				"rev": {formField(t, page, "rev")}, "mode": {tc.mode},
+				"rule": {enabled, disabled}, "enabled": tc.switches, "own-direct": {"draft-direct.example"},
+			})
+			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(f.Config(), before) {
+				t.Fatalf("withheld rule edit returned HTTP %d with %d applies", w.Code, f.applies)
+			}
+			assertContains(t, w.Body.String(), `role="alert"`, "The provider stopped supplying routing rules.", "draft-direct.example")
+		})
+	}
+}
+
 func TestRoutingRetainsSavedProviderModeWhileRulesAreWithheld(t *testing.T) {
 	for _, refreshed := range []bool{false, true} {
 		name := "first save with a node-only feed"
@@ -379,7 +414,8 @@ func TestRoutingRetainsSavedProviderModeWhileRulesAreWithheld(t *testing.T) {
 			} else {
 				f.rules.State = "ready"
 			}
-			f.cfg.ProviderRules.Disabled = []string{"proxy:site:held"}
+			const enabled, disabled = "proxy:geosite:youtube", "proxy:geosite:returned"
+			f.cfg.ProviderRules.Disabled = []string{disabled, "proxy:site:held"}
 			applies := f.applies
 			before := f.Config()
 			page := setupRequest(h, "/routing", nil)
@@ -389,6 +425,11 @@ func TestRoutingRetainsSavedProviderModeWhileRulesAreWithheld(t *testing.T) {
 			form := url.Values{"rev": {formField(t, body, "rev")}, "own-direct": {"new-direct.example"}}
 			if !strings.Contains(body, providerRadio+" disabled") {
 				form.Set("mode", "provider")
+			}
+			if refreshed {
+				// A native POST from the old page includes its unchanged switches.
+				assertContains(t, body, `name="rule" value="`+disabled+`"`, `name="enabled" value="`+enabled+`" checked`)
+				form["rule"], form["enabled"] = []string{enabled, disabled}, []string{enabled}
 			}
 			f.rules = RoutingRules{Source: id, State: "withheld"}
 			f.subs[0].RulesWithheld = true

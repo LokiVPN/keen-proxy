@@ -51,6 +51,8 @@ Choose a mode and select **Save**.
 
 In **My sites**, enter one domain, IP address, or subnet per line. Domains include their subdomains. Use the direct list for exceptions and keep each entry in just one list. Advanced routing groups and DNS settings are managed in YAML. [Routing and DNS](routing.md)
 
+If the provider stops supplying rules while you edit their switches, wait for the rules to return before saving those switch changes. You can save list edits separately.
+
 <a name="devices"></a>
 
 ## Devices { #devices }
