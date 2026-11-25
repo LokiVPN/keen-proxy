@@ -2,10 +2,12 @@ package ui
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +26,7 @@ type connectionDetailPage struct {
 	Chain                            []connectionChainMember
 	Facts, Parameters                []connectionDetailField
 	References                       []connectionReference
+	TrafficGroup                     bool
 }
 
 type connectionChainMember struct {
@@ -71,19 +74,30 @@ func (p pages) renderConnectionDetail(w http.ResponseWriter, r *http.Request, co
 	data := p.opts.pageData(r)
 	data.Title, data.SignedIn = cmp.Or(conn.Name, conn.ID), true
 	data.ViewOnly = p.role(r) == RoleView
-	data.Message, data.Flash = data.Text[message], takeFlash(w, r, data.Text)
+	if r.Method == http.MethodPost && code == http.StatusOK {
+		data.Flash = data.Text[message]
+	} else {
+		data.Message, data.Flash = data.Text[message], takeFlash(w, r, data.Text)
+	}
 	reveal := p.role(r) == RoleManage && r.Method == http.MethodGet && r.URL.Query().Get("reveal") == "1"
 	allHosts := r.URL.Query().Get("hosts") == "all"
 	health, _ := p.deps.ConnectionHealth(conn.ID)
-	active, series := p.deps.ConnectionTraffic(conn.ID)
 	data.ConnectionHealth = detailHealth(health, data.Text)
-	data.ConnectionHosts = p.detailHosts(conn.ID, allHosts, data.Lang)
-	data.Traffic = trafficChart(series, time.Now(), data.Lang, "detail_chart_label")
-	data.ConnectionDetail = makeConnectionDetail(cfg, conn, draft, health.Class, active, reveal, allHosts, guard, data.Text)
+	active := -1
+	if health.TrafficGroup {
+		data.ConnectionTrafficLinks = detailTrafficLinks(cfg, health.TrafficMembers)
+	} else {
+		var series []stats.Point
+		active, series = p.deps.ConnectionTraffic(conn.ID)
+		data.ConnectionHosts = p.detailHosts(conn.ID, allHosts, data.Lang)
+		data.Traffic = trafficChart(series, time.Now(), data.Lang, "detail_chart_label")
+	}
+	data.ConnectionDetail = p.makeConnectionDetail(r.Context(), cfg, i, draft, health, active, reveal, allHosts, guard, data.Text)
 	render(w, r, code, "connection-detail", data)
 }
 
-func makeConnectionDetail(cfg *model.Config, conn model.Connection, draft *model.Connection, class stats.TargetClass, active int, reveal, allHosts bool, guard []connectionReference, text map[string]string) *connectionDetailPage {
+func (p pages) makeConnectionDetail(ctx context.Context, cfg *model.Config, index int, draft *model.Connection, health ConnectionHealth, active int, reveal, allHosts bool, guard []connectionReference, text map[string]string) *connectionDetailPage {
+	conn := cfg.Connections[index]
 	settings := conn
 	if draft != nil {
 		settings = *draft
@@ -97,14 +111,15 @@ func makeConnectionDetail(cfg *model.Config, conn model.Connection, draft *model
 	return &connectionDetailPage{
 		Path: connectionDetailPath(conn.ID), Fragment: connectionDetailFragmentPath(conn.ID), Rev: Revision(cfg),
 		Name: name, Enabled: !settings.Disabled, CanProbe: !conn.Disabled, Reveal: reveal,
-		Dirty:     draft != nil,
+		Dirty:     settings.Disabled != conn.Disabled || settings.Fallback != conn.Fallback,
 		RevealURL: detailURL(conn.ID, !reveal, allHosts, "connection-parameters"),
 		Reserve:   connectionIDSegment(settings.Fallback), ReserveHint: fmt.Sprintf(text["detail_reserve_hint"], name),
 		ReserveTiming: fmt.Sprintf(text["detail_reserve_timing"], cfg.Failover.DownAfter, cfg.Failover.UpAfter),
-		Options:       detailFallbackOptions(cfg, conn.ID, text),
+		Options:       p.detailFallbackOptions(ctx, cfg, index, settings, text),
 		Chain:         detailChain(cfg, settings, text),
-		Facts:         detailFacts(profile, class, active, refs, text),
+		Facts:         detailFacts(profile, health.Class, active, refs, text),
 		Parameters:    detailParameters(conn, profile, reveal, text), References: guard,
+		TrafficGroup: health.TrafficGroup,
 	}
 }
 
@@ -129,15 +144,34 @@ func detailURL(id string, reveal, allHosts bool, anchor string) string {
 	return path + "#" + anchor
 }
 
-func detailFallbackOptions(cfg *model.Config, id string, text map[string]string) []connectionOption {
-	targets := cfg.ConnectionFallbackTargets(id)
+func (p pages) detailFallbackOptions(ctx context.Context, cfg *model.Config, index int, settings model.Connection, text map[string]string) []connectionOption {
+	targets := cfg.ConnectionFallbackTargets(settings.ID)
 	labels := manualReserveLabels(cfg, text)
 	labels[""] = text["detail_reserve_none"]
+	candidate := *cfg
+	candidate.Connections = slices.Clone(cfg.Connections)
+	candidate.Connections[index] = settings
 	options := make([]connectionOption, 0, len(targets))
 	for _, target := range targets {
-		options = append(options, connectionOption{Target: connectionIDSegment(target), Label: labels[target]})
+		candidate.Connections[index].Fallback = target
+		invalid := p.deps.ValidateConnectionSettings(ctx, &candidate) != nil
+		if !invalid || target == settings.Fallback {
+			options = append(options, connectionOption{Target: connectionIDSegment(target), Label: labels[target], Disabled: invalid})
+		}
 	}
 	return options
+}
+
+func detailTrafficLinks(cfg *model.Config, members []string) []connectionReference {
+	var links []connectionReference
+	if cfg != nil {
+		for _, tag := range members {
+			if name := connectionName(cfg, tag); name != "" {
+				links = append(links, connectionReference{Label: name, URL: connectionDetailPath(tag)})
+			}
+		}
+	}
+	return links
 }
 
 // detailChain includes the edited profile first, then the configured chain of
@@ -201,6 +235,9 @@ func detailFacts(profile connectionimport.Facts, class stats.TargetClass, active
 	if profile.SNIHidden {
 		profile.SNI = hidden
 	}
+	if profile.TransportHidden {
+		profile.Transport = hidden
+	}
 	if profile.Server != "" {
 		rows = append(rows, fact("wizard_field_server", profile.Server))
 	}
@@ -224,7 +261,10 @@ func detailFacts(profile connectionimport.Facts, class stats.TargetClass, active
 	if len(uses) > 0 {
 		rows = append(rows, fact("detail_used_by", strings.Join(uses, " · ")))
 	}
-	return append(rows, fact("detail_active", strconv.Itoa(active)))
+	if active >= 0 {
+		rows = append(rows, fact("detail_active", strconv.Itoa(active)))
+	}
+	return rows
 }
 
 func detailParameters(conn model.Connection, facts connectionimport.Facts, reveal bool, text map[string]string) []connectionDetailField {

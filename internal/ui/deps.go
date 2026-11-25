@@ -17,6 +17,7 @@ type Deps interface {
 	LANPrefix(iface string) (netip.Prefix, error)
 	ConnectionRuntimeTags(cfg *model.Config) ([]string, error)
 	ValidateConnection(ctx context.Context, cfg *model.Config, id string) error
+	ValidateConnectionSettings(ctx context.Context, cfg *model.Config) error
 	Apply(ctx context.Context, cfg *model.Config, revision string) error
 	ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error
 	OverviewStatus() OverviewStatus
@@ -90,6 +91,8 @@ type ConnectionHealth struct {
 	Checked                    time.Time
 	LatencyMS                  int64
 	Class                      stats.TargetClass
+	TrafficGroup               bool
+	TrafficMembers             []string
 }
 
 // AppliedSubscription exposes display metadata and the current catalog without

@@ -49,28 +49,42 @@ func (p pages) connectionDetailSave(w http.ResponseWriter, r *http.Request) {
 	if cfg == nil {
 		return
 	}
+	settings := p.readConnectionSettings(w, r, cfg, i)
+	if settings == nil {
+		return
+	}
+	draft := cfg.Clone()
+	draft.Connections[i].Disabled, draft.Connections[i].Fallback = settings.Disabled, settings.Fallback
+	if err := p.deps.ValidateConnectionSettings(r.Context(), draft); err != nil {
+		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, settings, "detail_invalid_runtime", nil)
+		return
+	}
+	p.applyConnectionDetail(w, r, draft, settings, connectionDetailPath(settings.ID), "flash_saved")
+}
+
+// Check and Save submit the same settings. Check keeps this draft in the
+// response and probes only the applied profile.
+func (p pages) readConnectionSettings(w http.ResponseWriter, r *http.Request, cfg *model.Config, i int) *model.Connection {
 	enabled := r.PostForm["enabled"]
 	off := slices.Equal(enabled, []string{"0"})
 	if !off && !slices.Equal(enabled, []string{"0", "1"}) {
 		p.renderConnectionDetail(w, r, http.StatusBadRequest, cfg, nil, "overview_invalid_switch", nil)
-		return
+		return nil
 	}
-	id := cfg.Connections[i].ID
+	settings := cfg.Connections[i]
 	values := r.PostForm["fallback"]
 	if len(values) != 1 {
 		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, nil, "detail_invalid_reserve", nil)
-		return
+		return nil
 	}
 	segment, err := url.PathUnescape(values[0])
 	target := connectionIDFromSegment(segment)
-	if err != nil || !slices.Contains(cfg.ConnectionFallbackTargets(id), target) {
+	if err != nil || !slices.Contains(cfg.ConnectionFallbackTargets(settings.ID), target) {
 		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, nil, "detail_invalid_reserve", nil)
-		return
+		return nil
 	}
-	draft := cfg.Clone()
-	draft.Connections[i].Disabled = off
-	draft.Connections[i].Fallback = target
-	p.applyConnectionDetail(w, r, draft, &draft.Connections[i], connectionDetailPath(id), "flash_saved")
+	settings.Disabled, settings.Fallback = off, target
+	return &settings
 }
 
 func (p pages) connectionDetailDelete(w http.ResponseWriter, r *http.Request) {
@@ -100,18 +114,22 @@ func (p pages) connectionDetailProbe(w http.ResponseWriter, r *http.Request) {
 	if cfg == nil {
 		return
 	}
+	settings := p.readConnectionSettings(w, r, cfg, i)
+	if settings == nil {
+		return
+	}
 	conn := cfg.Connections[i]
 	if conn.Disabled {
-		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, nil, "detail_probe_error", nil)
+		p.renderConnectionDetail(w, r, http.StatusUnprocessableEntity, cfg, settings, "detail_probe_error", nil)
 		return
 	}
 	switch err := p.deps.CheckConnection(r.Context(), conn.ID, r.PostForm.Get("rev")); {
 	case errors.Is(err, model.ErrConfigChanged):
 		p.renderConnectionDetail(w, r, http.StatusConflict, p.deps.Config(), nil, "revision_changed", nil)
 	case err != nil:
-		p.renderConnectionDetail(w, r, http.StatusServiceUnavailable, cfg, nil, "detail_probe_error", nil)
+		p.renderConnectionDetail(w, r, http.StatusServiceUnavailable, cfg, settings, "detail_probe_error", nil)
 	default:
-		redirectWithFlash(w, r, connectionDetailPath(conn.ID), "flash_detail_checked")
+		p.renderConnectionDetail(w, r, http.StatusOK, cfg, settings, "flash_detail_checked", nil)
 	}
 }
 
@@ -151,6 +169,11 @@ func (p pages) connectionDetailFragment(name string) http.HandlerFunc {
 			return
 		}
 		data := p.opts.pageData(r)
+		if health.TrafficGroup && name != "connection-health" {
+			data.ConnectionTrafficLinks = detailTrafficLinks(p.deps.Config(), health.TrafficMembers)
+			render(w, r, http.StatusOK, "connection-traffic-members", data)
+			return
+		}
 		switch name {
 		case "connection-health":
 			data.ConnectionHealth = detailHealth(health, data.Text)

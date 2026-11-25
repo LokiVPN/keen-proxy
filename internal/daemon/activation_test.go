@@ -36,7 +36,7 @@ func TestDisabledHealthAndSelectionAfterRecompile(t *testing.T) {
 	if _, err := d.DiagnosticChecks(context.Background(), "primary"); !errors.Is(err, ErrDiagnosticConnection) {
 		t.Fatalf("disabled diagnostic = %v", err)
 	}
-	if _, err := d.probe(context.Background(), "primary", "http://invalid.invalid/"); err == nil {
+	if result := d.probe(context.Background(), "primary", "http://invalid.invalid/"); result.err == nil {
 		t.Fatal("disabled probe accepted")
 	}
 

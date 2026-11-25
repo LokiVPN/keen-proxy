@@ -2,6 +2,8 @@ package stats
 
 import (
 	"context"
+	"iter"
+	"slices"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/sagernet/sing-box/adapter"
@@ -56,34 +58,70 @@ func targetMembers(out adapter.Outbound) ([]string, bool) {
 	return nil, false
 }
 
-// walkTargetLeaves visits each reachable tag once. Block leaves determine the
-// class only if the group has no direct or VPN leaves.
+// TrafficMemberTags resolves a group's possible accounting tags. The router
+// attributes traffic to a per-connection group when it picks a member at dial time.
+func TrafficMemberTags(manager adapter.OutboundManager, tag string) ([]string, bool) {
+	out, ok := manager.Outbound(tag)
+	if !ok {
+		return nil, false
+	}
+	if _, group := trafficMembers(out); !group {
+		return nil, false
+	}
+	var tags []string
+	for leaf := range targetLeaves(manager, tag, trafficMembers) {
+		tags = append(tags, leaf.Tag())
+	}
+	slices.Sort(tags)
+	return tags, true
+}
+
+func trafficMembers(out adapter.Outbound) ([]string, bool) {
+	// Match the sing-box-lx router's outbound chain cut.
+	if _, selectsAtDial := out.(interface{ SelectsPerConnectionLx() }); selectsAtDial {
+		return nil, false
+	}
+	return targetMembers(out)
+}
+
+// Block leaves determine the class only if there are no forwarding leaves.
 func walkTargetLeaves(manager adapter.OutboundManager, root string) TargetClass {
-	pending := []string{root}
-	seen := make(map[string]bool)
 	class := TargetUnknown
-	for len(pending) > 0 && class&TargetMixed != TargetMixed {
-		last := len(pending) - 1
-		tag := pending[last]
-		pending = pending[:last]
-		if seen[tag] {
-			continue
-		}
-		seen[tag] = true
-		out, ok := manager.Outbound(tag)
-		if !ok {
-			continue
-		}
-		if members, group := targetMembers(out); group {
-			pending = append(pending, members...)
-		} else {
-			class |= leafTargetClass(out.Type())
+	for leaf := range targetLeaves(manager, root, targetMembers) {
+		class |= leafTargetClass(leaf.Type())
+		if class&TargetMixed == TargetMixed {
+			break
 		}
 	}
 	if forwarding := class & TargetMixed; forwarding != TargetUnknown {
 		return forwarding
 	}
 	return class
+}
+
+func targetLeaves(manager adapter.OutboundManager, root string, membersOf func(adapter.Outbound) ([]string, bool)) iter.Seq[adapter.Outbound] {
+	return func(yield func(adapter.Outbound) bool) {
+		pending := []string{root}
+		seen := make(map[string]bool)
+		for len(pending) > 0 {
+			last := len(pending) - 1
+			tag := pending[last]
+			pending = pending[:last]
+			if seen[tag] {
+				continue
+			}
+			seen[tag] = true
+			out, ok := manager.Outbound(tag)
+			if !ok {
+				continue
+			}
+			if members, group := membersOf(out); group {
+				pending = append(pending, members...)
+			} else if !yield(out) {
+				return
+			}
+		}
+	}
 }
 
 func leafTargetClass(kind string) TargetClass {

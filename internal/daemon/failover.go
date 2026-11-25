@@ -24,16 +24,17 @@ type health struct {
 	known   bool
 	since   time.Time // start of the current uninterrupted success or failure period
 	checked time.Time
+	started time.Time // identity used to order overlapping probes
 	latency time.Duration
 	err     string
 }
 
-// record updates the latest result, restarting the duration only on status changes.
-func (h *health) record(ok bool, latency time.Duration, err string, now time.Time) {
+// record keeps the observed result and restarts the duration on a status change.
+func (h *health) record(ok bool, latency time.Duration, err string, checked time.Time) {
 	if !h.known || h.ok != ok {
-		h.since = now
+		h.since = checked
 	}
-	h.known, h.ok, h.checked, h.latency, h.err = true, ok, now, latency, err
+	h.known, h.ok, h.checked, h.latency, h.err = true, ok, checked, latency, err
 }
 
 // down reports sustained failure for downAfter; untested connections remain usable.
@@ -77,26 +78,22 @@ func pick(chain []string, cur string, hs map[string]*health, now time.Time, down
 func (d *Daemon) runFailover(ctx context.Context) {
 	for {
 		d.mu.Lock()
-		f := d.cfg.Failover
-		members := probeMembers(d.cfg)
+		cfg := d.cfg
+		f := cfg.Failover
+		members := probeMembers(cfg)
 		d.mu.Unlock()
 
 		if len(members) > 0 {
 			results := d.probeAll(ctx, members, f)
 			d.mu.Lock()
-			now := time.Now()
-			for id, r := range results {
-				if !connectionEnabled(d.cfg, id) {
-					continue
+			if d.cfg == cfg && ctx.Err() == nil {
+				for id, result := range results {
+					if result.engine != nil && result.engine.Err() == nil {
+						d.recordProbeLocked(id, result, errText(result.err))
+					}
 				}
-				h := d.health[id]
-				if h == nil {
-					h = &health{}
-					d.health[id] = h
-				}
-				h.record(r.err == nil, r.latency, errText(r.err), now)
+				d.switchLocked(time.Now())
 			}
-			d.switchLocked(now)
 			d.mu.Unlock()
 		}
 
@@ -132,8 +129,24 @@ func connectionEnabled(cfg *model.Config, id string) bool {
 
 // probeResult carries one HTTP probe outcome back to serialized health updates.
 type probeResult struct {
+	started time.Time
+	checked time.Time
+	engine  context.Context
 	latency time.Duration
 	err     error
+}
+
+func (d *Daemon) recordProbeLocked(id string, result probeResult, message string) {
+	h := d.health[id]
+	if h == nil {
+		h = &health{}
+		d.health[id] = h
+	}
+	if result.started.Before(h.started) {
+		return
+	}
+	h.started = result.started
+	h.record(result.err == nil, result.latency, message, result.checked)
 }
 
 // probeAll probes members concurrently with per-request deadlines derived from the interval.
@@ -148,9 +161,9 @@ func (d *Daemon) probeAll(ctx context.Context, ids []string, f model.Failover) m
 			defer wg.Done()
 			pctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			lat, err := d.probe(pctx, id, f.URL)
+			result := d.probe(pctx, id, f.URL)
 			mu.Lock()
-			out[id] = probeResult{lat, err}
+			out[id] = result
 			mu.Unlock()
 		}()
 	}
@@ -161,15 +174,21 @@ func (d *Daemon) probeAll(ctx context.Context, ids []string, f model.Failover) m
 // probe sends one HTTP request through a connection; any response proves
 // reachability, regardless of content. It resolves the probe host locally
 // because a WireGuard outbound may lack a sing-box DNS resolver.
-func (d *Daemon) probe(ctx context.Context, id, rawURL string) (time.Duration, error) {
+func (d *Daemon) probe(ctx context.Context, id, rawURL string) probeResult {
 	if !connectionEnabled(d.live.Load(), id) {
-		return 0, fmt.Errorf("connection is not running")
+		return probeResult{err: fmt.Errorf("connection is not running")}
 	}
 	out, engCtx, ok := d.eng.Outbound(id)
 	if !ok {
-		return 0, fmt.Errorf("connection is not running")
+		return probeResult{err: fmt.Errorf("connection is not running")}
 	}
-	return probeOutbound(ctx, engCtx, out, rawURL)
+	return observeProbe(ctx, engCtx, out, rawURL)
+}
+
+func observeProbe(ctx, engine context.Context, out adapter.Outbound, rawURL string) probeResult {
+	started := time.Now()
+	latency, err := probeOutbound(ctx, engine, out, rawURL)
+	return probeResult{started: started, checked: time.Now(), engine: engine, latency: latency, err: err}
 }
 
 func probeOutbound(ctx, engCtx context.Context, out adapter.Outbound, rawURL string) (time.Duration, error) {

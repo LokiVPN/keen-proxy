@@ -24,6 +24,7 @@ type managementDaemon interface {
 	PreviewSubscriptionDetails(context.Context, subscription.Source) daemon.SubscriptionPreviewDetails
 	ApplyIfCurrent(context.Context, *model.Config, string) error
 	CompileConnectionDraft(*model.Config) (compile.Output, error)
+	CompileConnectionSettings(*model.Config) ([]byte, error)
 	ApplySubscriptionPreview(context.Context, *model.Config, string, subscription.PreviewRef) error
 	RoutingStatus() daemon.RoutingStatus
 	ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, daemon.ProviderRulesState)
@@ -100,6 +101,17 @@ func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id st
 	validation.Connections = slices.Clone(cfg.Connections)
 	validation.Connections[i].Disabled = false
 	return d.validateConnectionGraph(ctx, &validation)
+}
+
+func (d uiDeps) ValidateConnectionSettings(ctx context.Context, cfg *model.Config) error {
+	if err := cfg.Validate(); err != nil {
+		return errors.New("invalid connection settings")
+	}
+	raw, err := d.daemon.CompileConnectionSettings(cfg)
+	if err == nil {
+		err = engine.ValidateRuntimeProfiles(ctx, raw)
+	}
+	return safeWizardCoreError(err)
 }
 
 // Check the edited raw profile in isolation before constructing a core that

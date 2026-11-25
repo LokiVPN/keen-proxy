@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -92,6 +93,64 @@ func TestConnectionDetailFactsKeepOpaqueParametersPrivate(t *testing.T) {
 	requireDetailStatus(t, w, http.StatusOK)
 	if strings.Contains(w.Body.String(), "synthetic-pw") || strings.Contains(w.Body.String(), "opaque-test-value") {
 		t.Fatal("viewer facts repeat a credential from the stored payload")
+	}
+}
+
+func TestConnectionDetailMasksDecodedCredentials(t *testing.T) {
+	const secret = "display-secret-fixture"
+	for _, tc := range []struct {
+		name, kind string
+		options    map[string]any
+	}{
+		{"hysteria", "hysteria", map[string]any{"AUTH": base64.StdEncoding.EncodeToString([]byte(secret))}},
+		{"basic header", "http", map[string]any{"headers": map[string]any{
+			"authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("fixture-user:"+secret)),
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDetailFixture(t)
+			profile := tc.options
+			profile["type"], profile["server"], profile["server_port"] = tc.kind, secret+".example", 443
+			profile["tls"] = map[string]any{"enabled": true, "server_name": secret + ".sni.example"}
+			f.cfg.Connections[0] = model.Connection{ID: "old", Name: "Office", Type: model.ConnSingBox, Outbound: profile}
+			for _, role := range []Role{RoleManage, RoleView} {
+				h := New(f, setupTestOptions(role))
+				w := setupRequest(h, "/connections/id/old", nil)
+				requireDetailStatus(t, w, http.StatusOK)
+				body := w.Body.String()
+				if strings.Contains(body, secret) || strings.Count(body, ">Hidden</dd>") != 2 {
+					t.Errorf("masked facts exposed or omitted a decoded credential for role %v", role)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectionDetailProbeKeepsStagedSettings(t *testing.T) {
+	f := newDetailFixture(t)
+	h := New(f, setupTestOptions(RoleManage))
+	path := "/connections/id/backup"
+	staged := detailForm(f)
+	staged.Set("fallback", "disabled")
+	w := setupRequest(h, path+"/probe", staged)
+	requireDetailStatus(t, w, http.StatusOK)
+	body := w.Body.String()
+	input := connectionControl(t, body, "input", "enabled", "1")
+	_, checked := input["checked"]
+	if checked || !strings.Contains(body, `<option value="disabled" selected>`) || !strings.Contains(body, "data-dirty") {
+		t.Fatal("probe discarded the staged switch or reserve")
+	}
+	assertContains(t, body, "82 ms")
+	if f.applies != 0 || f.cfg.Connections[1].Disabled || f.cfg.Connections[1].Fallback != model.TargetDirect ||
+		!slices.Equal(f.probes, []string{"backup"}) {
+		t.Fatal("probe applied draft settings or probed a different profile")
+	}
+	f.probeErr = errors.New("synthetic private probe error")
+	w = setupRequest(h, path+"/probe", staged)
+	requireDetailStatus(t, w, http.StatusServiceUnavailable)
+	body = w.Body.String()
+	if !strings.Contains(body, `<option value="disabled" selected>`) || strings.Contains(body, f.probeErr.Error()) {
+		t.Fatal("probe error discarded the draft or exposed raw error text")
 	}
 }
 
@@ -249,7 +308,7 @@ func TestConnectionDetailProbeAndFragmentsWithLegacyIDs(t *testing.T) {
 			fragment := "/fragments/connection/" + tc.segment
 			w := setupRequest(h, path, nil)
 			requireDetailStatus(t, w, http.StatusOK)
-			assertContains(t, w.Body.String(), `action="`+path+`/probe"`, `action="`+path+`/delete"`,
+			assertContains(t, w.Body.String(), `formaction="`+path+`/probe"`, `action="`+path+`/delete"`,
 				`href="`+path+`/replace"`, `data-fragment="`+fragment+`/health"`, `data-fragment="`+fragment+`/speed"`,
 				`data-fragment="`+fragment+`/hosts"`)
 			for _, part := range []string{"/health", "/speed", "/hosts"} {
@@ -274,10 +333,13 @@ func TestConnectionDetailProbeAndFragmentsWithLegacyIDs(t *testing.T) {
 			if len(f.probes) != 0 {
 				t.Fatal("a stale action started a probe")
 			}
-			w = setupRequest(h, path+"/probe", url.Values{"rev": {Revision(f.Config())}})
-			requireDetailStatus(t, w, http.StatusSeeOther)
-			if got := w.Header().Get("Location"); got != path || !slices.Equal(f.probes, []string{tc.id}) || f.applies != 0 {
-				t.Fatalf("probe redirect = %q, probes = %v, apply calls = %d", got, f.probes, f.applies)
+			form := detailForm(f)
+			form.Add("enabled", "1")
+			w = setupRequest(h, path+"/probe", form)
+			requireDetailStatus(t, w, http.StatusOK)
+			assertContains(t, w.Body.String(), "Connection checked")
+			if !slices.Equal(f.probes, []string{tc.id}) || f.applies != 0 {
+				t.Fatalf("probes = %v, apply calls = %d", f.probes, f.applies)
 			}
 			w = setupRequest(h, fragment+"/health", nil)
 			assertContains(t, w.Body.String(), "82 ms")
@@ -303,11 +365,16 @@ type detailFixture struct {
 	hosts       []stats.Host
 	hostTotal   int
 	probes      []string
+	probeErr    error
 	profileRefs []string
 }
 
 func newDetailFixture(t *testing.T) *detailFixture {
 	return &detailFixture{connectionsFixture: newConnectionsFixture(t)}
+}
+
+func (*detailFixture) ValidateConnectionSettings(_ context.Context, cfg *model.Config) error {
+	return cfg.Validate()
 }
 
 func (f *detailFixture) ConnectionHealth(id string) (ConnectionHealth, bool) {
@@ -334,6 +401,9 @@ func (f *detailFixture) CheckConnection(_ context.Context, id, rev string) error
 	i := connectionIndex(f.Config(), id)
 	if i < 0 || f.Config().Connections[i].Disabled {
 		return errors.New("fixture connection is unavailable")
+	}
+	if f.probeErr != nil {
+		return f.probeErr
 	}
 	f.probes = append(f.probes, id)
 	f.health.Checked, f.health.Available, f.health.LatencyMS = time.Now(), true, 82

@@ -56,6 +56,13 @@ func (e *Engine) Apply(config []byte) (bool, error) {
 		cancel()
 		return false, fmt.Errorf("create sing-box: %w", err)
 	}
+	// A stale catalog or a direct API write can change the actual graph
+	// after UI validation. Refuse it while the previous core still runs.
+	if err := validateRuntimeDependencies(instance); err != nil {
+		instance.Close()
+		cancel()
+		return false, err
+	}
 	tracker := e.Tracker
 	stats.RegisterTargetClasses(ctx, instance.Outbound())
 	for _, outbound := range instance.Outbound().Outbounds() {
@@ -129,6 +136,16 @@ func (e *Engine) TargetClass(tag string) stats.TargetClass {
 		return stats.TargetUnknown
 	}
 	return stats.TargetClassOf(ctx, out)
+}
+
+// TrafficMembers returns the running group's accounting tags for traffic links.
+func (e *Engine) TrafficMembers(tag string) ([]string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.box == nil {
+		return nil, false
+	}
+	return stats.TrafficMemberTags(e.box.Outbound(), tag)
 }
 
 // Select switches group to outbound tag. Existing selector connections close

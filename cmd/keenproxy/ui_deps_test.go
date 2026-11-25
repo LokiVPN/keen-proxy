@@ -70,6 +70,75 @@ func TestConnectionDeletionRecognizesSavedProfileReferences(t *testing.T) {
 	}
 }
 
+func TestConnectionDetailRejectsCompiledReserveCycles(t *testing.T) {
+	d := &detailRuntimeDaemon{wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
+		{ID: "primary", Type: model.ConnLink, Link: "socks5://primary.example:1080", Disabled: true, Fallback: model.TargetDirect},
+		{ID: "dependent", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "server": "server.example", "server_port": 1080, "detour": "primary",
+		}},
+		{ID: "indirect", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "selector", "outbounds": []string{"dependent"},
+		}},
+		{ID: "safe", Type: model.ConnLink, Link: "socks5://backup.example:1080"},
+	}}}}
+	d.cfg.Defaults()
+	deps := uiDeps{daemon: d}
+	if err := deps.validateConnectionGraph(t.Context(), d.Config()); err != nil {
+		t.Fatalf("broken applied graph fixture: %v", err)
+	}
+	h := ui.New(deps, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	path := "/connections/id/primary"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("connection page returned %d", w.Code)
+	}
+	for _, id := range []string{"dependent", "indirect"} {
+		if strings.Contains(w.Body.String(), `<option value="`+id+`"`) {
+			t.Errorf("reserve picker offered a compiled dependency cycle through %s", id)
+		}
+	}
+	if !strings.Contains(w.Body.String(), `<option value="safe"`) {
+		t.Error("reserve picker omitted an independent valid choice")
+	}
+	post := func(fallback string, enabled ...string) int {
+		form := url.Values{"rev": {ui.Revision(d.Config())}, "enabled": enabled, "fallback": {fallback}}
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := post("dependent", "0"); code != http.StatusUnprocessableEntity || d.applies != 0 {
+		t.Fatalf("forged cycle returned %d with %d Applies", code, d.applies)
+	}
+	if code := post("safe", "0"); code != http.StatusSeeOther || d.applies != 1 {
+		t.Fatalf("valid reserve returned %d with %d Applies", code, d.applies)
+	}
+	// Changing both fields is valid when turning on the primary replaces its
+	// relay stub with the real independent outbound.
+	if code := post("dependent", "0", "1"); code != http.StatusSeeOther || d.applies != 2 {
+		t.Fatalf("acyclic enabling edit returned %d with %d Applies", code, d.applies)
+	}
+	if code := post("dependent", "0"); code != http.StatusUnprocessableEntity || d.applies != 2 {
+		t.Fatal("keeping the reserve while disabling the profile bypassed the staged graph check")
+	}
+}
+
+type detailRuntimeDaemon struct{ wizardRuntimeDaemon }
+
+func (*detailRuntimeDaemon) CompileConnectionSettings(cfg *model.Config) ([]byte, error) {
+	return compile.ConnectionSettingsConfig(compile.Input{Config: cfg})
+}
+
+func (*detailRuntimeDaemon) ConnectionHealth(string) (daemon.ConnectionObservation, bool) {
+	return daemon.ConnectionObservation{}, true
+}
+
+func (*detailRuntimeDaemon) ConnectionTraffic(string) (int, []stats.Point) { return 0, nil }
+
+func (*detailRuntimeDaemon) Hosts(string, string, int) ([]stats.Host, int) { return nil, 0 }
+
 func TestWizardValidationAcceptsUnchangedDormantProfile(t *testing.T) {
 	cfg := &model.Config{Connections: []model.Connection{
 		{ID: "retired", Disabled: true, Type: model.ConnSingBox, Outbound: map[string]any{

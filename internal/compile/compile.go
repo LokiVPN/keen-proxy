@@ -164,7 +164,6 @@ func Compile(in Input) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
-	conns.outbounds = append(conns.outbounds, managed.outbounds...)
 	classes := clientClasses(c, rules)
 	provider := compileProviderRules(c, rules, in.RuleSetDir)
 	sb, err := json.MarshalIndent(singBox(c, in.RuleSetDir, networks, conns, chains, tags, managed, classes, provider), "", "  ")
@@ -398,25 +397,33 @@ func singBox(c *model.Config, ruleSetDir string, networks []policy, conns connOu
 	if len(ruleSets) > 0 {
 		route["rule_set"] = ruleSets
 	}
-	// Raw dependencies keep their configured tag without starting its disabled transport.
-	for i := range c.Connections {
-		cn := &c.Connections[i]
-		if cn.Disabled {
-			conns.outbounds = append(conns.outbounds, obj{
-				"type": "selector", "tag": cn.ID, "outbounds": []string{tags[cn.ID]},
-			})
-		}
-	}
 	cfg := obj{
 		"log":       obj{"level": "warn", "timestamp": true},
 		"inbounds":  inbounds,
-		"outbounds": append(append([]obj{{"type": "direct", "tag": tagDirect}}, conns.outbounds...), managedOutbounds(chains, managed)...),
+		"outbounds": runtimeOutbounds(c, conns.outbounds, chains, tags, managed),
 		"route":     route,
 	}
 	if len(conns.endpoints) > 0 {
 		cfg["endpoints"] = conns.endpoints
 	}
 	return cfg
+}
+
+// runtimeOutbounds also supplies the settings preflight, so validation uses
+// precisely the same concrete tags, disabled relays and generated selectors.
+func runtimeOutbounds(c *model.Config, profiles []obj, chains []FailoverChain, tags map[string]string, managed subscriptionRouting) []obj {
+	outbounds := append([]obj{{"type": "direct", "tag": tagDirect}}, profiles...)
+	outbounds = append(outbounds, managed.outbounds...)
+	// Raw dependencies keep their configured tag without starting its disabled transport.
+	for i := range c.Connections {
+		cn := &c.Connections[i]
+		if cn.Disabled {
+			outbounds = append(outbounds, obj{
+				"type": "selector", "tag": cn.ID, "outbounds": []string{tags[cn.ID]},
+			})
+		}
+	}
+	return append(outbounds, managedOutbounds(chains, managed)...)
 }
 
 // managedOutbounds emits selectors and per-connection policies after their concrete nodes.

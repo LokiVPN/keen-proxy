@@ -19,6 +19,7 @@ type Facts struct {
 	Summary
 	Transport, RoutingType string
 	Addresses              []string
+	TransportHidden        bool
 }
 
 // ConnectionFacts uses the stored options and the same parsers as compilation,
@@ -29,9 +30,13 @@ func ConnectionFacts(conn model.Connection) Facts {
 		facts := Facts{Summary: Summary{Protocol: "WireGuard"}, Transport: "UDP"}
 		if wg := conn.WireGuard; wg != nil {
 			host, port, _ := net.SplitHostPort(wg.Peer.Endpoint)
-			secrets := []string{wg.PrivateKey, wg.Peer.PublicKey, wg.Peer.PresharedKey}
+			var secrets []string
+			for _, key := range []string{wg.PrivateKey, wg.Peer.PublicKey, wg.Peer.PresharedKey} {
+				secrets = appendCredentialForms(secrets, key)
+			}
 			facts.Server = displayAddress(host, port)
 			facts.Summary = facts.Summary.hideRepeatedCredentials(wg.Peer.Endpoint, "", secrets)
+			facts.TransportHidden = subscription.ContainsDisplaySecret(facts.Transport, secrets)
 			facts.Addresses = detailAddresses(wg.Address, secrets)
 		}
 		return facts
@@ -91,7 +96,7 @@ func savedProfileFacts(profile map[string]any, endpoint bool) Facts {
 	}
 	// Legacy options, nested headers and vendor extensions can hold additional
 	// credentials. Suppress host facts that repeat any other profile string.
-	secrets := detailProfileStrings(siblings, nil)
+	secrets := detailProfileStrings(siblings, profileCredentials(profile, nil))
 	facts.Summary = facts.Summary.hideDisplayType(secrets)
 	if server, hidden := hideSummaryHost(facts.Server, rawServer, secrets); hidden {
 		facts.Server, facts.ServerHidden = server, true
@@ -106,9 +111,7 @@ func savedProfileFacts(profile map[string]any, endpoint bool) Facts {
 	}
 	mode, _ := transport["type"].(string)
 	facts.Transport = detailTransport(kind, mode)
-	if subscription.ContainsDisplaySecret(facts.Transport, secrets) {
-		facts.Transport = ""
-	}
+	facts.TransportHidden = subscription.ContainsDisplaySecret(facts.Transport, secrets)
 	return facts
 }
 
@@ -125,9 +128,11 @@ func withoutDisplayFields(options map[string]any, fields ...string) map[string]a
 func detailProfileStrings(value any, out []string) []string {
 	switch value := value.(type) {
 	case string:
-		out = append(out, value)
+		out = appendCredentialForms(out, value)
 	case []string:
-		out = append(out, value...)
+		for _, item := range value {
+			out = appendCredentialForms(out, item)
+		}
 	case []any:
 		for _, item := range value {
 			out = detailProfileStrings(item, out)
@@ -143,7 +148,7 @@ func detailProfileStrings(value any, out []string) []string {
 				for _, header := range credentialStrings(field) {
 					cookies, _ := http.ParseCookie(header)
 					for _, cookie := range cookies {
-						out = append(out, cookie.Value)
+						out = appendCredentialForms(out, cookie.Value)
 					}
 				}
 			}

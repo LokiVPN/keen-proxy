@@ -134,6 +134,19 @@ func (t *Tracker) RetainSubscriptionNodes(tags []string) {
 	}
 }
 
+// ForgetConnections detaches deleted profiles' history. Open flows keep
+// their original counters until they close, independently of any reused tag.
+func (t *Tracker) ForgetConnections(tags []string) {
+	if len(tags) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, tag := range tags {
+		delete(t.outs, tag)
+	}
+}
+
 func (t *Tracker) retiredSubscriptionNodeLocked(o *outbound) bool {
 	if !o.subscriptionNode || t.subscriptionNodes == nil {
 		return false
@@ -204,6 +217,11 @@ func (t *Tracker) open(ctx context.Context, m adapter.InboundContext, out adapte
 	name := HostOf(m)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// A callback that was still unwinding from a retired engine cannot
+	// recreate a deleted profile's counters.
+	if ctx.Err() != nil {
+		return nil
+	}
 	o := t.outboundLocked(tag)
 	h := o.hosts[name]
 	if h == nil {
@@ -240,7 +258,7 @@ func (t *Tracker) close(c *conn) {
 	t.mu.Lock()
 	delete(t.active, c)
 	c.out.active--
-	if c.out.active == 0 && t.retiredSubscriptionNodeLocked(c.out) {
+	if c.out.active == 0 && t.outs[c.out.tag] == c.out && t.retiredSubscriptionNodeLocked(c.out) {
 		delete(t.outs, c.out.tag)
 	}
 	t.mu.Unlock()
@@ -272,6 +290,9 @@ func (t *Tracker) RoutedConnection(ctx context.Context, nc net.Conn, m adapter.I
 		t.OnRoute(m, rule, out)
 	}
 	c := t.open(ctx, m, out)
+	if c == nil {
+		return nc
+	}
 	r, w := c.counters()
 	return &trackedConn{CounterConn: bufio.NewCounterConn(nc, r, w), done: func() { t.close(c) }}
 }
@@ -282,6 +303,9 @@ func (t *Tracker) RoutedPacketConnection(ctx context.Context, pc N.PacketConn, m
 		t.OnRoute(m, rule, out)
 	}
 	c := t.open(ctx, m, out)
+	if c == nil {
+		return pc
+	}
 	r, w := c.counters()
 	return &trackedPacketConn{CounterPacketConn: bufio.NewCounterPacketConn(pc, r, w), done: func() { t.close(c) }}
 }

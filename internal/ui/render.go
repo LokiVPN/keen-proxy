@@ -43,6 +43,7 @@ type pageData struct {
 	Traffic                 trafficView
 	ConnectionHealth        connectionHealthView
 	ConnectionHosts         connectionHostsView
+	ConnectionTrafficLinks  []connectionReference
 }
 
 func (opts Options) pageData(r *http.Request) pageData {

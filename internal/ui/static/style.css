@@ -666,7 +666,7 @@
   .connections-nodes .connections-probe { width: 28%; }
   .connections-manual .connections-probe { width: 32%; }
   .connections-manual .c-tg { width: 44px; }
-  .detail-status > form { flex-basis: 100%; }
+  .detail-status > .prov { flex-basis: 100%; }
   .detail-facts .clip {
     display: -webkit-box;
     -webkit-box-orient: vertical;

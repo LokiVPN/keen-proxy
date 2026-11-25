@@ -16,6 +16,21 @@ func ConnectionValidationConfig(cfg *model.Config) ([]byte, error) {
 	return validationConfig(profiles.outbounds, profiles.endpoints)
 }
 
+// ConnectionSettingsConfig compiles the runtime profile graph without
+// materializing network policies or DNS and provider rule-set files.
+func ConnectionSettingsConfig(in Input) ([]byte, error) {
+	profiles, err := connections(in.Config)
+	if err != nil {
+		return nil, err
+	}
+	chains, tags := failover(in.Config)
+	managed, err := compileSubscriptions(in, tags)
+	if err != nil {
+		return nil, err
+	}
+	return validationConfig(runtimeOutbounds(in.Config, profiles.outbounds, chains, tags, managed), profiles.endpoints)
+}
+
 // RuntimeValidationConfig projects the compiled runtime's outbound graph
 // onto a validation instance without listeners or on-disk rule-set readers.
 func RuntimeValidationConfig(out Output) ([]byte, error) {

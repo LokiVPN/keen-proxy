@@ -384,9 +384,10 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	neighbors := d.neighbors
 	previousSubscriptions := d.subscriptions.states
 	previousHealth := d.health
-	if len(previousSubscriptions) > 0 || len(cfg.Subscriptions) > 0 {
+	if len(previousSubscriptions) > 0 || len(cfg.Subscriptions) > 0 || prev != nil && len(prev.Connections) > 0 {
 		previousHealth = maps.Clone(d.health)
 	}
+	removedConnections := d.discardReplacedManualHealthLocked(prev, cfg)
 	restoreBalanceSessions := d.eng.SubscriptionBalanceCheckpoint()
 	d.subscriptions.states = d.subscriptionDraftLocked(cfg, candidates, checkedSource)
 	d.discardReplacedSubscriptionHealthLocked(previousSubscriptions)
@@ -443,6 +444,7 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		close(activation)
 	}
 	d.commitDomainCacheLocked()
+	d.stats.ForgetConnections(removedConnections)
 	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
 	if activation == nil && save {
 		if err := d.persistConfig(cfg, false); err != nil {

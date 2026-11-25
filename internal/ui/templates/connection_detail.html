@@ -3,12 +3,11 @@
       <a class="wizard-crumb" href="/connections"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6l-6 6 6 6"/></svg>{{.Text.nav_connections}}</a>
       <form id="connection-settings" method="post" action="{{$detail.Path}}" data-guard{{if $detail.Dirty}} data-dirty{{end}}>
         <input type="hidden" name="rev" value="{{$detail.Rev}}">
-      </form>
       <div class="title-row detail-title">
         <h1 class="clip" title="{{$detail.Name}}">{{$detail.Name}}</h1>
-        <input type="hidden" name="enabled" value="0" form="connection-settings"{{if .ViewOnly}} disabled{{end}}>
+        <input type="hidden" name="enabled" value="0"{{if .ViewOnly}} disabled{{end}}>
         <label class="tg">
-          <input type="checkbox" role="switch" aria-label="{{.Text.detail_enable}}" name="enabled" value="1" form="connection-settings"{{if $detail.Enabled}} checked{{end}}{{if .ViewOnly}} disabled{{end}}>
+          <input type="checkbox" role="switch" aria-label="{{.Text.detail_enable}}" name="enabled" value="1"{{if $detail.Enabled}} checked{{end}}{{if .ViewOnly}} disabled{{end}}>
           <span class="tg-track" aria-hidden="true"></span>
           <span class="tg-label" aria-hidden="true"><span class="when-on">{{.Text.detail_enabled}}</span><span class="when-off">{{.Text.detail_disabled}}</span></span>
         </label>
@@ -28,10 +27,7 @@
       {{end}}
       <div class="prov detail-status">
         <div class="prov" data-fragment="{{$detail.Fragment}}/health">{{template "connection-health" .}}</div>
-        <form method="post" action="{{$detail.Path}}/probe">
-          <input type="hidden" name="rev" value="{{$detail.Rev}}">
-          <button class="btn soft detail-small-button" type="submit"{{if or .ViewOnly (not $detail.CanProbe)}} disabled{{end}}>{{.Text.detail_probe}}</button>
-        </form>
+        <button class="btn soft detail-small-button" type="submit" formaction="{{$detail.Path}}/probe"{{if or .ViewOnly (not $detail.CanProbe)}} disabled{{end}}>{{.Text.detail_probe}}</button>
       </div>
       <dl class="facts detail-facts">
         {{range $detail.Facts}}
@@ -44,8 +40,8 @@
         <p class="hint detail-hint">{{$detail.ReserveHint}}</p>
         <div class="fld connections-select">
           <label for="connection-reserve">{{.Text.connections_reserve}}</label>
-          <select id="connection-reserve" name="fallback" form="connection-settings"{{if .ViewOnly}} disabled{{end}}>
-            {{range $detail.Options}}<option value="{{.Target}}"{{if eq .Target $detail.Reserve}} selected{{end}}>{{.Label}}</option>{{end}}
+          <select id="connection-reserve" name="fallback"{{if .ViewOnly}} disabled{{end}}>
+            {{range $detail.Options}}<option value="{{.Target}}"{{if eq .Target $detail.Reserve}} selected{{end}}{{if .Disabled}} disabled{{end}}>{{.Label}}</option>{{end}}
           </select>
         </div>
         <ol class="detail-chain" aria-label="{{.Text.detail_reserve_chain}}">
@@ -62,7 +58,14 @@
         </ol>
         {{if gt (len $detail.Chain) 1}}<p class="hint detail-timing">{{$detail.ReserveTiming}}</p>{{end}}
       </section>
+      </form>
 
+      {{if $detail.TrafficGroup}}
+      <section class="connections-section" aria-labelledby="connection-member-traffic-title">
+        <div class="connections-head"><h2 id="connection-member-traffic-title">{{.Text.detail_member_traffic}}</h2></div>
+        {{template "connection-traffic-members" .}}
+      </section>
+      {{else}}
       <section class="connections-section" aria-labelledby="connection-speed-title">
         <div class="connections-head">
           <h2 id="connection-speed-title">{{.Text.detail_speed}}</h2>
@@ -74,6 +77,7 @@
       <section id="connection-hosts" class="connections-section" aria-labelledby="connection-hosts-title" data-fragment="{{.ConnectionHosts.Path}}">
         {{template "connection-hosts" .}}
       </section>
+      {{end}}
 
       <section id="connection-parameters" class="connections-section" aria-labelledby="connection-parameters-title">
         <div class="connections-head">
@@ -109,6 +113,15 @@
 {{define "connection-health"}}
   <span class="chip {{.ConnectionHealth.Status.Class}}">{{.ConnectionHealth.Status.Label}}</span>
   {{if .ConnectionHealth.Detail}}<span>{{.ConnectionHealth.Detail}}</span>{{end}}
+{{end}}
+
+{{define "connection-traffic-members"}}
+  <p class="muted">{{.Text.detail_member_traffic_hint}}</p>
+  {{if .ConnectionTrafficLinks}}
+  <ul>
+    {{range .ConnectionTrafficLinks}}<li><a class="clip" title="{{.Label}}" href="{{.URL}}">{{.Label}}</a></li>{{end}}
+  </ul>
+  {{end}}
 {{end}}
 
 {{define "connection-hosts"}}

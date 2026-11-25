@@ -56,9 +56,9 @@ If an identifier conflicts with a routing tag, choose another one. After a manua
 
 Import a standalone sing-box outbound or endpoint. Check refuses explicit tag references such as `detour` and `domain_resolver`, including references to tags declared in the same JSON. KeenProxy configures routing, DNS resolution and interface binding.
 
-Select a manual connection's name to open its details. Use **Enabled** and **Reserve**, then choose **Save**. The page shows the configured reserve chain and offers only choices that keep the chain valid. Choose **Check** to probe the saved profile through the configured failover URL. The result reports the profile's reachability. **Speed** and **Traffic by site** show the daemon's recorded traffic for that connection, with up to 30 minutes of speed history.
+Select a manual connection's name to open its details. Use **Enabled** and **Reserve**, then choose **Save**. The page shows the configured reserve chain and checks the choices against the compiled outbound graph. Choose **Check** to test the saved profile's reachability through the configured failover URL. Pending switch and reserve edits stay on the form. **Speed** and **Traffic by site** show recorded traffic for that connection, with up to 30 minutes of speed history. Raw selectors link to the member connections that carry the traffic.
 
-The page masks credentials by default. A managing account can choose **Show parameters** for the current page or **Replace parameters** to reopen the wizard for that connection. **Delete** lists any saved references that must be removed before the connection can be deleted.
+The page masks credentials by default. A managing account can choose **Show parameters** for the current page or **Replace parameters** to reopen the wizard for that connection. Replacing a profile keeps its traffic history. **Delete** lists any saved references that must be removed before deletion. Once deletion takes effect, a connection created later with the same identifier starts with empty traffic history.
 
 Disabling a connection keeps its profile, credentials, and routing references. Its tunnel and availability checks stop. Profiles can also be set in the [YAML configuration](getting-started.md).
 
