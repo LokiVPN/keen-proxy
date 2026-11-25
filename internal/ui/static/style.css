@@ -502,6 +502,44 @@
 .connections-node .clip { max-width: 100%; }
 .connections-manual .tg { min-height: 22px; vertical-align: middle; }
 
+.detail-title h1 { flex: 1 1 0; }
+.detail-title .tg { flex: none; }
+.detail-status { margin-top: 12px; }
+.kp .detail-small-button { min-height: 32px; min-width: 0; padding-inline: 16px; }
+.detail-error { display: block; overflow-wrap: anywhere; }
+.detail-error ul { margin: 8px 0 0; padding-left: 20px; }
+.detail-hint {
+  display: -webkit-box;
+  max-width: 560px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.detail-timing { max-width: 560px; }
+.detail-chain { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0 0; padding: 0; list-style: none; }
+.detail-chain li, .detail-chain-member { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.detail-chain li { max-width: 100%; }
+.detail-chain-member { padding: 3px 10px; border: 1px solid var(--line); border-radius: 4px; }
+.detail-chain-member strong { font-weight: 500; }
+.detail-chain-arrow { color: var(--gray); }
+.detail-hosts { table-layout: fixed; }
+.detail-hosts th:first-child { width: 42%; }
+.detail-parameters dd { overflow-wrap: anywhere; }
+.detail-profile {
+  max-height: 20rem;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--th);
+  white-space: pre-wrap;
+}
+.kp .detail-delete { margin-left: auto; border-color: var(--warn-t); background: transparent; color: var(--warn-t); }
+.kp .detail-delete:hover { border-color: var(--warn-t); background: var(--warn-bg); color: var(--warn-t); }
+.kp .detail-delete:disabled { border-color: var(--line); background: transparent; color: var(--disabled-text); }
+
 .wizard-crumb { display: inline-flex; align-items: center; gap: 2px; margin: 0 0 12px -4px; font-weight: 500; }
 .kp .wizard-lead { max-width: 560px; }
 .wizard-methods { display: flex; flex-wrap: wrap; width: fit-content; margin-top: 28px; }
@@ -628,6 +666,17 @@
   .connections-nodes .connections-probe { width: 28%; }
   .connections-manual .connections-probe { width: 32%; }
   .connections-manual .c-tg { width: 44px; }
+  .detail-status > form { flex-basis: 100%; }
+  .detail-facts .clip {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  .detail-actions .btn { min-width: 0; }
+  .detail-hosts th:first-child { width: 60%; }
+  .detail-title h1 { flex-basis: 120px; }
   .wizard-grid { grid-template-columns: minmax(0, 1fr); }
   .wizard-buttons .btn { flex: 1 1 auto; }
   .connections-node .clip, .connections-manual .res-inline .clip {

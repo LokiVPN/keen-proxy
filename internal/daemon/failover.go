@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -168,6 +169,10 @@ func (d *Daemon) probe(ctx context.Context, id, rawURL string) (time.Duration, e
 	if !ok {
 		return 0, fmt.Errorf("connection is not running")
 	}
+	return probeOutbound(ctx, engCtx, out, rawURL)
+}
+
+func probeOutbound(ctx, engCtx context.Context, out adapter.Outbound, rawURL string) (time.Duration, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return 0, err

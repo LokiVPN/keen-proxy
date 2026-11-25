@@ -82,6 +82,16 @@ func connectionsView(cfg, draft *model.Config, subs []AppliedSubscription, healt
 // connectionReserveOptions labels the model's choices, including disabled
 // manual connections whose own reserves still apply.
 func connectionReserveOptions(cfg *model.Config, text map[string]string) []connectionOption {
+	labels := manualReserveLabels(cfg, text)
+	targets := cfg.SubscriptionFallbackTargets()
+	options := make([]connectionOption, 0, len(targets))
+	for _, target := range targets {
+		options = append(options, connectionOption{Target: connectionIDSegment(target), Label: labels[target]})
+	}
+	return options
+}
+
+func manualReserveLabels(cfg *model.Config, text map[string]string) map[string]string {
 	labels := make(map[string]string, len(cfg.Connections)+2)
 	for _, conn := range cfg.Connections {
 		label := cmp.Or(conn.Name, conn.ID) + " · " + connectionProtocol(conn)
@@ -92,12 +102,7 @@ func connectionReserveOptions(cfg *model.Config, text map[string]string) []conne
 	}
 	labels[model.TargetDirect] = text["connections_reserve_direct"]
 	labels[model.TargetBlock] = text["connections_reserve_block"]
-	targets := cfg.SubscriptionFallbackTargets()
-	options := make([]connectionOption, 0, len(targets))
-	for _, target := range targets {
-		options = append(options, connectionOption{Target: connectionIDSegment(target), Label: labels[target]})
-	}
-	return options
+	return labels
 }
 
 func connectionReserveChain(cfg *model.Config, id string, text map[string]string) string {

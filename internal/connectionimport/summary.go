@@ -52,13 +52,18 @@ func profileSummary(profile map[string]any, endpoint bool) Summary {
 // Compare the input and the display form of each host so canonicalization
 // cannot turn a repeated credential into a visible hostname.
 func (s Summary) hideRepeatedCredentials(rawServer, rawSNI string, credentials []string) Summary {
+	s = s.hideDisplayType(credentials)
+	s.Server, s.ServerHidden = hideSummaryHost(s.Server, rawServer, credentials)
+	s.SNI, s.SNIHidden = hideSummaryHost(s.SNI, rawSNI, credentials)
+	return s
+}
+
+func (s Summary) hideDisplayType(credentials []string) Summary {
 	typ := s.Protocol
 	if s.Security != "" {
 		typ += " · " + s.Security
 	}
-	s.TypeHidden = subscription.ContainsDisplaySecret(typ, credentials)
-	s.Server, s.ServerHidden = hideSummaryHost(s.Server, rawServer, credentials)
-	s.SNI, s.SNIHidden = hideSummaryHost(s.SNI, rawSNI, credentials)
+	s.TypeHidden = s.TypeHidden || subscription.ContainsDisplaySecret(typ, credentials)
 	return s
 }
 

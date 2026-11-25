@@ -26,6 +26,11 @@ type Deps interface {
 	TrafficSeries() []stats.Point
 	RefreshSubscription(id, revision string) error
 	CheckSubscription(source, node, revision string) error
+	ConnectionHealth(id string) (ConnectionHealth, bool)
+	ConnectionTraffic(id string) (active int, series []stats.Point)
+	ConnectionHosts(id string, limit int) ([]stats.Host, int)
+	CheckConnection(ctx context.Context, id, revision string) error
+	ConnectionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error)
 }
 
 // DiscoveredDevice is an observation from the LAN snapshot. The applied
@@ -76,6 +81,15 @@ type ConnectionStatus struct {
 	Checked, Available bool
 	Class, ActiveClass stats.TargetClass
 	LatencyMS          int64
+}
+
+// ConnectionHealth is the saved profile's reachability and its routing
+// target's static class. The probe result never contains a URL or raw error.
+type ConnectionHealth struct {
+	Disabled, Available, HTTPS bool
+	Checked                    time.Time
+	LatencyMS                  int64
+	Class                      stats.TargetClass
 }
 
 // AppliedSubscription exposes display metadata and the current catalog without

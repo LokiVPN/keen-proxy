@@ -295,8 +295,12 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 }
 
 func overviewTraffic(series []stats.Point, now time.Time, lang string) trafficView {
+	return trafficChart(series, now, lang, "overview_chart_label")
+}
+
+func trafficChart(series []stats.Point, now time.Time, lang, labelKey string) trafficView {
 	text := translations[lang]
-	traffic := trafficView{Chart: Chart(series, now, text["overview_chart_label"])}
+	traffic := trafficView{Chart: Chart(series, now, text[labelKey])}
 	for i := len(series) - 1; i >= 0; i-- {
 		point := series[i]
 		if point.T < now.Add(-chartWindow).UnixMilli() {

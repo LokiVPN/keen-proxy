@@ -45,6 +45,31 @@ func TestWizardValidationCompilesDisabledReplacement(t *testing.T) {
 	}
 }
 
+func TestConnectionDeletionRecognizesSavedProfileReferences(t *testing.T) {
+	cfg := &model.Config{Connections: []model.Connection{
+		{ID: "backup", Type: model.ConnLink, Fallback: model.TargetDirect},
+		{ID: "selector", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "selector", "outbounds": []string{"backup"}, "default": "backup",
+		}},
+		{ID: "detour", Type: model.ConnSingBox, Disabled: true, Outbound: map[string]any{
+			"type": "socks", "server": "server.example", "server_port": 1080, "DETOUR": "failover-backup",
+		}},
+		{ID: "credential", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "server": "server.example", "server_port": 1080, "password": "backup",
+		}},
+		{ID: "unrelated", Type: model.ConnSingBox, Disabled: true, Outbound: map[string]any{"type": "unavailable-type"}},
+	}}
+	refs, err := (uiDeps{}).ConnectionProfileReferences(t.Context(), cfg, "backup")
+	if err != nil || !reflect.DeepEqual(refs, []string{"selector", "detour"}) {
+		t.Fatalf("saved profile references = %q, error = %v", refs, err)
+	}
+	cfg.Connections[4].Outbound["detour"] = "backup"
+	refs, err = (uiDeps{}).ConnectionProfileReferences(t.Context(), cfg, "backup")
+	if err == nil || strings.Contains(err.Error(), "unavailable-type") || !reflect.DeepEqual(refs, []string{"selector", "detour"}) {
+		t.Fatal("the decoder error did not preserve the known references privately")
+	}
+}
+
 func TestWizardValidationAcceptsUnchangedDormantProfile(t *testing.T) {
 	cfg := &model.Config{Connections: []model.Connection{
 		{ID: "retired", Disabled: true, Type: model.ConnSingBox, Outbound: map[string]any{

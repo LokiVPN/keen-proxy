@@ -2,6 +2,7 @@ package model
 
 import (
 	"iter"
+	"slices"
 	"strings"
 )
 
@@ -26,6 +27,47 @@ func (c *Config) ActiveChain(id string) []string {
 		return append(active, TargetBlock)
 	}
 	return active
+}
+
+// ConnectionFallbackTargets returns the legal reserve choices for an applied
+// connection, ordered for display. A disabled profile still has its own
+// configured chain and can be selected if the chain is valid.
+func (c *Config) ConnectionFallbackTargets(id string) []string {
+	incoming := make(map[string][]string, len(c.Connections))
+	excluded := []string{id}
+	forDNS := c.DNS.Route == "connection" && slices.Contains(c.Chain(c.DNS.Connection), id)
+	if forDNS && c.DNS.Failure != "direct" {
+		excluded = append(excluded, TargetDirect)
+	}
+	for _, conn := range c.Connections {
+		if conn.Fallback != "" {
+			incoming[conn.Fallback] = append(incoming[conn.Fallback], conn.ID)
+		}
+		if forDNS && !dnsConnectionTypeCanTunnel(conn) {
+			excluded = append(excluded, conn.ID)
+		}
+	}
+	// Anything feeding the edited connection would close a loop. The same
+	// walk also excludes every path reaching a member disallowed for DNS.
+	seen := make(map[string]bool, len(excluded))
+	for len(excluded) > 0 {
+		target := excluded[len(excluded)-1]
+		excluded = excluded[:len(excluded)-1]
+		if !seen[target] {
+			seen[target] = true
+			excluded = append(excluded, incoming[target]...)
+		}
+	}
+	targets := []string{""}
+	if !seen[TargetDirect] {
+		targets = append(targets, TargetDirect)
+	}
+	for _, conn := range c.Connections {
+		if !seen[conn.ID] {
+			targets = append(targets, conn.ID)
+		}
+	}
+	return targets
 }
 
 // ActiveEntries yields original entries in order using the canonical entry

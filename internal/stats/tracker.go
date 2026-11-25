@@ -386,6 +386,17 @@ func (t *Tracker) TunnelSeries() []Point {
 	return slices.Clone(t.tunnelSeries)
 }
 
+// ConnectionTraffic returns one profile's active flows and a copy of its
+// history without ranking hosts or copying other outbounds' series.
+func (t *Tracker) ConnectionTraffic(tag string) (active int, series []Point) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if out := t.outs[tag]; out != nil {
+		return out.active, slices.Clone(out.series)
+	}
+	return 0, nil
+}
+
 // Snapshot returns current panel statistics, optionally including history.
 func (t *Tracker) Snapshot(withSeries bool) Snapshot {
 	t.mu.Lock()

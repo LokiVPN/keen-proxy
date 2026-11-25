@@ -57,17 +57,8 @@ func (c *Config) validateFeatures(add func(string, ...any)) {
 		// Routing containers may hide a direct exit under a non-reserved tag.
 		for _, id := range c.Chain(d.Connection) {
 			for _, cn := range c.Connections {
-				if cn.ID != id || cn.Type != ConnSingBox {
-					continue
-				}
-				typ, _ := cn.Outbound["type"].(string)
-				if cn.Endpoint != nil {
-					typ, _ = cn.Endpoint["type"].(string)
-				}
-				switch typ {
-				case "wireguard", "socks", "http", "shadowsocks", "vmess", "vless", "trojan", "tuic", "hysteria", "hysteria2", "ssh", "naive", "anytls":
-				default:
-					add("dns.connection: raw type %q does not guarantee a tunnel", typ)
+				if cn.ID == id && !dnsConnectionTypeCanTunnel(cn) {
+					add("dns.connection: raw type %q does not guarantee a tunnel", rawConnectionType(cn))
 				}
 			}
 		}
@@ -91,4 +82,26 @@ func (c *Config) validateFeatures(add func(string, ...any)) {
 	} else if d.Connection != "" {
 		add("dns.connection: only allowed with route=connection")
 	}
+}
+
+func rawConnectionType(conn Connection) string {
+	profile := conn.Outbound
+	if conn.Endpoint != nil {
+		profile = conn.Endpoint
+	}
+	kind, _ := profile["type"].(string)
+	return kind
+}
+
+// For DNS, raw routing containers cannot guarantee a tunnel even when their
+// configured target is not the built-in direct route.
+func dnsConnectionTypeCanTunnel(conn Connection) bool {
+	if conn.Type != ConnSingBox {
+		return true
+	}
+	switch rawConnectionType(conn) {
+	case "wireguard", "socks", "http", "shadowsocks", "vmess", "vless", "trojan", "tuic", "hysteria", "hysteria2", "ssh", "naive", "anytls":
+		return true
+	}
+	return false
 }

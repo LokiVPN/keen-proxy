@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/netip"
@@ -29,6 +31,9 @@ type managementDaemon interface {
 	TrafficSeries() []stats.Point
 	RefreshSubscriptionIfCurrent(id, revision string) error
 	CheckSubscriptionIfCurrent(source, node, revision string) error
+	ConnectionHealth(id string) (daemon.ConnectionObservation, bool)
+	ConnectionTraffic(id string) (int, []stats.Point)
+	CheckConnectionIfCurrent(ctx context.Context, id, revision string) error
 }
 
 // uiDeps gives pages display snapshots and revision-checked management operations.
@@ -238,6 +243,66 @@ func (d uiDeps) RefreshSubscription(id, revision string) error {
 
 func (d uiDeps) CheckSubscription(source, node, revision string) error {
 	return d.daemon.CheckSubscriptionIfCurrent(source, node, revision)
+}
+
+func (d uiDeps) ConnectionHealth(id string) (ui.ConnectionHealth, bool) {
+	health, found := d.daemon.ConnectionHealth(id)
+	return ui.ConnectionHealth(health), found
+}
+
+func (d uiDeps) ConnectionTraffic(id string) (int, []stats.Point) {
+	return d.daemon.ConnectionTraffic(id)
+}
+
+func (d uiDeps) ConnectionHosts(id string, limit int) ([]stats.Host, int) {
+	return d.daemon.Hosts(id, "", limit)
+}
+
+func (d uiDeps) CheckConnection(ctx context.Context, id, revision string) error {
+	return d.daemon.CheckConnectionIfCurrent(ctx, id, revision)
+}
+
+// ConnectionProfileReferences guards legacy raw profiles that intentionally
+// depend on another saved outbound. New wizard imports have no such references.
+func (uiDeps) ConnectionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error) {
+	tags := []string{id}
+	for _, conn := range cfg.Connections {
+		if conn.ID == id && (conn.Disabled || conn.Fallback != "") {
+			tags = append(tags, compile.FailoverTagPrefix+id)
+			break
+		}
+	}
+	encoded := make([][]byte, len(tags))
+	for i, tag := range tags {
+		encoded[i], _ = json.Marshal(tag)
+	}
+	var refs []string
+	var inspectionErr error
+	for _, conn := range cfg.Connections {
+		if conn.Type != model.ConnSingBox || conn.ID == id {
+			continue
+		}
+		conn.Disabled = false
+		raw, err := compile.ConnectionValidationConfig(&model.Config{Connections: []model.Connection{conn}})
+		if err != nil {
+			inspectionErr = errors.New("could not inspect a saved raw profile")
+			continue
+		}
+		// An unrelated dormant profile can require a different build.
+		// Decode only profiles with an exact string that could be a reference.
+		if !slices.ContainsFunc(encoded, func(tag []byte) bool { return bytes.Contains(raw, tag) }) {
+			continue
+		}
+		found, err := engine.ProfileReferencesOutbound(ctx, raw, tags)
+		if err != nil {
+			inspectionErr = errors.New("could not inspect a saved raw profile")
+			continue
+		}
+		if found {
+			refs = append(refs, conn.ID)
+		}
+	}
+	return refs, inspectionErr
 }
 
 func pageRole(r *http.Request) ui.Role {

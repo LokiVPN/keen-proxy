@@ -37,9 +37,12 @@ type pageData struct {
 	Routing                 *routingPage
 	Devices                 *devicesPage
 	Connections             *connectionsPage
+	ConnectionDetail        *connectionDetailPage
 	ConnectionWizard        *connectionWizardPage
 	SubscriptionNodes       subscriptionNodesView
 	Traffic                 trafficView
+	ConnectionHealth        connectionHealthView
+	ConnectionHosts         connectionHostsView
 }
 
 func (opts Options) pageData(r *http.Request) pageData {
