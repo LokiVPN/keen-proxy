@@ -64,7 +64,10 @@
 {{define "connections-nodes"}}
   <div class="connections-head">
     <h2 class="clip" id="subscription-title-{{.ID}}" title="{{.Title}}">{{.Title}}</h2>
-    <button class="linkbtn connections-check" type="submit" name="check" value="{{.ID}}:"{{if or .ViewOnly .CheckingAll (not .Rows)}} disabled{{end}}>{{.Text.connections_check_all}}</button>
+    <div class="connections-actions">
+      <button class="linkbtn connections-check" type="submit" name="refresh" value="{{.ID}}"{{if .ViewOnly}} disabled{{end}}>{{.Text.overview_refresh}}</button>
+      <button class="linkbtn connections-check" type="submit" name="check" value="{{.ID}}:"{{if or .ViewOnly .CheckingAll (not .Rows)}} disabled{{end}}>{{.Text.connections_check_all}}</button>
+    </div>
   </div>
   <div class="prov">
     <span class="chip {{.Status.Class}}">{{.Status.Label}}</span>

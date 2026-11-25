@@ -86,7 +86,7 @@ Choose a subscription target under **Main connection** on **Overview**.
 
 The three balancing modes use nodes that passed their latest check and support the connection's transport. If no eligible node supports the transport, new connections use the subscription's [reserve](routing.md#subscription-reserve) when one is set, or are blocked.
 
-Choose **Update now** on **Overview** to fetch the provider's latest list and metadata. If the fetch fails, KeenProxy retains its last validated list and reports the update status. Keep subscription URLs private. They are included in full YAML backups.
+Choose **Update now** in a subscription's section on **Connections** to fetch its latest list and metadata. The button on **Overview** refreshes the subscription displayed there. A refresh from a current Connections form keeps staged reserve and switch edits for **Save**. If the fetch fails, KeenProxy retains its last validated list and reports the update status. Keep subscription URLs private. They are included in full YAML backups.
 
 ### AmneziaWG profiles (experimental lx build)
 

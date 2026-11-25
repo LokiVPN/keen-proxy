@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
 
 const connectionsFormSize = 1 << 20
@@ -38,16 +39,24 @@ func (p pages) connectionsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	checks := r.PostForm["check"]
+	checks, refreshes := r.PostForm["check"], r.PostForm["refresh"]
 	r.PostForm.Del("check")
+	r.PostForm.Del("refresh")
 	draft := cfg.Clone()
 	if problem := updateConnections(draft, r.PostForm); problem != "" {
 		p.renderConnections(w, r, http.StatusUnprocessableEntity, cfg, nil, problem)
 		return
 	}
 	revision := r.PostForm.Get("rev")
-	if len(checks) != 0 {
-		p.connectionsCheck(w, r, cfg, draft, checks, revision)
+	switch {
+	case len(checks)+len(refreshes) > 1:
+		p.renderConnections(w, r, http.StatusBadRequest, cfg, draft, "connections_invalid_form")
+		return
+	case len(checks) == 1:
+		p.connectionsCheck(w, r, cfg, draft, checks[0], revision)
+		return
+	case len(refreshes) == 1:
+		p.connectionsRefresh(w, r, cfg, draft, refreshes[0], revision)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
@@ -112,9 +121,9 @@ func updateConnections(draft *model.Config, form url.Values) string {
 
 // connectionsCheck queues the saved node check and renders the submitted
 // settings as a draft. Only Save applies the form's reserve and switch edits.
-func (p pages) connectionsCheck(w http.ResponseWriter, r *http.Request, cfg, draft *model.Config, checks []string, revision string) {
-	source, node, found := strings.Cut(checks[0], ":")
-	if len(checks) != 1 || !found || source == "" {
+func (p pages) connectionsCheck(w http.ResponseWriter, r *http.Request, cfg, draft *model.Config, check, revision string) {
+	source, node, found := strings.Cut(check, ":")
+	if !found || source == "" {
 		p.renderConnections(w, r, http.StatusBadRequest, cfg, draft, "connections_invalid_form")
 		return
 	}
@@ -126,6 +135,23 @@ func (p pages) connectionsCheck(w http.ResponseWriter, r *http.Request, cfg, dra
 		p.renderConnections(w, r, http.StatusUnprocessableEntity, cfg, draft, "connections_check_error")
 	default:
 		p.renderConnections(w, r, http.StatusOK, cfg, draft, "flash_connections_check")
+	}
+}
+
+// connectionsRefresh queues a fetch for one applied source and preserves any
+// edits on the form for a later Save.
+func (p pages) connectionsRefresh(w http.ResponseWriter, r *http.Request, cfg, draft *model.Config, source, revision string) {
+	if !slices.ContainsFunc(cfg.Subscriptions, func(sub subscription.Source) bool { return sub.ID == source }) {
+		p.renderConnections(w, r, http.StatusBadRequest, cfg, draft, "connections_invalid_form")
+		return
+	}
+	switch err := p.deps.RefreshSubscription(source, revision); {
+	case errors.Is(err, model.ErrConfigChanged):
+		p.renderConnections(w, r, http.StatusConflict, p.deps.Config(), nil, "revision_changed")
+	case err != nil:
+		p.renderConnections(w, r, http.StatusServiceUnavailable, cfg, draft, "overview_refresh_error")
+	default:
+		p.renderConnections(w, r, http.StatusOK, cfg, draft, "flash_subscription_refresh")
 	}
 }
 

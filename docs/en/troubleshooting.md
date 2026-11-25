@@ -26,29 +26,43 @@ After applying the rules, the watchdog checks the entry jumps again. If verifica
 
 For repeated recoveries, record the times of the triggering actions and export the diagnostics ZIP together with the router system log. The ZIP retains structured firewall evidence under the audit entry's `firewall` field, including the optional `trigger` (`netfilter_hook` or `watchdog`) and nonnegative `duration_ms`, any failed `before` and `after` checks, and `outcome` (`restored`, `apply_failed`, or `verify_failed`). Raw command errors remain in the local journals. The ZIP keeps only known rule identities, exit codes, reasons and coarse error categories. Older entries have no `firewall` field.
 
-## Apply fails in TPROXY mode on Keenetic { #keenetic-tproxy-apply }
+## TPROXY fails or blocks startup on Keenetic { #keenetic-tproxy-apply }
 
-The error `iptables-restore: line N failed` does not necessarily mean TPROXY is missing. Start with the exact Apply error and the [`firewall_apply.restore` entry in the diagnostic ZIP](#download-the-diagnostic-zip). If the reported operation is `commit`, it identifies the table whose commit failed, not a specific rule.
+The error `iptables-restore: line N failed` can have several causes. Start with the exact error and the `firewall_apply.restore` entry. If the reported operation is `commit`, it identifies the table whose commit failed. [Diagnostic ZIP](#download-the-diagnostic-zip)
 
-Use the loopback control API from an SSH session on the router to run the
-preliminary TPROXY check. Adjust the port if you changed `api.listen`.
+### Retry blocked startup over SSH { #retry-blocked-tproxy-startup }
+
+If the saved TPROXY settings block startup, the panel stays accessible while
+interception is stopped. From an Entware SSH session on the router, check the
+preliminary readiness and startup state. The control API must accept loopback
+connections. These examples use `127.0.0.1:8086`. Substitute the loopback
+address and port accepted by your `api.listen` if they differ.
 
 ```sh
-curl -fsS http://127.0.0.1:8086/api/diagnostics/tproxy
+curl -sS -i http://127.0.0.1:8086/api/diagnostics/tproxy
 ```
 
-An `unknown` result allows Apply to proceed. On OpenWrt with `iptables-nft`,
-the legacy iptables target list may be incomplete. Verify traffic separately
-after activation.
-
-When the saved TPROXY mode is unavailable at startup, the panel stays
-accessible while interception is stopped. The probe reports
-`startup_blocked: true`. After fixing the reported cause, retry activation
-from the router's SSH session. The retry uses the saved settings and leaves
-the configuration file and its backup intact.
+An HTTP `200` response with `"startup_blocked": true` confirms that startup is
+blocked. An `unknown` readiness result allows KeenProxy to attempt activation.
+On OpenWrt with `iptables-nft`, the legacy iptables target list may be incomplete.
+Use the kernel checks below to fix the reported cause, then retry the saved
+settings. The retry preserves the configuration file and its backup.
 
 ```sh
-curl -fsS -X POST http://127.0.0.1:8086/api/diagnostics/tproxy/retry
+curl -sS -i -X POST http://127.0.0.1:8086/api/diagnostics/tproxy/retry
+```
+
+Read the HTTP status line and the JSON body. After HTTP `200`, repeat the GET
+and confirm that `"startup_blocked": true` is gone. HTTP `409` means there is
+no blocked startup to retry. If the retry returns HTTP `422`, read the JSON
+`error` field for the failure reason.
+
+If `api.listen` binds only to the router's LAN address, use the Entware
+service controller after fixing the cause. Restarting starts KeenProxy with
+its saved settings and the configured bind.
+
+```sh
+/opt/etc/init.d/S99keenproxy restart
 ```
 
 In the KeeneticOS component list, check **Open Package support (OPKG)** and **Kernel modules for Netfilter**. Entware supplies the `iptables` commands separately. Even with Netfilter and Xtables-addons installed, the TPROXY module may be present on disk but not loaded.
@@ -177,7 +191,7 @@ fi
 
 If the help lists `--on-port`, `--on-ip`, and `--tproxy-mark`, the Entware command recognizes the extension. A successful `mangle` read only confirms that the table is accessible. Neither proves that the kernel will accept a TPROXY rule. `TPROXY` in `/proc/net/ip_tables_targets` confirms that the target is registered; absence from `/proc/modules` alone does not rule out built-in support.
 
-**If the target is missing but the firmware module exists**, the router owner can try loading it temporarily. Keep local recovery access and do this when it is safe to retest Apply. Use only the module shipped with the running firmware; do not download a `.ko` from another router or distribution.
+**If the target is missing but the firmware module exists**, the router owner can try loading it temporarily. Keep local recovery access and do this when it is safe to retry interception. Use the module shipped with the running firmware.
 
 Save the optional loader as `load-tproxy.sh` and run it separately with `sh load-tproxy.sh`. It skips `insmod` if the target is already registered, the module is already loaded, or either kernel check fails.
 
@@ -211,7 +225,20 @@ insmod "$module" || exit "$?"
 grep -x TPROXY "$targets"
 ```
 
-In [issue #39](https://github.com/ordo-systems/keen-proxy/issues/39), the target appeared after this step. If it appears on your router, retry **Apply** in TPROXY mode. After a successful Apply, check that `/opt/sbin/iptables -w -t mangle -S KEENPROXY_UDP` shows a `-j TPROXY` rule for participating clients, then test UDP traffic from one of those clients. Manual module loading does not persist across reboot. If loading fails, capture its error and relevant lines from `dmesg | tail -30`. If Apply still fails, include the full Apply error and the reviewed diagnostic ZIP in your report. If you do not need transparent UDP interception, use the compatible (`redirect`) mode while investigating. Redact private addresses and kernel pointers before sharing command output.
+The target appeared after this step in the reported case. [Issue #39](https://github.com/ordo-systems/keen-proxy/issues/39)
+
+If the target appears on your router and startup was blocked, retry the saved
+settings over SSH. The procedure covers loopback API access and a LAN-only
+listener. [Retry blocked startup over SSH](#retry-blocked-tproxy-startup)
+
+After activation, check that `/opt/sbin/iptables -w -t mangle -S KEENPROXY_UDP`
+shows a `-j TPROXY` rule for participating clients. Then test UDP traffic from
+one of them. Manual module loading lasts until reboot. If loading fails, save
+the error and the relevant lines from `dmesg | tail -30`. If activation still
+fails, include the full error and the reviewed diagnostic ZIP. If you can
+work without transparent UDP interception, use `intercept.mode: redirect`
+while investigating. Redact private addresses and kernel pointers before
+sharing command output.
 
 ## Download the diagnostic ZIP
 

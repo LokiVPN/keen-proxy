@@ -182,6 +182,76 @@ func TestConnectionsChecksNodesAndRefreshesStatusFragment(t *testing.T) {
 	assertContains(t, w.Body.String(), "Settings changed in another window")
 }
 
+func TestConnectionsRefreshesSelectedSubscription(t *testing.T) {
+	f := newConnectionsFixture(t)
+	f.cfg.Subscriptions = append(f.cfg.Subscriptions, subscription.Source{ID: "extra", URL: "https://second.example/config"})
+	h := New(f, setupTestOptions(RoleManage))
+	page := setupRequest(h, "/connections", nil).Body.String()
+	form := connectionsSaveForm(t, page)
+	form.Set("fallback.extra", "")
+	form.Set("fallback.sample", model.TargetDirect)
+	form.Set("enabled.old", "0")
+	form.Set("refresh", "extra")
+	before := f.Config()
+	w := setupRequest(h, "/connections", form)
+	if w.Code != http.StatusOK || !slices.Equal(f.refreshes, []string{"extra"}) || f.applies != 0 || !reflect.DeepEqual(f.Config(), before) {
+		t.Fatalf("refresh second source: HTTP %d, queued %v, Apply calls %d", w.Code, f.refreshes, f.applies)
+	}
+	assertContains(t, w.Body.String(), `role="status">Subscription refresh requested`, `value="direct" selected`, "data-dirty")
+	if _, checked := connectionControl(t, w.Body.String(), "input", "enabled.old", "1")["checked"]; checked {
+		t.Fatal("the staged switch was lost during refresh")
+	}
+	for _, id := range []string{"sample", "extra"} {
+		control := connectionControl(t, page, "button", "refresh", id)
+		if _, disabled := control["disabled"]; disabled || control["type"] != "submit" {
+			t.Errorf("refresh %q did not render an enabled submit button", id)
+		}
+	}
+}
+
+func TestConnectionsRejectsUnsafeSubscriptionRefreshes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		role   Role
+		change func(*connectionsFixture, url.Values)
+		status int
+	}{
+		{"stale page", RoleManage, func(f *connectionsFixture, _ url.Values) { f.cfg.Paused = true }, http.StatusConflict},
+		{"concurrent edit", RoleManage, func(f *connectionsFixture, _ url.Values) { f.refreshErr = model.ErrConfigChanged }, http.StatusConflict},
+		{"view role", RoleView, nil, http.StatusForbidden},
+		{"unknown source", RoleManage, func(_ *connectionsFixture, form url.Values) { form.Set("refresh", "missing") }, http.StatusBadRequest},
+		{"multiple sources", RoleManage, func(_ *connectionsFixture, form url.Values) { form.Add("refresh", "sample") }, http.StatusBadRequest},
+		{"mixed actions", RoleManage, func(_ *connectionsFixture, form url.Values) { form.Set("check", "sample:") }, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newConnectionsFixture(t)
+			f.cfg.Subscriptions = append(f.cfg.Subscriptions, subscription.Source{ID: "extra", URL: "https://second.example/config"})
+			h := New(f, setupTestOptions(tc.role))
+			page := setupRequest(h, "/connections", nil).Body.String()
+			form := connectionsSaveForm(t, page)
+			form.Set("fallback.extra", "")
+			form.Set("refresh", "extra")
+			if tc.change != nil {
+				tc.change(f, form)
+			}
+			w := setupRequest(h, "/connections", form)
+			if w.Code != tc.status || len(f.refreshes) != 0 || len(f.nodeChecks) != 0 || f.applies != 0 {
+				t.Fatalf("refresh: HTTP %d, want %d, queued refreshes %v, checks %v, Apply calls %d", w.Code, tc.status, f.refreshes, f.nodeChecks, f.applies)
+			}
+			if tc.status == http.StatusConflict {
+				assertContains(t, w.Body.String(), "Settings changed in another window")
+			}
+			if tc.role == RoleView {
+				for _, id := range []string{"sample", "extra"} {
+					if _, disabled := connectionControl(t, page, "button", "refresh", id)["disabled"]; !disabled {
+						t.Errorf("refresh %q was enabled for the view role", id)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestConnectionsMarksCurrentNodeAfterAProbeFailure(t *testing.T) {
 	f := newConnectionsFixture(t)
 	node := &f.subs[0].Nodes[0]

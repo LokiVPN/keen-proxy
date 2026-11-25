@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/daemon"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
@@ -457,6 +458,31 @@ func TestConnectionsAdapterUsesDaemonCatalogAndChecks(t *testing.T) {
 	}
 }
 
+func TestConnectionsRefreshUsesGuardedDaemonAdmission(t *testing.T) {
+	d := &connectionCheckDaemon{}
+	opts := ui.Options{Role: pageRole}
+	server := &api.Server{D: d, Pages: ui.New(uiDeps{daemon: d}, opts), PageError: opts.AccessError}
+	h := server.Handler()
+	const origin = "http://127.0.0.1:8086"
+	revision := ui.Revision(d.Config())
+	form := url.Values{"rev": {revision}, "refresh": {"other"}, "fallback.sample": {""}, "fallback.other": {""}}
+	post := func(requestOrigin string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, origin+"/connections", strings.NewReader(form.Encode()))
+		r.RemoteAddr = "127.0.0.1:4321"
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", requestOrigin)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if w := post("https://foreign.example.test"); w.Code != http.StatusForbidden || len(d.refreshes) != 0 {
+		t.Fatalf("foreign refresh: HTTP %d, admissions %v", w.Code, d.refreshes)
+	}
+	if w := post(origin); w.Code != http.StatusOK || !reflect.DeepEqual(d.refreshes, [][2]string{{"other", revision}}) {
+		t.Fatalf("same-origin refresh: HTTP %d, admissions %v", w.Code, d.refreshes)
+	}
+}
+
 func TestConnectionsShowsSelectedSubscriptionRuleState(t *testing.T) {
 	for _, tc := range []struct {
 		state daemon.ProviderRulesState
@@ -488,6 +514,7 @@ func TestConnectionsShowsSelectedSubscriptionRuleState(t *testing.T) {
 type connectionCheckDaemon struct {
 	managementDaemon
 	check      [3]string
+	refreshes  [][2]string
 	rulesState daemon.ProviderRulesState
 }
 
@@ -506,6 +533,11 @@ func (*connectionCheckDaemon) ProviderRules() (compile.ProviderRules, *model.Pro
 
 func (d *connectionCheckDaemon) CheckSubscriptionIfCurrent(source, node, revision string) error {
 	d.check = [3]string{source, node, revision}
+	return nil
+}
+
+func (d *connectionCheckDaemon) RefreshSubscriptionIfCurrent(source, revision string) error {
+	d.refreshes = append(d.refreshes, [2]string{source, revision})
 	return nil
 }
 

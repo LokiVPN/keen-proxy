@@ -491,6 +491,7 @@
 .connections-head { align-items: center; }
 .connections-head h2 { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
 .connections-head .clip { flex: 1 1 150px; }
+.connections-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
 .connections-select { margin-top: 28px; }
 .connections-check { min-height: 24px; }
 .connections-nodes, .connections-manual { table-layout: fixed; }

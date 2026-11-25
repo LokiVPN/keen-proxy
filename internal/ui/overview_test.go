@@ -392,6 +392,7 @@ func TestOverviewRejectsTargetsOutsideEnabledOptions(t *testing.T) {
 
 func TestOverviewRefreshAndConcurrentApply(t *testing.T) {
 	f := newOverviewFixture()
+	f.cfg.Subscriptions = append(f.cfg.Subscriptions, subscription.Source{ID: "extra", URL: "https://second.example/config"})
 	h := New(f, setupTestOptions(RoleManage))
 	form := url.Values{"rev": {Revision(f.Config())}}
 	w := setupRequest(h, "/overview/refresh", form)

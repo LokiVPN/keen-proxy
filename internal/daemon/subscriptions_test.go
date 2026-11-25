@@ -33,32 +33,42 @@ func refreshAppliedSubscription(t *testing.T, d *Daemon, id string) {
 }
 
 func TestPageSubscriptionRefreshRequiresCurrentConfig(t *testing.T) {
-	const id = "sample"
-	now := time.Now()
-	next := now.Add(time.Hour)
+	const first, second = "sample", "other"
+	next := time.Now().Add(time.Hour)
 	d := &Daemon{
-		cfg: &model.Config{Subscriptions: []subscription.Source{{ID: id, URL: "https://provider.example/saved"}}},
+		cfg: &model.Config{Subscriptions: []subscription.Source{
+			{ID: first, URL: "https://provider.example/saved"},
+			{ID: second, URL: "https://other.example/saved"},
+		}},
 		subscriptions: subscriptionRuntime{
-			states: map[string]appliedSubscription{id: {next: next}},
+			states: map[string]appliedSubscription{first: {next: next}, second: {next: next}},
 			wake:   make(chan struct{}, 1),
 		},
 	}
-	if got := d.Subscriptions()[0]; got.NextRefresh == nil || !got.NextRefresh.Equal(next) || got.Refreshing {
-		t.Fatalf("status did not report the scheduled refresh: %+v", got)
+	checkScheduled := func(got SubscriptionStatus) {
+		t.Helper()
+		if got.NextRefresh == nil || !got.NextRefresh.Equal(next) || got.Refreshing {
+			t.Fatalf("source %q lost its scheduled refresh: %+v", got.ID, got)
+		}
 	}
 	rev := model.ConfigRevision(d.Config())
-	d.cfg.Subscriptions[0].URL = "https://provider.example/replaced"
-	if err := d.RefreshSubscriptionIfCurrent(id, rev); !errors.Is(err, model.ErrConfigChanged) {
+	d.cfg.Subscriptions[1].URL = "https://other.example/replaced"
+	if err := d.RefreshSubscriptionIfCurrent(second, rev); !errors.Is(err, model.ErrConfigChanged) {
 		t.Fatalf("stale refresh returned %v", err)
 	}
-	if got := d.Subscriptions()[0]; got.NextRefresh == nil || !got.NextRefresh.Equal(next) || len(d.subscriptions.wake) != 0 {
-		t.Fatalf("stale form changed the refresh schedule: %+v", got)
+	for _, got := range d.Subscriptions() {
+		checkScheduled(got)
 	}
-	if err := d.RefreshSubscriptionIfCurrent(id, model.ConfigRevision(d.Config())); err != nil {
+	if len(d.subscriptions.wake) != 0 {
+		t.Fatal("stale form woke the refresh worker")
+	}
+	if err := d.RefreshSubscriptionIfCurrent(second, model.ConfigRevision(d.Config())); err != nil {
 		t.Fatal(err)
 	}
-	if got := d.Subscriptions()[0]; got.NextRefresh != nil || !got.Refreshing || len(d.subscriptions.wake) != 1 {
-		t.Fatalf("current form did not queue a refresh: %+v", got)
+	statuses := d.Subscriptions()
+	checkScheduled(statuses[0])
+	if secondStatus := statuses[1]; secondStatus.ID != second || secondStatus.NextRefresh != nil || !secondStatus.Refreshing || len(d.subscriptions.wake) != 1 {
+		t.Fatalf("current form did not queue the second source: %+v", secondStatus)
 	}
 }
 
