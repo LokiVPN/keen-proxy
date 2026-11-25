@@ -21,11 +21,13 @@ If the sign-in check is unavailable or your installation runs on OpenWrt, use [S
 ## First run { #first-run }
 
 1. Open KeenProxy with a management account. On a fresh setup it asks for a subscription link.
-2. Paste the HTTPS link from your LokiVPN account and choose **Check**. This may use one device slot. Review the server list and any expiry, usage, rules, or provider message returned. If the device limit is reached, remove an unused device in your account. If the subscription has expired, renew it. Check the link again after either change.
-3. Choose **Enable** to save the subscription and apply split routing to the detected home network. KeenProxy uses the provider profile when available. Without one, unmatched traffic uses the subscription. This setup requires a private IPv4 address on the configured LAN interface.
+2. Paste the HTTPS link from your LokiVPN account and choose **Check**. The check sends a stable device identifier (HWID) specific to the provider's HTTPS origin and may use a device slot. Review the server list and any expiry, usage, rules, or provider message returned. If the device limit is reached, remove an unused device in your account. If the subscription has expired, renew it. Check the link again after either change.
+3. Choose **Enable** to save the subscription and apply split routing to the detected home network. This saves `send_hwid: true`, so future refreshes send the identifier. KeenProxy uses the provider profile when available. Without one, unmatched traffic uses the subscription. This setup requires a private IPv4 address on the configured LAN interface.
 4. Open **Overview** to confirm the selected connection and **Devices** to choose which devices use it. Test an intended site from one of those devices.
 
-To add a subscription to an existing setup, choose **Overview → Set up subscription**, check the link, then choose **Add subscription**. To update the current link, choose **Overview → Replace link**, check the replacement, and confirm **Replace link**. The replacement keeps the subscription identifier, reserve, and existing routing and device settings.
+To add a subscription to an existing setup, choose **Overview → Set up subscription**, use **Check**, then choose **Add subscription**. To update the current link, choose **Overview → Replace link**, use **Check**, then confirm **Replace link**. In both flows, **Check** sends the stable HWID to the provider and may use a device slot before you save. Both confirmations save `send_hwid: true` for future refreshes. Replacing a link enables HWID transmission even when the previous setting was `false`. A replacement keeps the subscription ID, reserve, and existing routing and device settings.
+
+To replace a link while keeping HWID disabled, change its `url` in YAML and keep `send_hwid: false` on that subscription. [Edit and reload YAML](#edit-and-reload-yaml)
 
 For a manual setup, open [Connections](#connections). From the initial setup screen, you can reach it by appending `/connections` to the panel address. Add a connection there. If the home network has no policy yet, configure it in [YAML](#configuration-and-backups). Then select the connection on **Overview**.
 
@@ -108,6 +110,13 @@ On OpenWrt, omit `-p 222` if SSH uses its default port. Keep the tunnel open and
 
 The Entware configuration is `/opt/etc/keenproxy/config.yaml`. Native OpenWrt uses `/etc/keenproxy/config.yaml`. Back it up privately before editing DNS, interfaces, the listener, or advanced rules. It contains subscription links and connection credentials. KeenProxy reads it at service startup. [Installation paths and service commands](getting-started.md) · [Loopback control API](development.md#control-api)
 
+### Edit and reload YAML { #edit-and-reload-yaml }
+
+1. From the router's SSH shell, keep a private backup and edit a copy of the active configuration. Merge example snippets into their existing sections.
+2. Run `keenproxy -dry-run -config /path/to/candidate.yaml` on the router. Keep the output private because it can include credentials. Correct any errors or a `configuration would be reset after upgrade` warning before proceeding.
+3. Put the validated file in the active configuration path, preserving its permissions. Restart with `/opt/etc/init.d/S99keenproxy restart` on Entware or `/etc/init.d/keenproxy restart` on native OpenWrt.
+4. Check service state in **Diagnostics** and test traffic from an affected device. If startup or validation of traffic fails, restore the backup and restart again.
+
 ### Soft memory limit { #soft-memory-limit }
 
 Use `system.memory_limit_mib` in YAML to set a soft Go memory recommendation for KeenProxy and its embedded engine. The value is a positive integer in MiB. A lower value may increase garbage collection and reduce throughput. Leave headroom for the firmware and other services. [Go memory-limit guide](https://go.dev/doc/gc-guide#Memory_limit)
@@ -184,7 +193,7 @@ XHTTP (`type=xhttp` or `splithttp`) with `flow=xtls-rprx-vision` requires an ena
 
 The full build includes QUIC/HTTP/3. Lite keeps TCP/TLS transports, including XHTTP over HTTP/1.1 or HTTP/2 and TrustTunnel over HTTP/2; HTTP/3-only profiles require the full build. This engine-side transport choice does not change participant UDP/443 interception policy.
 
-TrustTunnel uses `type: link` with the complete exported `tt://?…` link. Legacy `type: trusttunnel` sections are normalized when loaded and saved in the link representation on Apply; `binary` and `socks_port` no longer control a process. Previously installed external clients are left untouched but are not used. Keep an old configuration backup before migration if you need to return to an external-client build.
+TrustTunnel uses `type: link` with the complete exported `tt://?…` link. KeenProxy reads legacy `type: trusttunnel` sections and writes the link representation on the next configuration save. The embedded engine handles the connection. Keep an old configuration backup before migration if you need to return to an external-client build.
 
 Upgrades and `--uninstall` leave legacy `bin/trusttunnel_client` and `share/keenproxy/trusttunnel/` files under the installation prefix (normally `/opt`). After confirming that the native connection works, remove these files manually only if no other service uses them and you no longer need an external-client rollback. Back up the old configuration first; generated client files may contain credentials.
 

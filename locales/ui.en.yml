@@ -32,7 +32,7 @@ setup_add_intro: "Paste and check the subscription link to add its servers to yo
 setup_url: "Subscription link"
 setup_link_hint: "You can copy it from your LokiVPN account."
 setup_check: "Check"
-setup_hwid_hint: "Checking the link uses one device slot on your subscription."
+setup_hwid_hint: "Check sends a stable device identifier (HWID) to the subscription provider and may use a device slot. Saving this link enables sending the identifier on future refreshes."
 setup_enable: "Enable"
 setup_cancel: "Cancel"
 setup_active: "Active"

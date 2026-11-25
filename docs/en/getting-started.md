@@ -151,7 +151,7 @@ If the service starts in `management-only` mode, the panel can open while traffi
 ## First configuration { #first-configuration }
 
 1. On KeeneticOS, sign in to the router with a management account. Open **Management → Applications → KeenProxy** or use the address printed by the installer. On OpenWrt, open the browser at `http://127.0.0.1:8086` while the SSH tunnel is running. [Panel access and roles](user-guide.md#access-the-panel)
-2. Paste your LokiVPN subscription link, choose **Check**, then **Enable** to apply the detected home-network policy. A device-limit or expiry message links you to the account when the provider supplies an account page. [First run and manual setup](user-guide.md#first-run)
+2. Paste your LokiVPN subscription link. **Check** sends a stable device identifier (HWID) specific to the provider's HTTPS origin and may use a device slot. Review the result, then choose **Enable** to apply the detected home-network policy and save `send_hwid: true` for future refreshes. A device-limit or expiry message links you to the account when the provider supplies an account page. [First run and manual setup](user-guide.md#first-run)
 3. Use **Overview** to confirm the main connection. Use **Routing** for rules and **Devices** for device access. **Connections** shows the subscription nodes and manual profiles. **Diagnostics** shows service readiness and provides checks, support reports, and updates. [Management pages](user-guide.md#overview)
 4. Test the intended traffic from a participating device and use **Diagnostics** if results differ from what you expect. A successful HTTP check covers that request. Check HTTPS and DNS separately if they are part of the issue.
 

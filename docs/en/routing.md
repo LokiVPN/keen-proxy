@@ -23,31 +23,39 @@ Both lists are visible in every mode. Enter one domain, IP address, or subnet pe
 | Network | Default policy for a subnet |
 | Client | Per-device policy identified by MAC address |
 
-Country **Except** selectors describe traffic outside the listed countries. Explicit domain lists and country rules express different levels of policy; inspect the routing journal to confirm which rule actually won for a request.
+Country selectors with `except: true` match addresses outside the listed countries. Check the routing journal to confirm which rule handled a request.
 
-A disabled group, domain/IP entry, country, or category selector is skipped while its saved value is retained. Later matching rules and the source policy still apply. If every geo selector is off, the group is inactive even with **Except** enabled.
+A disabled group, domain/IP entry, country, or category selector is skipped while its saved value is retained. Later matching rules and the source policy still apply. If every geo selector is off, the group is inactive even with `except: true`.
 
 ## Country rules
 
-Country groups match the **destination IP address** against the GeoIP database. They do not inspect the visitor's nationality, the website's language, or its domain suffix. A country selection also does not select an exit server: the **Connection** column chooses the route separately.
+Configure country groups in YAML. The GeoIP database classifies the destination IP address. The group's `target` selects the connection, `direct`, or `block`.
 
 ### Send everything except Russia through a tunnel
 
-1. Create or import a working connection, then open **Rules → Whitelist**.
-2. Choose **By country**. A new group starts with Russia (`RU`) selected and **All except these** enabled. Select the group name to rename it if needed.
-3. In **Countries**, keep `RU`, or add more countries to exclude. Use **Only these countries** instead to match just the selected countries.
-4. Set **Connection** to the desired profile, for example **Finland WG**. **Direct** bypasses the tunnel; **Block** rejects matching traffic.
-5. Open **Connections → Clients** and ensure the relevant network or device uses **Split**. Review the shared draft and choose **Apply** once.
+1. Create or import a working connection on **Connections**. Use its ID in place of `fi`.
+2. Merge the group and policy below into the existing `groups` and `networks` sections. Adapt the existing network entry for your LAN and replace the example CIDR with its actual subnet. If a device overrides that policy, make sure it also uses `mode: split`.
+3. Validate and restart the service. [Edit and reload YAML](user-guide.md#edit-and-reload-yaml)
 
-[![Country group excluding Russia and targeting Finland WG](../assets/screenshots/en-countries.png)](../assets/screenshots/en-countries.png)
+```yaml
+groups:
+  - name: outside-ru
+    target: fi
+    countries: [RU]
+    except: true
+networks:
+  - name: Home
+    cidr: 192.0.2.0/24
+    mode: split
+    target: fi
+    default: direct
+```
 
-Open the country selector to search by country name or ISO code. Selected countries appear as code chips; removing a chip changes the draft.
-
-[![English country selector with Russia selected](../assets/screenshots/en-country-picker.png)](../assets/screenshots/en-country-picker.png)
+Add ISO country codes under `countries` to exclude more countries from the group. With `except: false` the group matches the listed countries.
 
 ### Understand which rule wins
 
-Global block groups are evaluated first. For a routed device/network policy, explicit domain and address groups precede country groups. Device overrides take precedence over network defaults. **Full tunnel** uses its selected default connection and is a different policy from this split-routing recipe.
+Global block groups are evaluated first. In split mode, explicit domain and address groups and any active provider rules precede country groups. Device overrides take precedence over network defaults. A full-tunnel policy uses its selected connection for the default route.
 
 | Example configuration | Result |
 | --- | --- |
@@ -56,25 +64,32 @@ Global block groups are evaluated first. For a routed device/network policy, exp
 | No earlier rule matches and the destination is outside `RU` | Finland WG |
 | No earlier rule matches and the destination is in `RU` | The country exclusion does not match; the split policy falls back to Direct |
 
-**All except these** is an inverted match, not a command that forces selected countries to Direct. An earlier explicit rule may still route a Russian destination through another connection. Keep specific exceptions in domain/address groups.
+An earlier explicit rule may still route a Russian destination through another connection. Use domain/address groups for specific exceptions.
 
 ### Check the result
 
-On a real installation, confirm that the country database is loaded in **Diagnostics**, Apply the configuration, and inspect **Logs → Routing** for the selected outbound and matching rule. Missing GeoIP data must be resolved before relying on country routing. CDN addresses and database updates can change an IP's assigned country; use explicit domains or addresses when that distinction matters.
+After the restart, check **Country database** under **Diagnostics → State**. Once the database is loaded, test destinations inside and outside the listed countries from an affected device and check the selected outbound and matching rule. CDN addresses and database updates can change an IP's assigned country. Use explicit domains or addresses for endpoints that must use a specific route. [Inspect local journals](troubleshooting.md#inspect-local-journals)
 
 ## Country databases
 
-Country selectors use MMDB country databases, managed in **Rules → Country databases**. The list order is priority: the first enabled database that knows an address decides its country, and country rules follow the same precedence. Built-in sources can be enabled, disabled, and reordered. You can also add a custom database: an HTTPS link to `.mmdb`, `.mmdb.gz`, or `.tar.gz` (`{month}` expands to `YYYY-MM` and falls back to the previous month), or an absolute file path on the router.
+Manage MMDB sources under `geoip.databases` in YAML. The first enabled country database that knows an address determines its country. Reorder the entries to change that priority, or set `enabled: false` to turn an entry off. The example enables the built-in DB-IP source. For a custom entry, use a unique `id`, `enabled: true`, and a `url` or `file`. A URL must use HTTPS and can point to `.mmdb`, `.mmdb.gz`, or `.tar.gz`. The placeholder `{month}` expands to `YYYY-MM` and falls back to the previous month. A file path must be absolute on the router. [Edit and reload YAML](user-guide.md#edit-and-reload-yaml)
 
-The router checks enabled databases daily. Files are downloaded over HTTPS only, checked against a published SHA-256 digest when the source has one, validated as a country MMDB, and then swapped in atomically. A failed download keeps the previous file and is retried after 10 minutes, with the delay doubling up to 6 hours. Changing the database list triggers a check right after **Apply**.
+```yaml
+geoip:
+  databases:
+    - id: dbip
+      enabled: true
+```
 
-Category databases are a second kind of IP database. Instead of countries, they label networks, for example `RU-BLOCKED`, `RE-FILTER`, or `TELEGRAM`. They never take part in country lookups. Groups select labels under **Categories**, alone or together with countries and **All except these**. Enabled category databases are combined, so a label matches if any of them reports it. The built-in runetfreedom sources publish each network under a single label, so a network that appears in several upstream lists matches only one of them. Category groups require at least one enabled category database.
+KeenProxy checks enabled databases at startup and daily. Downloaded files are checked against a published SHA-256 digest when available, validated as MMDBs, and swapped in atomically. A failed download keeps the previous file and is retried after 10 minutes, with the delay doubling up to 6 hours. After the restart, confirm that the country database has loaded under **Diagnostics → State**.
+
+Category databases label networks with names such as `RU-BLOCKED`, `RE-FILTER`, or `TELEGRAM`. They are queried separately from country databases. Use `groups[].categories` alone or with `countries`. The group matches if either selector matches, and `except: true` inverts that combined match. Category groups require at least one enabled category database. A label matches if any enabled category database reports it. The built-in runetfreedom sources publish each network under a single label, even if it appears in several upstream lists.
 
 ## Fallback chains { #fallback-chains }
 
 A connection can point to another connection or Direct as its immediate fallback. The interface displays the resulting chain. Edit the selected profile's immediate fallback; downstream inherited edges belong to their own profiles. Avoid cycles. Choosing Direct as a fallback intentionally allows a direct path when the primary connection fails.
 
-Disabling a connection keeps its incoming group, client, network, and DNS references. Disabled chain members are skipped in favor of enabled configured backups, but the referring rule itself is not skipped. If none remain, traffic is blocked. There is no implicit Direct fallback. A disabled tunnel or external client is not started and is not health-probed. Re-enable it and Apply to restore its saved settings. DNS remains subject to its separate strict/direct failure policy.
+Disabling a connection keeps its incoming group, client, network, and DNS references. The referring rule skips disabled chain members and uses the next enabled backup. If none remain, traffic is blocked. A disabled connection stays stopped and is excluded from health checks. To restore its saved settings, open it on **Connections**, turn on **Enabled**, and choose **Save**. DNS follows its separate strict/direct failure policy.
 
 Periodic health checks measure HTTP requests, not ICMP ping. They are separate from the manual HTTPS and transfer checks in Diagnostics.
 
@@ -134,7 +149,7 @@ subscriptions:
 
 ## Pause and devices that are off { #pause }
 
-A device whose mode is `off` is not touched by KeenProxy: no routing, no blocking and no DNS interception, so its DNS goes straight to the KeeneticOS resolver. Pausing the router (`paused: true`) does the same for every device while the daemon keeps running; unpausing is a normal Apply. DNS interception and the encrypted-DNS guard apply only to devices that take part in a network or client policy.
+A device whose mode is `off` uses the router's ordinary network path and DNS. Turning off **Enabled** on **Overview** (`paused: true`) does the same for every device while the daemon keeps running. Turn it back on to resume. DNS interception and the encrypted-DNS guard apply only to devices that take part in a network or client policy.
 
 ```yaml
 paused: true
@@ -142,12 +157,15 @@ paused: true
 
 ## DNS
 
-DNS settings choose upstream resolvers and whether requests travel directly or through a connection. Bootstrap addresses help resolve encrypted resolver hostnames. Failure policy controls whether a failed selected path may use direct DNS. Filter lists and exceptions change DNS answers, not every possible form of application traffic.
+The `dns` section in YAML chooses upstream resolvers and whether requests travel directly or through a connection. Bootstrap addresses help resolve encrypted resolver hostnames. The failure policy determines whether direct DNS is allowed if the selected path fails.
 
-If KeenProxy uses a resolver on the LAN and that resolver forwards requests through this router on port 53, the router can send them back to the same resolver. In **Settings → DNS → Advanced settings**, add the resolver's source IPv4 address to the DNS interception exceptions and choose **Apply**. This is `dns.bypass_sources` in YAML, for example `bypass_sources: ["192.168.1.100"]` under `dns`. Use a fixed address or DHCP reservation for the resolver. An empty list preserves the default interception behavior.
+If a LAN resolver used by KeenProxy forwards requests back through the router on port 53, interception can send them to that same resolver again. Give the resolver a fixed IPv4 address or a DHCP reservation. Add its source IPv4 address to `dns.bypass_sources` in the existing `dns` section, replace the example address, then validate and restart. An empty list uses normal interception. [Edit and reload YAML](user-guide.md#edit-and-reload-yaml)
 
-The exception bypasses KeenProxy for all UDP/TCP port 53 queries from those addresses on the configured LAN interface, including DNS filtering for those queries. It does not affect other clients, application routing on other ports, or encrypted DNS rules. Only add trusted resolvers that need this exception; the router's own forwarding rules still apply.
+```yaml
+dns:
+  bypass_sources: ["192.0.2.53"]
+```
 
-Use your router's actual network test procedure to evaluate UDP/TCP interception and encrypted-DNS handling. Applications can use their own resolvers. The UI does not establish universal DNS-leak protection.
+The listed sources bypass KeenProxy and its DNS filtering for UDP and TCP port 53 on the configured LAN interface. Other clients, other application ports, and encrypted DNS rules retain their policies. Add only trusted resolvers that require this exception. The router's own forwarding rules still apply.
 
-See the [user guide](user-guide.md) for screenshots and [Troubleshooting](troubleshooting.md) for interpreting evidence.
+After restarting, check DNS service state in **Diagnostics**. Test UDP and TCP DNS queries from the resolver and a participating client. Confirm that the resolver can reach its upstream without a loop and the participating client still follows the intended DNS policy. [Troubleshooting](troubleshooting.md)

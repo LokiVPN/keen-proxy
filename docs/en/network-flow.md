@@ -35,7 +35,7 @@ The optional callback is enabled only for a root Linux process using the managed
 
 Checks and repairs run sequentially while interception is active. Intentionally stopped interception is not reinstalled, and cancellation during shutdown is not reported as a failed recovery. Bursts of callbacks are coalesced, but a single firmware action may rebuild several tables at different times and therefore produce more than one repair. After applying its rules, KeenProxy checks the entry jumps again and increments the restoration counter only when verification passes. A present jump does not prove every rule, policy route, or application connection is healthy.
 
-In **Logs → Audit**, each repair attempt shows its trigger, affected rule, outcome and check-and-recovery time. Expand the entry for raw command errors. Older records without source metadata show **Not recorded**. Successful recovery is not duplicated in the system journal; hook errors and failed recovery remain there. The recorded duration measures the check and repair, not a network outage. Callback queues and rule application still take time, so this mechanism does not promise zero packet loss.
+The repair count appears in **Diagnostics → State → Firewall watchdog**. The local audit journal records each repair attempt with the affected rule, outcome, raw command errors, and trigger when available. The recorded duration measures the check and repair. Packet loss can still occur while callbacks run and rules are applied. Hook errors and failed recovery also appear in the system journal. [Inspect local journals](troubleshooting.md#inspect-local-journals)
 
 See [Troubleshooting](troubleshooting.md#why-does-the-watchdog-restore-interception-rules) for diagnostic evidence and export limits.
 
@@ -70,8 +70,8 @@ Switching can close existing connections, so clients may need to reconnect. The 
 
 | What you want to establish | What to inspect |
 | --- | --- |
-| Which DNS path the router used | Compare the configured path in **Diagnostics** with direct-fallback events in **Logs → Audit**. Observe traffic on the router's external interface to verify the actual resolver path. Blocking TCP/UDP port 853, if enabled, does not catch application DoH over HTTPS on port 443. |
-| Which rule and exit matched | Reproduce the request from the affected device and inspect **Logs → Routing** for the client, destination, rule, and outbound. A route decision can be logged even if the remote request fails. |
+| Which DNS path the router used | Compare `dns.route` in YAML with direct fallback events for `target=dns` in the [local audit journal](troubleshooting.md#inspect-local-journals). Observe traffic on the router's external interface to verify the actual resolver path. Application DoH over HTTPS on port 443 can still pass when TCP/UDP port 853 is blocked. |
+| Which rule and exit matched | Reproduce the request from the affected device and check the client, destination, rule, and outbound in the [local routes journal](troubleshooting.md#inspect-local-journals). Check the response from the remote service separately. |
 | Whether the connection works end to end | Run an HTTPS or transfer check and reproduce the failing application request. For DNS privacy, test from the actual device and observe the router's external traffic under both normal operation and tunnel failure. |
 
 See [Routing and DNS](routing.md) for policy configuration and [Troubleshooting](troubleshooting.md) for additional checks.

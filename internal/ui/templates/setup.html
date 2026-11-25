@@ -12,14 +12,14 @@
           <label for="setup-url">{{.Text.setup_url}}</label>
           <input id="setup-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
             placeholder="{{if and .Setup.Result .Setup.Result.Active}}••••••••{{else}}https://{{end}}"{{if and .Setup.Input (not .ViewOnly)}} value="{{.Setup.Input}}"{{end}}
-            {{if .Setup.Error}}aria-describedby="setup-error" {{end}}required{{if $disabled}} disabled{{end}}>
+            aria-describedby="setup-hwid{{if .Setup.Error}} setup-error{{end}}" required{{if $disabled}} disabled{{end}}>
         </div>
         {{if not $checked}}<p class="hint">{{.Text.setup_link_hint}}</p>{{end}}
         <button class="btn{{if $checked}} soft{{end}} setup-submit" type="submit"{{if $disabled}} disabled{{end}}>{{.Text.setup_check}}</button>
       </form>
       {{if .Setup.Error}}<p id="setup-error" class="setup-error" role="alert">{{.Setup.Error}}</p>{{end}}
       {{if .Setup.Warning}}<p class="note" role="alert">{{.Setup.Warning}}</p>{{end}}
-      {{if not $checked}}<p class="hint setup-hwid">{{.Text.setup_hwid_hint}}</p>{{end}}
+      <p id="setup-hwid" class="hint setup-hwid">{{.Text.setup_hwid_hint}}</p>
       {{with .Setup.Result}}
       <section class="setup-result" aria-labelledby="setup-provider">
         <div class="prov">

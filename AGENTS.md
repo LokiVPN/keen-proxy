@@ -39,7 +39,7 @@ If a selected skill, Serena, or analyzer is unavailable or cannot read an affect
 ## Engineering
 
 - Keep configuration changes consistent across the Go model, compiler, API, frontend types, examples, and tests.
-- Preserve the shared frontend draft/Apply workflow; do not bypass it with separate configuration writes.
+- Preserve the revision-checked Apply path for page-scoped Save and immediate Overview configuration changes.
 - Keep compilation deterministic; put runtime effects in the daemon, engine, and firewall layers.
 - Preserve build constraints, generated-file markers, license notices, and compiler/tool directives when editing comments.
 - Do not access or modify a live router without an explicit deployment or diagnostic request. Use synthetic configurations in tests.

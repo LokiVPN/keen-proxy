@@ -14,7 +14,7 @@ hide:
 
 # Your network, your routes
 
-Selective traffic routing for Keenetic and Netcraze routers running Entware. Choose which devices, domains, addresses, and countries use a tunnel, connect directly, or are blocked — from a browser interface.
+Selective traffic routing for Keenetic and Netcraze routers running Entware. Manage connections, device access, and site rules in the browser. Configure advanced policies such as country rules in YAML.
 
 <div class="kp-actions" markdown>
 [Get started](getting-started.md){ .md-button .md-button--primary }
@@ -52,7 +52,7 @@ Route by domain, CIDR, or country — including exclusions such as “everything
 
 ### Many connection types
 
-WireGuard, sing-box connection links, raw sing-box outbounds, and an optional TrustTunnel client.
+WireGuard, sing-box connection links, raw sing-box outbounds, and embedded TrustTunnel.
 </div>
 
 <div class="kp-card" markdown>
@@ -74,9 +74,9 @@ A local DNS frontend with DoH/DoT resolvers and selectable DNS routing.
 <div class="kp-card" markdown>
 :material-file-document-check-outline:{ .kp-card__icon }
 
-### Review before Apply
+### Review and save on each page
 
-Every change goes into one shared draft. Apply it when ready, or discard it; journals explain the result.
+Save connection, routing, and device edits on their own pages. **Overview** shows and controls the active connection.
 </div>
 
 </div>
@@ -96,15 +96,15 @@ Import a WireGuard file or a connection link, or use the wizard.
 </div>
 
 <div class="kp-step" markdown>
-### Define groups
+### Choose routing
 
-Collect domains, addresses, or countries and pick where they go.
+On **Routing**, follow subscription rules or enter sites and addresses to tunnel or send directly.
 </div>
 
 <div class="kp-step" markdown>
-### Choose devices and Apply
+### Choose devices
 
-Select which networks and clients follow the rules, then apply the draft.
+On **Devices**, choose which home devices use KeenProxy and save the page.
 </div>
 
 </div>

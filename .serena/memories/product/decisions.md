@@ -4,5 +4,5 @@
 - Prefer readable TLS SNI and HTTP Host. Apply DNS-derived IP rules only when no readable hostname exists.
 - Keep DNS routes and direct fallback explicit. Encrypted DNS alone does not establish tunnel routing or prove leak prevention.
 - Failover follows an ordered chain with hysteresis. Allow direct fallback only when explicitly configured.
-- Keep one YAML configuration and one shared draft. Preview, imports, connection wizards, and bulk edits must leave live settings unchanged until Apply.
-- Make routing decisions explainable in the journal, with filters, live updates, and masked export. Keep secrets concealed in connection editing and omitted from diagnostics.
+- Keep one applied YAML configuration. Page-scoped Save and the immediate Overview controls use the daemon's revision-checked Apply path. Preview, imports, and staged form edits leave the applied settings untouched until confirmed.
+- Explain routing decisions through local loopback journals and the redacted Diagnostics ZIP. Keep secrets masked in connection editing and omit them from exported diagnostics.

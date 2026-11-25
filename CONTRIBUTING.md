@@ -37,7 +37,7 @@ The main code boundaries are:
 - Follow Go formatting and the existing style of the surrounding code. The interface is Go with server-rendered pages (being rebuilt).
 - Write short English comments explaining contracts, ownership, units, and non-obvious ordering. Keep comments close to the code they describe.
 - Keep runtime diagnostics and generated comments in English. Put Russian text in `docs/ru/` or Russian localization resources; preserve essential Unicode test values using escapes. `make check-language` enforces this boundary and runs as part of `make test`.
-- Preserve configuration compatibility, the shared draft/Apply workflow, and rollback behavior.
+- Preserve configuration compatibility, revision-checked Apply for page-scoped saves and immediate Overview controls, and rollback behavior.
 - Update the Go model, compiler, API, UI, examples, and tests together when changing the schema.
 - Add a failing behavioral test before fixing a bug when practical. Use controlled clocks and injected network boundaries instead of real services.
 - Keep compiler directives, generated-file markers, and third-party notices intact.

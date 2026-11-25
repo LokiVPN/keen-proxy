@@ -2,7 +2,7 @@
 
 ## I edited a profile, but traffic did not change
 
-Look for pending changes and choose **Apply**. All screens share a draft. Confirm that the selected network/client uses the intended routing mode, then inspect the route journal and test the applied connection.
+On **Connections**, save changes on the connection's detail page. **Routing** and **Devices** each have their own **Save** button. On **Overview**, check that routing is enabled and the intended main connection is selected. Changes to those two controls apply immediately when JavaScript is available. Test the saved settings from an affected device and check the matching route. [Inspect local journals](#inspect-local-journals)
 
 ## HTTP passes but the application fails
 
@@ -10,7 +10,7 @@ Run HTTPS and transfer checks separately. Inspect certificate/time errors, profi
 
 ## A domain has no current IPs
 
-Check whether the group is enabled and applied. Review its DNS route, resolver availability, expiration and error details. Manual preview observations are separate from applying the configuration.
+Check the saved group or provider rule, then resolve the domain from the affected device. Check the configured DNS path in YAML, resolver availability, and DNS errors or fallback events in the local journals. Provider rules learn addresses from DNS answers seen by KeenProxy and keep them for the answer's TTL. [Provider rules](routing.md#provider-rules) · [Inspect local journals](#inspect-local-journals)
 
 ## Why does the watchdog restore interception rules?
 
@@ -20,7 +20,7 @@ The watchdog checks the required firewall entry jumps every 30 seconds by defaul
 
 On a managed Linux installation, KeenProxy also enables an optional NDM callback when `/var/run/ndm.core.socket` and `/opt/etc/ndm` are present. This covers compatible Keenetic/Netcraze firmware without assuming every router supports NDM. The daemon owns `/opt/etc/ndm/netfilter.d/99-keenproxy.sh` and a private runtime event file. IPv4 `nat`, `filter` and `mangle` callbacks request a serialized check of the current rules without restarting the engine. Repeated notifications coalesce. The 30-second watchdog remains active on every platform, including when callback setup fails.
 
-A clean exit removes the managed hook. Uninstall also cleans up the managed hook after the service has stopped, including leftovers from an interrupted shutdown. Foreign hook files are preserved. A callback queued after shutdown or binary rollback exits harmlessly when the event file is absent. The system journal records `netfilter event hook enabled` at startup. Each repair attempt appears once in the audit journal with its check trigger: **Netfilter hook** or **Watchdog timer**. The panel shows a short result and rule identity; expand the entry for exit codes and the original command errors. Historical entries without trigger metadata show **Not recorded**. Check-and-recovery time measures the work from the first check through verification, not outage duration. Successful recovery and routine event checks are not repeated in the system journal; hook setup/watcher errors and failed recovery remain there. Firmware callback queues and rule application still take time: event recovery does not guarantee zero packet loss. See the [NDM hook contract](https://support.keenetic.ua/titan/kn-1811/en/42407-opkg-component-description.html).
+A clean exit removes the managed hook. Uninstall also cleans up the managed hook after the service has stopped, including leftovers from an interrupted shutdown. Foreign hook files are preserved. A callback queued after shutdown or binary rollback exits harmlessly when the event file is absent. The system journal records `netfilter event hook enabled` at startup. The repair count appears under **Diagnostics → State → Firewall watchdog**. Each repair attempt appears once in the audit journal, with exit codes, raw command errors, and its trigger when recorded. The recorded duration measures the work from the first check through verification. Packet loss can still occur while callbacks run and rules are applied. The system journal retains hook setup/watcher errors and failed recovery. [Inspect local journals](#inspect-local-journals) · [NDM hook contract](https://support.keenetic.ua/titan/kn-1811/en/42407-opkg-component-description.html)
 
 After applying the rules, the watchdog checks the entry jumps again. If verification fails, it waits briefly and retries the repair once to allow for firmware replacing several tables in succession. The counter increases only after verified recovery, including retries of failed rule updates; it does not count firmware rebuilds specifically. A failure records the initial check, the final attempt's outcome, and its verification result if verification ran. If both a configuration apply and its rollback fail while installing firewall rules, the watchdog can retry the pending plan once its engine, DNS listener, and policy routing are ready. Failed rule updates after device address changes are also retried, even when the old entry jumps still exist. If rollback fails earlier while preparing dependencies, firewall recovery cannot safely restore the configuration: resolve the reported engine, DNS, or routing error, then apply the configuration again or restart the service. A successful check establishes entry-jump presence at that moment. It does not validate every rule inside the chains, TPROXY policy routes, or end-to-end connectivity.
 
@@ -252,13 +252,25 @@ sharing command output.
 | `status.json` | Runtime state at export time, including build identity, interception, connection health, and active fallbacks |
 | `journals/routes.jsonl`, `journals/audit.jsonl`, `journals/system.jsonl` | All readable records still retained by KeenProxy, with one event per line |
 
-The ZIP includes records still in memory and on disk, regardless of the filters, grouping, or time range selected in **Logs**. Older records may have rotated out. Draft changes are outside the archive.
+The ZIP includes the applied settings and records still retained in memory and on disk. Older records may have rotated out.
 
 When `iptables-restore` fails during Apply, look for **Configuration apply failed** in `journals/audit.jsonl`. `firewall_apply.restore` describes the failed attempt; `rollback_restore` describes a separate restore failure during rollback, if any. The ZIP records the exit code, whether `-w` was used, and, when reported, the input line number and known table, operation, chain, and jump target. A `commit` failure identifies a table, not a particular rule. Watchdog failures use `firewall.restore`. Raw errors remain in the local journal; the ZIP does not include rule arguments or raw stderr.
 
 The export omits credentials, raw connection profiles, and free-form log messages. Names and addresses are removed or replaced with aliases that are consistent within one ZIP. Event times, ports, protocols, policies, and counts can still identify activity. Review the files before attaching them to an issue or sharing them privately.
 
 For a restorable configuration, copy the YAML configuration file over SSH and store it privately.
+
+## Inspect local journals { #inspect-local-journals }
+
+Run these read-only requests from an SSH shell on the router. Use the configured API port if it differs from 8086.
+
+```sh
+curl -fsS 'http://127.0.0.1:8086/api/journal/routes?limit=20'
+curl -fsS 'http://127.0.0.1:8086/api/journal/audit?target=firewall&limit=20'
+curl -fsS 'http://127.0.0.1:8086/api/journal/system?limit=20'
+```
+
+Match a recent route to the affected device and destination, then compare its `rule` and `outbound` with the configured policy. An audit request can use `target=dns` to check DNS fallback. Keep local journal output private and share the ZIP from **Diagnostics → Support report → Download ZIP** for support. [Loopback control API](development.md#control-api)
 
 ## What should a bug report include?
 
