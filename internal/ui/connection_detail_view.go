@@ -398,7 +398,7 @@ func connectionReferences(cfg *model.Config, id string, text map[string]string) 
 		}
 		refs = append(refs, connectionReference{Label: label, URL: path})
 	}
-	home := homeNetwork(cfg)
+	home := cfg.HomeNetwork()
 	for i := range cfg.Networks {
 		n := &cfg.Networks[i]
 		name := cmp.Or(n.Name, n.CIDR)

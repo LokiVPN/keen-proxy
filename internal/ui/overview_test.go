@@ -213,6 +213,7 @@ func TestOverviewTargets(t *testing.T) {
 			f := newOverviewFixture()
 			f.cfg.Paused = true
 			f.cfg.Networks[0].Target, f.cfg.Networks[0].Default = "old", tc.defaultTarget
+			f.cfg.Groups[0].Target = "old"
 			want := f.Config()
 			want.Networks[0].Target, want.Groups[0].Target = tc.target, tc.target
 			if tc.defaultTarget == "old" {
@@ -229,6 +230,38 @@ func TestOverviewTargets(t *testing.T) {
 			}
 			if !reflect.DeepEqual(f.Config(), want) {
 				t.Error("the result did not preserve the rest of the applied configuration under R31")
+			}
+		})
+	}
+}
+
+func TestOverviewLeavesReadOnlyOwnVPNGroupsInPlace(t *testing.T) {
+	main := model.ManagedTarget("sample", "auto")
+	for _, tc := range []struct {
+		name   string
+		groups []model.Group
+	}{
+		{"dedicated target", []model.Group{{Name: "own-vpn", Target: "old", Entries: []string{"dedicated.example"}}}},
+		{"country group", []model.Group{{Name: "own-vpn", Target: main, Countries: []string{"GB"}}}},
+		{"overridden entry", []model.Group{{Name: "own-vpn", Target: main, Entries: []string{"saved.example"}, DisabledEntries: []string{"saved.example"}}}},
+		{"duplicate names", []model.Group{
+			{Name: "own-vpn", Target: main, Entries: []string{"saved.example"}},
+			{Name: "ordinary", Target: "old", Entries: []string{"middle.example"}},
+			{Name: "own-vpn", Target: "old", Entries: []string{"dedicated.example"}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOverviewFixture()
+			f.cfg.Groups = tc.groups
+			f.cfg.Networks[0].Default = main
+			before := f.Config()
+			h := New(f, setupTestOptions(RoleManage))
+			w := setupRequest(h, "/overview/connection", url.Values{"rev": {Revision(before)}, "target": {"backup"}})
+			if w.Code != http.StatusSeeOther || f.cfg.Networks[0].Target != "backup" || f.cfg.Networks[0].Default != "backup" {
+				t.Fatalf("main connection change returned HTTP %d, Home %+v", w.Code, f.cfg.Networks[0])
+			}
+			if !reflect.DeepEqual(before.Groups, f.cfg.Groups) {
+				t.Error("main connection change rewrote the targets or order of read-only groups")
 			}
 		})
 	}

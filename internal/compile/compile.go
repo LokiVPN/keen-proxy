@@ -233,6 +233,7 @@ func policies(in Input, rules *ProviderRules) (clients, networks []policy, exclu
 		n      model.Network
 	}
 	var nets []netPol
+	providerEnabled := c.ActiveProviderRules() != nil
 	for _, n := range c.Networks {
 		p, _ := netip.ParsePrefix(n.CIDR)
 		nets = append(nets, netPol{p.Masked(), n})
@@ -252,7 +253,7 @@ func policies(in Input, rules *ProviderRules) (clients, networks []policy, exclu
 				break
 			}
 		}
-		pol, ok := clientPolicy(cl, network, rules)
+		pol, ok := clientPolicy(cl, network, rules, providerEnabled)
 		if !ok {
 			continue
 		}
@@ -272,7 +273,7 @@ func policies(in Input, rules *ProviderRules) (clients, networks []policy, exclu
 // clientPolicy applies a client's own mode and target over the network that
 // contains its address (nil for none); ok is false when the client inherits
 // from no network. The result has no source.
-func clientPolicy(cl model.Client, network *model.Network, rules *ProviderRules) (policy, bool) {
+func clientPolicy(cl model.Client, network *model.Network, rules *ProviderRules, providerEnabled bool) (policy, bool) {
 	p := policy{mode: cl.Mode, target: cl.Target}
 	var def string
 	if network != nil {
@@ -285,6 +286,11 @@ func clientPolicy(cl model.Client, network *model.Network, rules *ProviderRules)
 		def = network.Default
 	} else if p.mode == model.ModeInherit {
 		return policy{}, false
+	}
+	// An explicit VPN policy can outlive the network that supplied its
+	// target. Reject traffic if that target is required and no longer exists.
+	if p.target == "" && (p.mode == model.ModeFull || p.mode == model.ModeSplit && providerEnabled) {
+		return policy{mode: model.ModeFull, target: model.TargetBlock}, true
 	}
 	p.fallback, p.proxy = splitRoute(def, p.target, rules)
 	return p, true
@@ -682,6 +688,7 @@ func clientClasses(c *model.Config, rules *ProviderRules) []class {
 	}
 	classes = append(classes, class{classSplit, policy{mode: model.ModeSplit}})
 	split := map[string]policy{}
+	needsBlock := false
 	add := func(p policy, ok bool) {
 		if !ok || p.mode != model.ModeSplit {
 			return
@@ -690,11 +697,17 @@ func clientClasses(c *model.Config, rules *ProviderRules) []class {
 			split[name] = p
 		}
 	}
+	providerEnabled := c.ActiveProviderRules() != nil
 	for _, cl := range c.Clients {
-		add(clientPolicy(cl, nil, rules))
+		outside, ok := clientPolicy(cl, nil, rules, providerEnabled)
+		needsBlock = needsBlock || outside.target == model.TargetBlock
+		add(outside, ok)
 		for i := range c.Networks {
-			add(clientPolicy(cl, &c.Networks[i], rules))
+			add(clientPolicy(cl, &c.Networks[i], rules, providerEnabled))
 		}
+	}
+	if needsBlock {
+		classes = append(classes, class{classFull + model.TargetBlock, policy{mode: model.ModeFull, target: model.TargetBlock}})
 	}
 	for _, name := range slices.Sorted(maps.Keys(split)) {
 		classes = append(classes, class{name, split[name]})
@@ -711,7 +724,11 @@ func clientRouting(dir string, groups []groupSet, tags map[string]string, classe
 		case model.ModeOff:
 			rules = append(rules, obj{"rule_set": []string{cl.name}, "outbound": tagDirect})
 		case model.ModeFull:
-			rules = append(rules, obj{"rule_set": []string{cl.name}, "outbound": outboundTag(cl.pol.target, tags)})
+			if cl.pol.target == model.TargetBlock {
+				rules = append(rules, obj{"rule_set": []string{cl.name}, "action": "reject"})
+			} else {
+				rules = append(rules, obj{"rule_set": []string{cl.name}, "outbound": outboundTag(cl.pol.target, tags)})
+			}
 		case model.ModeSplit:
 			for _, g := range groups {
 				// Multiple rule_set values are ORed; use a logical rule for AND.

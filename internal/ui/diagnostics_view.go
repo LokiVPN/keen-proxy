@@ -106,7 +106,7 @@ func (p pages) diagnosticTargetLabel(cfg *model.Config, text map[string]string) 
 	if cfg == nil {
 		return diagnosticUnknown, false
 	}
-	network := homeNetwork(cfg)
+	network := cfg.HomeNetwork()
 	if network == nil || network.Target == "" {
 		return diagnosticUnknown, false
 	}

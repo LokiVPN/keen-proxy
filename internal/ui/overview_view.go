@@ -73,7 +73,7 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 	if len(cfg.Subscriptions) > 0 {
 		page.Subscription = subscriptionView(appliedSubscriptionFor(subs, cfg.Subscriptions[0].ID), now, lang)
 	}
-	network := homeNetwork(cfg)
+	network := cfg.HomeNetwork()
 	if network != nil {
 		page.Main = network.Target
 		for _, group := range page.Choices {
@@ -85,7 +85,8 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 	if status.Devices > 0 {
 		page.Devices = fmt.Sprintf(text["overview_device_count"], status.ManagedDevices, status.Devices)
 	}
-	selection := selectedConnection(cfg, page.Main, subs, status.Connections, text)
+	target, activeHome, mixedHome := overviewHomePath(network, status.HomeTargets)
+	selection := selectedConnection(cfg, target, subs, status.Connections, text)
 	if network != nil {
 		page.NewDevices = text["overview_new_devices_policy"]
 		if network.Mode == model.ModeOff || (network.Mode == model.ModeFull && selection.Class == stats.TargetDirect) {
@@ -95,12 +96,16 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 		if selection.Class == stats.TargetMixed && selection.Reserve == "" {
 			current = selection.Name
 		}
-		if status.Ready && !cfg.Paused && network.Mode != model.ModeOff && !selection.Blocked && current != "" {
+		if status.Ready && !cfg.Paused && activeHome && !mixedHome && !selection.Blocked && current != "" {
 			page.Current = fmt.Sprintf(text["overview_current_connection"], current)
 		}
 	}
-	page.Status, page.StatusDetail = overviewStatus(cfg.Paused, status, network, selection, now, text)
-	page.Routing, page.RoutingDetail = routingSummary(cfg, network, selection, status, subs, text)
+	page.Status, page.StatusDetail = overviewStatus(cfg.Paused, status, network, target, activeHome, mixedHome, selection, now, text)
+	main := selection
+	if target != page.Main {
+		main = selectedConnection(cfg, page.Main, subs, status.Connections, text)
+	}
+	page.Routing, page.RoutingDetail = routingSummary(cfg, network, main, status, subs, text)
 	return page
 }
 
@@ -120,11 +125,27 @@ func (p *overviewPage) setMissingTarget(text map[string]string) {
 	}
 }
 
-func overviewStatus(paused bool, status OverviewStatus, network *model.Network, selection connectionSelection, now time.Time, text map[string]string) (overviewChip, string) {
+func overviewHomePath(network *model.Network, targets []string) (target string, active, mixed bool) {
+	if network == nil {
+		return "", false, false
+	}
+	if network.Mode == model.ModeOff {
+		if len(targets) == 1 {
+			return targets[0], true, false
+		}
+		return network.Target, len(targets) > 0, len(targets) > 1
+	}
+	return network.Target, true, len(targets) > 1 || len(targets) == 1 && targets[0] != network.Target
+}
+
+func overviewStatus(paused bool, status OverviewStatus, network *model.Network, target string, activeHome, mixedHome bool, selection connectionSelection, now time.Time, text map[string]string) (overviewChip, string) {
 	outage := overviewChip{text["overview_no_connection"], "warn"}
 	detail := selection.Detail
 	if selection.Class == stats.TargetMixed {
 		detail = fmt.Sprintf(text["overview_follow_connection"], selection.Name)
+	}
+	if mixedHome {
+		detail = text["overview_device_routing_hint"]
 	}
 	if status.Devices > 0 {
 		detail = fmt.Sprintf(text["overview_device_count"], status.ManagedDevices, status.Devices) + " · " + detail
@@ -138,9 +159,11 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 		return outage, text["overview_engine_down"]
 	case network == nil:
 		return outage, text["overview_no_home"]
-	case network.Mode == model.ModeOff:
+	case !activeHome:
 		return overviewChip{text["overview_home_off"], ""}, text["overview_home_off_hint"]
-	case network.Target == "":
+	case mixedHome:
+		return overviewChip{text["overview_device_routing"], ""}, detail
+	case target == "":
 		return outage, text["overview_choose_connection"]
 	case selection.Health == connectionUnavailable:
 		if selection.Reserve != "" {
@@ -246,6 +269,9 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	switch {
 	case network.Mode == model.ModeOff:
 		mode = text["overview_home_off"]
+		if len(status.HomeTargets) > 0 {
+			mode = text["overview_existing_device_policy"]
+		}
 	case network.Mode == model.ModeFull || (network.Default != "" && network.Default != model.TargetDirect && network.Default != model.DefaultProfile):
 		selection := main
 		if network.Mode != model.ModeFull && network.Default != network.Target {

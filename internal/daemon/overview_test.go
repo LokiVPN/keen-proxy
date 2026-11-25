@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,79 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 	"github.com/ordo-systems/keen-proxy/internal/ui"
 )
+
+func TestOverviewKeepsDeviceStatusAfterDisablingTheNewDeviceDefault(t *testing.T) {
+	provider := new(subscriptionTestProvider)
+	provider.response.Store(&subscriptionTestResponse{body: subscriptionFirst, title: "Office subscription"})
+	d, cfg := newSubscriptionTestDaemon(t, provider)
+	cfg.RouteHomeThroughSubscription("sample", netip.MustParsePrefix("192.0.2.0/24"))
+	const mac = "02:00:00:00:00:25"
+	d.neighbors = map[string]netip.Addr{mac: netip.MustParseAddr("192.0.2.25"), "02:00:00:00:00:26": netip.MustParseAddr("198.51.100.26")}
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	h := ui.New(overviewTestDeps{d: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	page := httptest.NewRecorder()
+	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/devices", nil))
+	_, displayed, _ := strings.Cut(page.Body.String(), `name="displayed" value="`)
+	displayed, _, _ = strings.Cut(displayed, `"`)
+	if page.Code != http.StatusOK || displayed == "" || !strings.Contains(page.Body.String(), `name="split" value="`+mac+`" checked`) {
+		t.Fatal("the Devices page did not offer the inherited VPN-on row")
+	}
+	form := url.Values{"rev": {ui.Revision(d.Config())}, "displayed": {displayed}, "split": {mac}}
+	r := httptest.NewRequest(http.MethodPost, "/devices", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	saved := httptest.NewRecorder()
+	h.ServeHTTP(saved, r)
+	applied := d.Config()
+	if saved.Code != http.StatusSeeOther || applied.Networks[0].Mode != model.ModeOff ||
+		!slices.ContainsFunc(applied.Clients, func(cl model.Client) bool { return cl.MAC == mac && cl.Mode == model.ModeSplit }) {
+		t.Fatalf("turning the new-device default off failed to pin the existing device, HTTP %d", saved.Code)
+	}
+	state := d.subscriptions.states["sample"]
+	tag := model.ManagedTarget("sample", state.snapshot.Selection.Node)
+	d.health[tag] = &health{known: true, ok: true, checked: time.Now(), latency: 42 * time.Millisecond}
+	for _, tc := range []struct {
+		name, status, detail string
+		unavailable          bool
+		expires              time.Time
+	}{
+		{"active", "Working", "Current connection", false, time.Now().Add(90 * 24 * time.Hour)},
+		{"unavailable", "No connection", "No subscription node is available.", true, time.Now().Add(90 * 24 * time.Hour)},
+		{"expired", "Subscription expired", "Current connection", false, time.Now().Add(-time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state.unavailable = tc.unavailable
+			state.snapshot.Metadata.Usage = &subscription.Usage{Expire: tc.expires.Unix()}
+			d.subscriptions.states["sample"] = state
+			page := viewOverview(t, d)
+			banner, _, _ := strings.Cut(page, `aria-label="KeenProxy sections"`)
+			if !strings.Contains(banner, ">"+tc.status+"</span>") || !strings.Contains(page, tc.detail) ||
+				!strings.Contains(page, "KeenProxy handles 1 of 2 devices") || !strings.Contains(page, "New devices connect directly by default.") ||
+				strings.Contains(banner, "Home VPN off") {
+				t.Errorf("Overview lost the %s path or the separate new-device default", tc.name)
+			}
+		})
+	}
+	t.Run("different explicit device paths", func(t *testing.T) {
+		d.neighbors["02:00:00:00:00:26"] = netip.MustParseAddr("192.0.2.26")
+		applied.Connections = []model.Connection{{ID: "spare", Type: model.ConnLink, Link: "socks5://spare.example.test:1080"}}
+		for i := range applied.Clients {
+			if applied.Clients[i].MAC == "02:00:00:00:00:26" {
+				applied.Clients[i].Mode, applied.Clients[i].Target = model.ModeFull, "spare"
+			}
+		}
+		if err := d.Apply(t.Context(), applied); err != nil {
+			t.Fatal(err)
+		}
+		page := viewOverview(t, d)
+		banner, _, _ := strings.Cut(page, `aria-label="KeenProxy sections"`)
+		if !strings.Contains(banner, ">Device-specific routing</span>") || !strings.Contains(page, "KeenProxy handles 2 of 2 devices") ||
+			!strings.Contains(page, "New devices connect directly by default.") || strings.Contains(page, "Current connection:") {
+			t.Error("Overview presented two device-specific routes as one connection")
+		}
+	})
+}
 
 func TestOverviewRedactsLegacySubscriptionSnapshot(t *testing.T) {
 	const privateLink = "https://provider.example/catalog?account=synthetic-token&device=router"
@@ -379,6 +453,14 @@ type overviewTestDeps struct {
 }
 
 func (v overviewTestDeps) Config() *model.Config { return v.d.Config() }
+func (v overviewTestDeps) Devices() []ui.DiscoveredDevice {
+	var result []ui.DiscoveredDevice
+	for _, device := range v.d.Devices() {
+		result = append(result, ui.DiscoveredDevice{MAC: device.MAC, IP: device.IP, Name: device.Hostname})
+	}
+	return result
+}
+
 func (v overviewTestDeps) Apply(ctx context.Context, cfg *model.Config, revision string) error {
 	return v.d.ApplyIfCurrent(ctx, cfg, revision)
 }
@@ -386,6 +468,7 @@ func (v overviewTestDeps) Apply(ctx context.Context, cfg *model.Config, revision
 func (v overviewTestDeps) OverviewStatus() ui.OverviewStatus {
 	routing := v.d.RoutingStatus()
 	status := ui.OverviewStatus{Ready: routing.Ready, Devices: routing.Devices, ManagedDevices: routing.ManagedDevices,
+		HomeTargets: routing.HomeTargets,
 		Connections: make(map[string]ui.ConnectionStatus)}
 	for id, probe := range routing.Health {
 		status.Connections[id] = ui.ConnectionStatus{Checked: !probe.Checked.IsZero(), Available: probe.OK, LatencyMS: probe.Latency}

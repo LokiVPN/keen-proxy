@@ -118,6 +118,7 @@ type SetupPreview struct {
 type OverviewStatus struct {
 	Ready                   bool
 	Devices, ManagedDevices int
+	HomeTargets             []string
 	Connections             map[string]ConnectionStatus
 	RulesState              string
 	RulesActive, RulesTotal int

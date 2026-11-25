@@ -24,6 +24,13 @@ type deviceRow struct {
 	clientTarget             string
 }
 
+func (r deviceRow) NoteKey() string {
+	if r.EnableProblem == "" && r.Mode != model.ModeOff && !r.IP.IsValid() {
+		return "devices_waiting_for_address"
+	}
+	return r.EnableProblem
+}
+
 func (p pages) renderDevices(w http.ResponseWriter, r *http.Request, status int, cfg *model.Config, draft *devicesDraft, messageKey, detail string) {
 	data := p.opts.pageData(r)
 	data.Title = data.Text["nav_devices"]
@@ -32,7 +39,7 @@ func (p pages) renderDevices(w http.ResponseWriter, r *http.Request, status int,
 	data.Flash = takeFlash(w, r, data.Text)
 	data.Message = data.Text[messageKey]
 	if cfg != nil {
-		home := homeNetwork(cfg)
+		home := cfg.HomeNetwork()
 		page := &devicesPage{
 			Revision: Revision(cfg), Validation: detail, Draft: draft != nil,
 			HasHome: home != nil, NewDevices: home != nil && home.Mode != model.ModeOff,

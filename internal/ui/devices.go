@@ -49,7 +49,7 @@ func (p pages) devicesPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	home := homeNetwork(cfg)
+	home := cfg.HomeNetwork()
 	draft, ok := p.parseDevicesDraft(r.PostForm)
 	if !ok || (home == nil && draft.NewDevices) {
 		p.renderDevices(w, r, http.StatusBadRequest, cfg, nil, "devices_invalid_form", "")
@@ -89,7 +89,7 @@ func (p pages) devicesPost(w http.ResponseWriter, r *http.Request) {
 	p.applyDevices(w, r, cfg, &draft)
 }
 
-// prepareRows stages bulk controls or checks every split row against the
+// prepareRows stages bulk controls or checks VPN-on rows against the
 // proposed configuration and current discovery before Save.
 func (d *devicesDraft) prepareRows(cfg *model.Config, home *model.Network, discovered []DiscoveredDevice) {
 	byMAC := deviceSnapshot(cfg, home, discovered)
@@ -110,7 +110,7 @@ func (d *devicesDraft) prepareRows(cfg *model.Config, home *model.Network, disco
 		if mode == model.ModeSplit && blocked {
 			mode = displayed
 			d.Blocked = d.Bulk == model.ModeInherit
-		} else if d.Bulk == model.ModeInherit && mode == model.ModeSplit && splitCoverageMissing(cfg, home, row) {
+		} else if d.Bulk == model.ModeInherit && deviceCoverageMissing(cfg, home, row, mode) {
 			d.Blocked = true
 		}
 		d.Modes[mac], row.Mode = mode, mode
@@ -118,12 +118,15 @@ func (d *devicesDraft) prepareRows(cfg *model.Config, home *model.Network, disco
 	}
 }
 
-// splitCoverageMissing checks a known address with no inherited or manual
+// deviceCoverageMissing checks a known address with no inherited or manual
 // target. A concrete network default covers split traffic when provider rules
-// are off. Provider proxy rules require the policy target itself.
-func splitCoverageMissing(cfg *model.Config, home *model.Network, row deviceRow) bool {
-	if !row.IP.IsValid() || row.EnableProblem == "" {
+// are off. Full traffic and provider proxy rules require the policy target.
+func deviceCoverageMissing(cfg *model.Config, home *model.Network, row deviceRow, mode model.Mode) bool {
+	if mode == model.ModeOff || !row.IP.IsValid() || row.EnableProblem == "" {
 		return false
+	}
+	if mode == model.ModeFull {
+		return true
 	}
 	network := deviceNetwork(row.IP, cfg.Networks, home)
 	return cfg.ActiveProviderRules() != nil || network == nil ||

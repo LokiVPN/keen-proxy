@@ -100,6 +100,59 @@ func TestDevicesKeepsInheritedFullRouteWhenHomeTurnsOff(t *testing.T) {
 	assertDeviceOutbound(t, f.Config(), mac, ip, fullSet, "manual")
 }
 
+func TestDevicesRejectsFullPinAfterAddressMoves(t *testing.T) {
+	const mac = "02:00:00:00:00:25"
+	for _, ip := range []string{"203.0.113.25", "198.51.100.25"} {
+		t.Run(ip, func(t *testing.T) {
+			f := newDevicesFixture(t)
+			f.cfg.Clients = nil
+			f.cfg.Networks[0].Mode = model.ModeFull
+			// A guest split default cannot supply a Full tunnel's target.
+			f.cfg.Networks[1].Target, f.cfg.Networks[1].Default = "", "manual"
+			f.discovered = []DiscoveredDevice{{MAC: mac, IP: "192.0.2.25", Name: "Laptop"}}
+			before := f.Config()
+			h := New(f, setupTestOptions(RoleManage))
+			form := readDevicesForm(t, setupRequest(h, "/devices", nil).Body.String())
+			if form.Get("full") != mac {
+				t.Fatal("the laptop did not inherit Full")
+			}
+			form.Del("new")
+			f.discovered[0].IP = ip
+			w := setupRequest(h, "/devices", form)
+			if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(before, f.Config()) {
+				t.Fatalf("Save after Full lost its inherited target = HTTP %d, Apply calls %d", w.Code, f.applies)
+			}
+			assertContains(t, w.Body.String(), "Check the notices in the list", "Laptop", ip, "Outside the home network")
+			reviewed := readDevicesForm(t, w.Body.String())
+			if reviewed.Get("full") != mac || reviewed.Has("new") {
+				t.Fatal("rejected Save lost the user's draft")
+			}
+			reviewed.Del("full")
+			if w = setupRequest(h, "/devices", reviewed); w.Code != http.StatusSeeOther || f.applies != 1 || f.cfg.Clients[0].Mode != model.ModeOff {
+				t.Fatalf("Save after reviewing the uncovered row = HTTP %d, Apply calls %d", w.Code, f.applies)
+			}
+		})
+	}
+}
+
+func TestDevicesAddressesNeededBeforeRoutingAndTargetLossFailsClosed(t *testing.T) {
+	const mac = "02:00:00:00:00:25"
+	for _, mode := range []model.Mode{model.ModeFull, model.ModeSplit} {
+		t.Run(string(mode), func(t *testing.T) {
+			f := newDevicesFixture(t)
+			f.cfg.Clients = []model.Client{{MAC: mac, Mode: mode, Name: "Laptop"}}
+			h := New(f, setupTestOptions(RoleManage))
+			w := setupRequest(h, "/devices", nil)
+			assertContains(t, w.Body.String(), "Waiting for a device address.")
+			const ip = "203.0.113.25"
+			f.discovered = []DiscoveredDevice{{MAC: mac, IP: ip}}
+			page := setupRequest(h, "/devices", nil)
+			assertContains(t, page.Body.String(), "Outside the home network")
+			assertDeviceOutbound(t, f.Config(), mac, ip, "clients-full-block", model.TargetBlock)
+		})
+	}
+}
+
 func TestDevicesPreservesInheritedSplitWithOnlyANetworkDefault(t *testing.T) {
 	const mac, ip = "02:00:00:00:00:25", "192.0.2.25"
 	f := newDevicesFixture(t)
@@ -137,6 +190,7 @@ func assertDeviceOutbound(t *testing.T, cfg *model.Config, mac, ip, ruleSet, out
 			Rules []struct {
 				RuleSet  []string `json:"rule_set"`
 				Outbound string   `json:"outbound"`
+				Action   string   `json:"action"`
 			} `json:"rules"`
 		} `json:"route"`
 	}
@@ -144,7 +198,7 @@ func assertDeviceOutbound(t *testing.T, cfg *model.Config, mac, ip, ruleSet, out
 		t.Fatal(err)
 	}
 	for _, rule := range engine.Route.Rules {
-		if slices.Equal(rule.RuleSet, []string{ruleSet}) && rule.Outbound == outbound &&
+		if slices.Equal(rule.RuleSet, []string{ruleSet}) && (rule.Outbound == outbound || outbound == model.TargetBlock && rule.Action == "reject") &&
 			strings.Contains(string(compiled.RuleSets[ruleSet+".json"]), `"`+ip+`/32"`) {
 			return
 		}

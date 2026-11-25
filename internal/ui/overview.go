@@ -43,7 +43,7 @@ func (p pages) overviewConnection(w http.ResponseWriter, r *http.Request) {
 	if cfg == nil {
 		return
 	}
-	network := homeNetwork(cfg)
+	network := cfg.HomeNetwork()
 	target := r.PostForm["target"]
 	if network == nil || len(target) != 1 ||
 		!selectableConnection(connectionOptions(cfg, p.deps.Subscriptions(), nil, localized(r)), target[0]) {
@@ -56,12 +56,14 @@ func (p pages) overviewConnection(w http.ResponseWriter, r *http.Request) {
 		network.Default != model.TargetDirect && network.Default != model.DefaultProfile {
 		network.Default = target[0]
 	}
-	network.Target = target[0]
-	for i := range cfg.Groups {
-		if cfg.Groups[i].Name == "own-vpn" {
-			cfg.Groups[i].Target = target[0]
+	vpn := routingOwnGroups(cfg, ownVPNGroup, network.Target)
+	if network.Mode != model.ModeFull && len(vpn.groups) == 1 && !vpn.readOnly() {
+		state := routingState{class: connectionClass(network.Target, p.deps.OverviewStatus().Connections)}
+		if state.canUseVPN() {
+			vpn.groups[0].Target = target[0]
 		}
 	}
+	network.Target = target[0]
 	p.applyOverview(w, r, cfg)
 }
 
@@ -124,18 +126,4 @@ func (p pages) trafficFragment(w http.ResponseWriter, r *http.Request) {
 	data := p.opts.pageData(r)
 	data.Traffic = overviewTraffic(p.deps.TrafficSeries(), time.Now(), data.Lang)
 	render(w, r, http.StatusOK, "overview-traffic", data)
-}
-
-// homeNetwork finds the LAN policy created by setup. A single custom network
-// has the same role. With several custom networks, the overview cannot pick one.
-func homeNetwork(cfg *model.Config) *model.Network {
-	for i := range cfg.Networks {
-		if cfg.Networks[i].Name == "Home" {
-			return &cfg.Networks[i]
-		}
-	}
-	if len(cfg.Networks) == 1 {
-		return &cfg.Networks[0]
-	}
-	return nil
 }

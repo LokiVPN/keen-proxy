@@ -52,7 +52,7 @@ func (p pages) renderRouting(w http.ResponseWriter, r *http.Request, status int,
 
 func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[string]string) *routingPage {
 	page := routingPage{Revision: Revision(cfg)}
-	network := homeNetwork(cfg)
+	network := cfg.HomeNetwork()
 	if network == nil {
 		page.Unavailable = text["overview_no_home"]
 		return &page
@@ -69,7 +69,11 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 		page.CustomMode = text["routing_custom_mode"]
 	}
 	providerProblem := state.providerProblem()
-	page.CanProvider = providerProblem == ""
+	keepProvider := state.keepsWithheldProvider(network, settings)
+	page.CanProvider = providerProblem == "" || keepProvider
+	if keepProvider {
+		page.Mode, page.CustomMode = routingProvider, ""
+	}
 	page.ProviderHint = text[cmp.Or(providerProblem, "routing_provider_hint")]
 	page.ProviderMode, page.ProviderHeading = text["routing_mode_provider"], text["routing_provider_rules"]
 	if name := state.sub.Metadata.Title; name != "" {
@@ -88,6 +92,24 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 		page.AllMode, page.AllHint = text["routing_main_mode"], text[state.mainProblem()]
 		page.OwnHint, page.VPNTitle = text["routing_own_direct_hint"], text["routing_own_via_main"]
 		page.VPN.ReadOnlyNote = cmp.Or(page.VPN.ReadOnlyNote, page.AllHint)
+	} else if state.class == stats.TargetMixed {
+		selection := selectedConnection(cfg, network.Target, state.subscriptions, state.health, text)
+		page.AllMode = text["routing_main_mode"]
+		if selection.Name != "" {
+			page.AllMode = fmt.Sprintf(text["overview_follow_connection"], selection.Name)
+		}
+		active := state.health[network.Target]
+		switch {
+		case selection.ReserveDirect || active.Active == model.TargetDirect || active.ActiveClass == stats.TargetDirect:
+			page.AllHint = text["overview_direct_reserve"] + " " + page.AllHint
+		case selection.Reserve != "":
+			page.AllHint = fmt.Sprintf(text["overview_using_reserve"], selection.Reserve) + " " + page.AllHint
+		case active.Active != "" && active.Active != network.Target:
+			if name := connectionName(cfg, active.Active); name != "" && active.ActiveClass != stats.TargetBlock {
+				page.AllHint = fmt.Sprintf(text["overview_using_reserve"], name) + " " + page.AllHint
+			}
+		}
+		page.OwnHint, page.VPNTitle = text["routing_own_direct_hint"], text["routing_own_via_main"]
 	}
 	if draft != nil {
 		page.Mode = draft.Mode
@@ -154,7 +176,7 @@ func (p *routingPage) setRules(state routingState, settings *model.ProviderRules
 				p.Unmatched = text["routing_rest_direct"]
 			case stats.TargetBlock:
 				p.Unmatched = text["routing_rest_blocked"]
-			case stats.TargetUnknown:
+			case stats.TargetUnknown, stats.TargetMixed:
 				p.Unmatched = text["routing_rest_main"]
 			}
 		}
@@ -162,7 +184,7 @@ func (p *routingPage) setRules(state routingState, settings *model.ProviderRules
 	disabled := settings.DisabledRuleKeys()
 	for _, action := range []string{"proxy", "direct", "block"} {
 		group := routingRuleGroup{Label: text["routing_action_"+action]}
-		if action == "proxy" && !state.canUseVPN() {
+		if action == "proxy" && state.class != stats.TargetVPN {
 			group.Label = text["routing_main_mode"]
 		}
 		for _, rule := range rules.Rules {

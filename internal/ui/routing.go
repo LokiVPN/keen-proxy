@@ -43,10 +43,12 @@ type routingList struct {
 // routingState joins configured source and target choices with their latest
 // applied status for both rendering and save admission.
 type routingState struct {
-	source string
-	sub    AppliedSubscription
-	rules  RoutingRules
-	class  stats.TargetClass
+	source        string
+	sub           AppliedSubscription
+	subscriptions []AppliedSubscription
+	rules         RoutingRules
+	class         stats.TargetClass
+	health        map[string]ConnectionStatus
 }
 
 func (p pages) routingGet(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +75,7 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	network := homeNetwork(cfg)
+	network := cfg.HomeNetwork()
 	if network == nil || network.Mode == model.ModeFull {
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, "")
 		return
@@ -82,11 +84,15 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	mode := form.Get("mode")
 	state := p.routingState(cfg, network)
 	providerProblem := state.providerProblem()
+	keepProvider := state.keepsWithheldProvider(network, cfg.ActiveProviderRules())
+	if keepProvider && !form.Has("mode") {
+		mode = routingProvider
+	}
 	switch {
-	case len(form["mode"]) != 1 || (mode != routingProvider && mode != routingAll && mode != routingOwn):
+	case len(form["mode"]) > 1 || (mode != routingProvider && mode != routingAll && mode != routingOwn):
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, nil, "routing_invalid_mode")
 		return
-	case mode == routingProvider && providerProblem != "":
+	case mode == routingProvider && providerProblem != "" && !keepProvider:
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, providerProblem)
 		return
 	case mode == routingAll && !state.canUseVPN():
@@ -115,6 +121,11 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	if !valid || (len(draft.Switches) != 0 && cfg.ProviderRules == nil) {
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
 		return
+	}
+	if keepProvider && mode == routingProvider {
+		// The provider table is unavailable. An earlier, still open form can
+		// send its controls, but keeping this mode leaves its rule keys intact.
+		draft.Switches = nil
 	}
 	if (draft.VPN != nil && len(draft.VPN.InvalidLines) != 0) ||
 		(draft.Direct != nil && len(draft.Direct.InvalidLines) != 0) {
@@ -166,9 +177,11 @@ func routingRulesSource(cfg *model.Config, network *model.Network) string {
 
 func (p pages) routingState(cfg *model.Config, network *model.Network) routingState {
 	source := routingRulesSource(cfg, network)
+	health := p.deps.OverviewStatus().Connections
+	subs := p.deps.Subscriptions()
 	return routingState{
-		source: source, sub: appliedSubscriptionFor(p.deps.Subscriptions(), source),
-		rules: p.routingRules(cfg), class: connectionClass(network.Target, p.deps.OverviewStatus().Connections),
+		source: source, sub: appliedSubscriptionFor(subs, source), subscriptions: subs,
+		rules: p.routingRules(cfg), class: connectionClass(network.Target, health), health: health,
 	}
 }
 
@@ -197,6 +210,11 @@ func (s routingState) providerProblem() string {
 		return s.mainProblem()
 	}
 	return ""
+}
+
+// Keeping the saved policy does not select a currently unavailable mode.
+func (s routingState) keepsWithheldProvider(network *model.Network, settings *model.ProviderRulesSettings) bool {
+	return s.providerProblem() == "setup_rules_withheld" && settings != nil && network.Default == model.DefaultProfile
 }
 
 func (d routingDraft) apply(cfg *model.Config, network *model.Network, source string) {
@@ -256,13 +274,14 @@ func parseRoutingList(value string) *routingList {
 // ownRoutingGroups collects exact name matches. Several groups sharing a
 // reserved name or one with advanced settings cannot be edited as a list.
 type ownRoutingGroups struct {
-	groups []model.Group
+	groups []*model.Group
 	target string
 }
 
 func routingOwnGroups(cfg *model.Config, name, target string) ownRoutingGroups {
 	result := ownRoutingGroups{target: target}
-	for _, group := range cfg.Groups {
+	for i := range cfg.Groups {
+		group := &cfg.Groups[i]
 		if group.Name == name {
 			result.groups = append(result.groups, group)
 		}

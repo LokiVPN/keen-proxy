@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -353,6 +354,59 @@ func TestRoutingRefusesWithheldRules(t *testing.T) {
 	}
 }
 
+func TestRoutingRetainsSavedProviderModeWhileRulesAreWithheld(t *testing.T) {
+	for _, refreshed := range []bool{false, true} {
+		name := "first save with a node-only feed"
+		if refreshed {
+			name = "ready to withheld while the form is open"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newRoutingFixture()
+			h := New(f, setupTestOptions(RoleManage))
+			id := "sample"
+			if !refreshed {
+				id = setupSourceID
+				f.setupFixture = setupFixture{
+					cfg: &model.Config{}, lan: netip.MustParsePrefix("192.0.2.0/24"),
+					preview: SetupPreview{State: subscription.StateReady, NodeCount: 1, RulesState: "withheld"},
+				}
+				f.rules = RoutingRules{Source: id, State: "withheld"}
+				f.subs[0].ID, f.subs[0].RulesWithheld = id, true
+				f.status.Connections[model.ManagedTarget(id, "auto")] = ConnectionStatus{Class: stats.TargetVPN}
+				if w := setupRequest(h, "/setup/enable", checkSetupLink(t, h)); w.Code != http.StatusSeeOther {
+					t.Fatalf("enabling a node-only subscription returned HTTP %d", w.Code)
+				}
+			} else {
+				f.rules.State = "ready"
+			}
+			f.cfg.ProviderRules.Disabled = []string{"proxy:site:held"}
+			applies := f.applies
+			before := f.Config()
+			page := setupRequest(h, "/routing", nil)
+			body := page.Body.String()
+			const providerRadio = `value="provider" id="routing-mode-provider" required checked`
+			assertContains(t, body, providerRadio)
+			form := url.Values{"rev": {formField(t, body, "rev")}, "own-direct": {"new-direct.example"}}
+			if !strings.Contains(body, providerRadio+" disabled") {
+				form.Set("mode", "provider")
+			}
+			f.rules = RoutingRules{Source: id, State: "withheld"}
+			f.subs[0].RulesWithheld = true
+			w := setupRequest(h, "/routing", form)
+			if w.Code != http.StatusSeeOther || f.applies != applies+1 {
+				t.Fatalf("an unrelated list save returned HTTP %d, applies %d", w.Code, f.applies)
+			}
+			if f.cfg.Networks[0].Default != model.DefaultProfile || !reflect.DeepEqual(before.ProviderRules, f.cfg.ProviderRules) ||
+				!slices.ContainsFunc(f.cfg.Groups, func(group model.Group) bool {
+					return group.Name == "own-direct" && slices.Equal(group.Entries, []string{"new-direct.example"})
+				}) {
+				t.Error("the list save changed the previously selected provider policy or lost the direct exception")
+			}
+			assertContains(t, setupRequest(h, "/routing", nil).Body.String(), providerRadio+">", "The provider does not supply routing rules.")
+		})
+	}
+}
+
 func TestRoutingRejectsNonVPNMainTargets(t *testing.T) {
 	for _, tc := range []struct {
 		kind, explanation string
@@ -386,10 +440,16 @@ func TestRoutingRejectsNonVPNMainTargets(t *testing.T) {
 func TestRoutingOffersVPNModeForMixedTargetUsingDirectReserve(t *testing.T) {
 	f := newRoutingFixture()
 	target := f.cfg.Networks[0].Target
+	f.cfg.Subscriptions[0].Fallback = model.TargetDirect
+	f.subs[0].Unavailable, f.subs[0].SwitchReason = true, "fallback"
 	f.status.Connections[target] = ConnectionStatus{Class: stats.TargetMixed, ActiveClass: stats.TargetDirect}
 	h := New(f, setupTestOptions(RoleManage))
 	page := setupRequest(h, "/routing", nil)
-	assertContains(t, page.Body.String(), "All traffic through VPN", `value="all" id="routing-mode-all" required>`)
+	assertContains(t, page.Body.String(), "Traffic follows connection Example VPN", "The main connection is using its direct reserve.",
+		`value="all" id="routing-mode-all" required>`)
+	if strings.Contains(page.Body.String(), "All traffic through VPN") {
+		t.Error("a mixed main target was advertised as VPN-only")
+	}
 	w := setupRequest(h, "/routing", url.Values{"rev": {Revision(f.Config())}, "mode": {"all"}})
 	if w.Code != http.StatusSeeOther || f.cfg.Networks[0].Default != target {
 		t.Fatalf("mixed target mode returned HTTP %d", w.Code)

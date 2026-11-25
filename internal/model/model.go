@@ -377,6 +377,20 @@ type Network struct {
 	Default string `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
+// HomeNetwork finds the LAN policy created by setup. A single custom network
+// has the same role. With several custom networks, the overview cannot pick one.
+func (cfg *Config) HomeNetwork() *Network {
+	for i := range cfg.Networks {
+		if cfg.Networks[i].Name == "Home" {
+			return &cfg.Networks[i]
+		}
+	}
+	if len(cfg.Networks) == 1 {
+		return &cfg.Networks[0]
+	}
+	return nil
+}
+
 // RouteHomeThroughSubscription replaces the networks with one split network,
 // Home, that covers the LAN prefix and routes through the subscription: its
 // provider rules, then the provider profile default (DefaultProfile),

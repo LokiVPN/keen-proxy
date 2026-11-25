@@ -68,7 +68,7 @@ func (p pages) diagnosticsCheck(w http.ResponseWriter, r *http.Request) {
 		p.renderDiagnostics(w, r, http.StatusConflict, "revision_changed")
 		return
 	}
-	network := homeNetwork(cfg)
+	network := cfg.HomeNetwork()
 	if network == nil || network.Target == "" {
 		p.renderDiagnostics(w, r, http.StatusUnprocessableEntity, "diag_check_unavailable")
 		return

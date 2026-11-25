@@ -221,6 +221,7 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 	routing := d.daemon.RoutingStatus()
 	status := ui.OverviewStatus{
 		Ready: routing.Ready, Devices: routing.Devices, ManagedDevices: routing.ManagedDevices,
+		HomeTargets: routing.HomeTargets,
 		Connections: make(map[string]ui.ConnectionStatus, len(routing.Health)),
 	}
 	for id, health := range routing.Health {

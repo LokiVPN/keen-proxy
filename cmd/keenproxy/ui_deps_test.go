@@ -696,7 +696,7 @@ func TestRoutingClassifiesManagedTargetsThroughCompiledReserves(t *testing.T) {
 		class                                     stats.TargetClass
 	}{
 		{"VPN reserve", "auto", "reserve", "", "All traffic through VPN", stats.TargetVPN},
-		{"missing pin with mixed reserve", strings.Repeat("a", 32), "reserve", model.TargetDirect, "All traffic through VPN", stats.TargetMixed},
+		{"missing pin with mixed reserve", strings.Repeat("a", 32), "reserve", model.TargetDirect, "Traffic follows connection", stats.TargetMixed},
 		{"direct reserve", "auto", model.TargetDirect, "", "The main connection for the home network routes directly.", stats.TargetDirect},
 		{"blocking without reserve", "auto", "", "", "The main connection blocks traffic.", stats.TargetBlock},
 	} {

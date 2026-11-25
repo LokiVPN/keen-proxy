@@ -29,13 +29,13 @@
                   <span class="clip" title="{{$name}}">{{$name}}</span>
                   {{if not .Name}}<span class="device-detail muted small">MAC {{.MAC}}</span>{{end}}
                   {{if eq .Mode "full"}}<span class="device-detail muted small device-full-note">{{$.Text.devices_full}}</span>{{end}}
-                  {{if .EnableProblem}}<span class="device-detail muted small" id="device-note-{{.MAC}}">{{index $.Text .EnableProblem}}</span>{{end}}
+                  {{if .NoteKey}}<span class="device-detail muted small" id="device-note-{{.MAC}}">{{index $.Text .NoteKey}}</span>{{end}}
                   {{if .IP.IsValid}}<span class="dev-ip muted small">{{.IP}}</span>{{end}}
                 </td>
                 <td class="c-ip">{{if .IP.IsValid}}{{.IP}}{{else}}<span class="muted">—</span>{{end}}</td>
                 <td class="c-tg">
                   <label class="tg">
-                    <input type="checkbox" role="switch" name="{{if eq .Mode "full"}}full{{else}}split{{end}}" value="{{.MAC}}"{{if ne .Mode "off"}} checked{{end}} aria-label="{{$name}}{{if not .Name}} ({{.MAC}}){{end}}"{{if .EnableProblem}} aria-describedby="device-note-{{.MAC}}"{{end}}{{if and .EnableProblem (eq .Mode "off")}} disabled{{end}} data-device-switch>
+                    <input type="checkbox" role="switch" name="{{if eq .Mode "full"}}full{{else}}split{{end}}" value="{{.MAC}}"{{if ne .Mode "off"}} checked{{end}} aria-label="{{$name}}{{if not .Name}} ({{.MAC}}){{end}}"{{if .NoteKey}} aria-describedby="device-note-{{.MAC}}"{{end}}{{if and .EnableProblem (eq .Mode "off")}} disabled{{end}} data-device-switch>
                     <span class="tg-track" aria-hidden="true"></span>
                   </label>
                 </td>
