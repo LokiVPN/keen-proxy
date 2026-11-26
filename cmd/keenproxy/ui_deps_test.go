@@ -102,6 +102,76 @@ func TestSubscriptionRemovalRecognizesSavedProfileReferences(t *testing.T) {
 	}
 }
 
+func TestSubscriptionAddSkipsUnreadableDormantReference(t *testing.T) {
+	protocol := "unavailable-type"
+	if engine.BuildVariant == "lite" {
+		protocol = "http"
+	}
+	d := &subscriptionCheckDaemon{wizardRuntimeDaemon: wizardRuntimeDaemon{cfg: &model.Config{
+		Subscriptions: []subscription.Source{{ID: "main", URL: "https://provider.example/config"}},
+		Connections: []model.Connection{
+			{ID: "dependent", Type: model.ConnSingBox, Disabled: true, Outbound: map[string]any{
+				"type": protocol, "server": "server.example", "server_port": 8080, "detour": model.ManagedTarget("sub2", "auto"),
+			}},
+			{ID: "unrelated", Type: model.ConnSingBox, Disabled: true, Outbound: map[string]any{
+				"type": protocol, "server": "server.example", "server_port": 8080, "detour": model.ManagedTarget("sub30", "auto"),
+			}},
+		},
+	}}}
+	d.cfg.Defaults()
+	if err := d.cfg.Validate(); err != nil {
+		t.Fatalf("expected a valid configuration with dormant profiles: %v", err)
+	}
+	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	post := func(path string, extra url.Values) *httptest.ResponseRecorder {
+		extra.Set("rev", ui.Revision(d.Config()))
+		r := httptest.NewRequest(http.MethodPost, "/connections/subscriptions/"+path, strings.NewReader(extra.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	d.cfg.Subscriptions = append(d.cfg.Subscriptions, subscription.Source{ID: "sub2", URL: "https://other.example/config"})
+	w := post("sub2/remove", url.Values{})
+	if w.Code != http.StatusUnprocessableEntity || d.applies != 0 || !strings.Contains(w.Body.String(), "Could not check all saved references") {
+		t.Fatalf("removal with an uncertain dependency returned HTTP %d or reached Apply", w.Code)
+	}
+	d.cfg.Subscriptions = d.cfg.Subscriptions[:1]
+
+	w = post("new/check", url.Values{"url": {"https://provider.example/added"}})
+	if w.Code != http.StatusOK || d.source.ID != "sub3" || !d.source.SendHWID || d.applies != 0 ||
+		!strings.Contains(w.Body.String(), `action="/connections/subscriptions/new/confirm"`) {
+		t.Fatalf("add check returned HTTP %d, selected ID %q or failed to show the confirm form", w.Code, d.source.ID)
+	}
+	preview := regexp.MustCompile(`name="preview" value="([^"]+)"`).FindStringSubmatch(w.Body.String())
+	if len(preview) != 2 {
+		t.Fatal("confirmation form lost the checked draft")
+	}
+	w = post("new/confirm", url.Values{"preview": {preview[1]}})
+	if w.Code != http.StatusSeeOther || d.applies != 1 || len(d.cfg.Subscriptions) != 2 || d.cfg.Subscriptions[1] != d.source {
+		t.Fatalf("confirm returned HTTP %d or did not append only the checked subscription", w.Code)
+	}
+}
+
+type subscriptionCheckDaemon struct {
+	wizardRuntimeDaemon
+	source subscription.Source
+}
+
+func (d *subscriptionCheckDaemon) PreviewSubscriptionDetails(_ context.Context, source subscription.Source) daemon.SubscriptionPreviewDetails {
+	d.source = source
+	return daemon.SubscriptionPreviewDetails{
+		PreviewID: 1, Status: daemon.SubscriptionStatus{State: subscription.StateReady, Nodes: []daemon.SubscriptionNodeStatus{{Name: "Example"}}},
+	}
+}
+
+func (d *subscriptionCheckDaemon) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, rev string, checked subscription.PreviewRef) error {
+	if checked.ID != 1 || checked.Source != d.source {
+		return subscription.ErrPreviewChanged
+	}
+	return d.ApplyIfCurrent(ctx, cfg, rev)
+}
+
 func TestConnectionDetailUsesStaticChoicesForBothSwitchStates(t *testing.T) {
 	d := &detailRuntimeDaemon{wizardRuntimeDaemon: wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
 		{ID: "primary", Type: model.ConnLink, Link: "socks5://primary.example:1080", Disabled: true, Fallback: model.TargetDirect},

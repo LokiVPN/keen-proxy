@@ -175,16 +175,20 @@ func (p pages) connectionsFragment(w http.ResponseWriter, r *http.Request) {
 	render(w, r, http.StatusOK, "connections-nodes-fragment", data)
 }
 
-func (p pages) renderConnections(w http.ResponseWriter, r *http.Request, status int, cfg, draft *model.Config, message string, refs ...connectionReference) {
+func (p pages) renderConnections(w http.ResponseWriter, r *http.Request, status int, cfg, draft *model.Config, messageKey string) {
+	p.renderConnectionsResult(w, r, status, cfg, draft, localized(r)[messageKey], nil)
+}
+
+func (p pages) renderConnectionsResult(w http.ResponseWriter, r *http.Request, status int, cfg, draft *model.Config, message string, refs []connectionReference) {
 	data := p.opts.pageData(r)
 	data.SignedIn = true
 	data.ViewOnly = p.role(r) == RoleView
 	data.Title = data.Text["nav_connections"]
 	data.ActiveTab = "/connections"
 	if r.Method == http.MethodPost && status == http.StatusOK {
-		data.Flash = data.Text[message]
+		data.Flash = message
 	} else {
-		data.Message = data.Text[message]
+		data.Message = message
 		data.Flash = takeFlash(w, r, data.Text)
 	}
 	if cfg != nil {

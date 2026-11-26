@@ -127,10 +127,10 @@ func (p pages) diagnosticTargetLabel(cfg *model.Config, text map[string]string) 
 		case model.SubscriptionStickySession:
 			label = text["overview_sticky_session"]
 		default:
-			return cmp.Or(diagnosticNodeName(p.deps.DiagnosticNode(target), text), text["diag_subscription_node"]), true
+			label = cmp.Or(diagnosticNodeName(p.deps.DiagnosticNode(target), text), text["diag_subscription_node"])
 		}
 		sub := appliedSubscriptionFor(p.deps.Subscriptions(), id)
-		return sub.title(text) + " · " + label, true
+		return sub.label(text) + " · " + label, true
 	default:
 		for _, conn := range cfg.Connections {
 			if conn.ID == target {
@@ -159,8 +159,15 @@ type diagnosticResultView struct {
 
 func diagnosticResult(result DiagnosticCheckResult, cfg *model.Config, text map[string]string) diagnosticResultView {
 	view := diagnosticResultView{Node: diagnosticNodeName(result.Node, text), SkippedVPN: result.SkippedVPN}
+	groupID := diagnosticSubscriptionID(cfg, result.Group)
+	if leafID := diagnosticSubscriptionID(cfg, result.Leaf); view.Node != "" && leafID != groupID {
+		view.Node = subscriptionLabel(leafID, view.Node)
+	}
 	if result.Group != "" {
 		group := cmp.Or(result.GroupName, diagnosticPathName(cfg, result.Group, text))
+		if groupID != "" {
+			group = subscriptionLabel(groupID, result.GroupName)
+		}
 		leaf := cmp.Or(view.Node, diagnosticPathName(cfg, result.Leaf, text))
 		if result.Reserve != "" {
 			leaf = fmt.Sprintf(text["diag_reserve"], diagnosticPathName(cfg, result.Reserve, text))
@@ -185,13 +192,20 @@ func diagnosticPathName(cfg *model.Config, tag string, text map[string]string) s
 	case model.TargetBlock:
 		return text["detail_blocked"]
 	}
-	if _, _, managed := model.ParseManagedTarget(tag); managed {
-		return text["diag_subscription_node"]
+	if id := diagnosticSubscriptionID(cfg, tag); id != "" {
+		return subscriptionLabel(id, text["diag_subscription_node"])
 	}
 	if cfg != nil {
 		return cmp.Or(connectionName(cfg, tag), tag)
 	}
 	return tag
+}
+
+func diagnosticSubscriptionID(cfg *model.Config, tag string) string {
+	if id, _, managed := model.ParseManagedTarget(tag); managed && cfg != nil && subscriptionIndex(cfg, id) >= 0 {
+		return id
+	}
+	return ""
 }
 
 func diagnosticProbeRows(probes []DiagnosticProbe, text map[string]string) []diagnosticRow {

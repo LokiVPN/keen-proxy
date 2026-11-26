@@ -385,12 +385,16 @@ func savedProfileReferences(ctx context.Context, cfg *model.Config, skipID strin
 	var refs []string
 	var inspectionErr error
 	for _, conn := range cfg.Connections {
+		if err := ctx.Err(); err != nil {
+			return refs, err
+		}
 		if conn.Type != model.ConnSingBox || conn.ID == skipID {
 			continue
 		}
 		conn.Disabled = false
 		raw, err := compile.ConnectionValidationConfig(&model.Config{Connections: []model.Connection{conn}})
 		if err != nil {
+			// Projection precedes the target filter. Failure applies to every target.
 			inspectionErr = errors.New("could not inspect a saved raw profile")
 			continue
 		}
@@ -401,7 +405,9 @@ func savedProfileReferences(ctx context.Context, cfg *model.Config, skipID strin
 		}
 		found, err := engine.ProfileReferencesOutbound(ctx, raw, matches)
 		if err != nil {
-			inspectionErr = errors.New("could not inspect a saved raw profile")
+			if inspectionErr == nil {
+				inspectionErr = ui.ErrProfileReferenceUncertain
+			}
 			continue
 		}
 		if found {

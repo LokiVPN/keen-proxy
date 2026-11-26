@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -18,6 +19,10 @@ const (
 	subscriptionNewPath        = subscriptionPathPrefix + "new"
 	subscriptionReplacePattern = subscriptionPathPrefix + "{id}/replace"
 )
+
+// ErrProfileReferenceUncertain reports that a profile possibly referencing
+// the specific target uses options this build cannot inspect.
+var ErrProfileReferenceUncertain = errors.New("could not inspect a possible saved profile reference")
 
 func subscriptionPath(id string) string {
 	return subscriptionPathPrefix + url.PathEscape(id)
@@ -41,11 +46,17 @@ func (p pages) newSubscriptionID(ctx context.Context, cfg *model.Config) (string
 		}
 	}
 	for number := 2; ; number++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		id := "sub" + strconv.Itoa(number)
 		if occupied[id] || namespaces[id] {
 			continue
 		}
 		refs, err := p.deps.SubscriptionProfileReferences(ctx, cfg, id)
+		if errors.Is(err, ErrProfileReferenceUncertain) {
+			continue
+		}
 		if err != nil {
 			return "", err
 		}
@@ -86,11 +97,11 @@ func (p pages) subscriptionRemove(w http.ResponseWriter, r *http.Request) {
 	profiles, err := p.deps.SubscriptionProfileReferences(ctx, cfg, id)
 	refs = appendProfileReferences(refs, profiles, cfg, text)
 	if err != nil {
-		p.renderConnections(w, r, http.StatusUnprocessableEntity, cfg, nil, "connections_remove_reference_error", refs...)
+		p.renderConnectionsResult(w, r, http.StatusUnprocessableEntity, cfg, nil, fmt.Sprintf(text["connections_remove_reference_error"], id), refs)
 		return
 	}
 	if len(refs) > 0 {
-		p.renderConnections(w, r, http.StatusConflict, cfg, nil, "connections_remove_referenced", refs...)
+		p.renderConnectionsResult(w, r, http.StatusConflict, cfg, nil, fmt.Sprintf(text["connections_remove_referenced"], id), refs)
 		return
 	}
 

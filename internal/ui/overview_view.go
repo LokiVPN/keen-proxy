@@ -31,13 +31,13 @@ type overviewPage struct {
 type overviewChip struct{ Label, Class string }
 
 type overviewSubscription struct {
-	Title, Expiry, Notice, AccountURL string
-	Status                            overviewChip
-	ExpiryReminder                    string
-	ShowRefreshFailure                bool
-	Traffic                           string
-	Used, Total                       int64
-	LastUpdated, NextUpdate           string
+	ID, Title, Expiry, Notice, AccountURL string
+	Status                                overviewChip
+	ExpiryReminder                        string
+	ShowRefreshFailure                    bool
+	Traffic                               string
+	Used, Total                           int64
+	LastUpdated, NextUpdate               string
 }
 
 type trafficView struct {
@@ -211,7 +211,7 @@ func subscriptionView(sub AppliedSubscription, now time.Time, lang string) *over
 	text := translations[lang]
 	metadata := sub.Metadata
 	view := &overviewSubscription{
-		Title: sub.title(text), Notice: metadata.Announce, AccountURL: metadata.ProfileURL,
+		ID: sub.ID, Title: cmp.Or(metadata.Title, text["overview_subscription"]), Notice: metadata.Announce, AccountURL: metadata.ProfileURL,
 		Traffic: setupTraffic(metadata.Usage, lang),
 	}
 	expiry := setupExpiry(metadata.Usage)
@@ -292,7 +292,7 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 		mode = text["overview_route_profile"]
 		if rules != nil {
 			sub := appliedSubscriptionFor(subs, rules.Source)
-			mode = fmt.Sprintf(text["overview_route_provider"], sub.title(text))
+			mode = fmt.Sprintf(text["overview_route_provider"], sub.label(text))
 		}
 	case rules != nil:
 		mode = text["overview_route_custom"]

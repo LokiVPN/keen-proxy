@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"net/http"
@@ -16,6 +17,7 @@ type setupPage struct {
 	Rev, Input, Error, Warning string
 	CheckPath, ConfirmPath     string
 	CancelPath, SourceTitle    string
+	SourceID                   string
 	Managing                   bool
 	Replacing, KeepRouting     bool
 	EvaluateRules              bool
@@ -24,6 +26,7 @@ type setupPage struct {
 
 type setupResult struct {
 	Title, Chip, Message, AccountURL           string
+	SourceID                                   string
 	Active, HasRouting                         bool
 	Token, Expiry, Traffic, Servers            string
 	Announce, RouteName, RouteHint, RulesState string
@@ -57,9 +60,9 @@ func (p pages) renderSetup(w http.ResponseWriter, r *http.Request, status int, c
 		}
 		page.Replacing = page.Replacing || i >= 0
 		page.KeepRouting = !flow.initialRouting(cfg)
-		if page.Managing && i >= 0 {
+		if i >= 0 {
 			source := appliedSubscriptionFor(p.deps.Subscriptions(), cfg.Subscriptions[i].ID)
-			page.SourceTitle = fmt.Sprintf(data.Text["connections_subscription"], source.title(data.Text))
+			page.SourceID, page.SourceTitle = source.ID, cmp.Or(source.Metadata.Title, data.Text["overview_subscription"])
 		}
 		if !page.Managing && page.KeepRouting {
 			page.CancelPath = "/"

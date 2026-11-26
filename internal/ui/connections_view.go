@@ -122,8 +122,12 @@ func connectionReserveChain(cfg *model.Config, id string, text map[string]string
 }
 
 func connectionNodes(sub AppliedSubscription, viewOnly bool, now time.Time, text map[string]string) subscriptionNodesView {
+	title := text["overview_subscription"]
+	if sub.Metadata.Title != "" {
+		title = fmt.Sprintf(text["connections_subscription"], sub.Metadata.Title)
+	}
 	view := subscriptionNodesView{
-		ID: sub.ID, Title: fmt.Sprintf(text["connections_subscription"], sub.title(text)),
+		ID: sub.ID, Title: title,
 		RulesNotice: providerRulesNotice(sub.RulesState, text),
 		Status:      connectionSubscriptionStatus(sub, now, text), CheckingAll: sub.CheckingAll,
 		ViewOnly: viewOnly, Text: text,

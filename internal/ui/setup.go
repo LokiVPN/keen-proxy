@@ -74,14 +74,20 @@ func (p pages) setupCheck(w http.ResponseWriter, r *http.Request) {
 	text := localized(r)
 	flow := setupFlowFor(r)
 	source := subscription.Source{ID: setupSourceID, SendHWID: true}
-	if i := flow.replacement(cfg); i >= 0 {
-		source.ID = cfg.Subscriptions[i].ID
+	replacement := flow.replacement(cfg)
+	if replacement >= 0 {
+		source.ID = cfg.Subscriptions[replacement].ID
 	}
 	if urls := r.PostForm["url"]; len(urls) == 1 {
 		source.URL = strings.TrimSpace(urls[0])
 	}
+	// Only the first-subscription setup can return the manager's own input.
+	var retryInput string
+	if flow.path == setupPath && replacement < 0 {
+		retryInput = source.URL
+	}
 	if subscription.ValidateSource(source) != nil {
-		p.renderSetup(w, r, http.StatusBadRequest, cfg, setupPage{Input: source.URL, Error: text["setup_invalid_url"]})
+		p.renderSetup(w, r, http.StatusBadRequest, cfg, setupPage{Input: retryInput, Error: text["setup_invalid_url"]})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -102,12 +108,15 @@ func (p pages) setupCheck(w http.ResponseWriter, r *http.Request) {
 	page := setupPage{Result: result}
 	switch {
 	case result == nil:
-		page.Input, page.Error = source.URL, text["setup_unreachable"]
+		page.Input, page.Error = retryInput, text["setup_unreachable"]
 	case !result.Active:
-		page.Input = source.URL
+		page.Input = retryInput
 	case preview.PreviewID == 0:
 		page.Result, page.Error = nil, text["setup_check_again"]
 	default:
+		if flow.path == subscriptionNewPath {
+			result.SourceID = source.ID
+		}
 		rules := cfg.ActiveProviderRules()
 		page.EvaluateRules = flow.initialRouting(cfg) || (rules != nil && rules.Source == source.ID)
 		deadline := now.Add(setupDraftLifetime)

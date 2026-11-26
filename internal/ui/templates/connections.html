@@ -24,22 +24,22 @@
           <input type="hidden" name="rev" value="{{.Connections.Revision}}">
           {{range .Connections.Subscriptions}}
           {{$id := .Nodes.ID}}
-          <section class="connections-section" aria-labelledby="subscription-title-{{$id}}">
+          <section class="connections-section" aria-labelledby="subscription-title-{{$id}} subscription-id-{{$id}}">
             <div data-fragment="/fragments/connections/{{$id}}">
               {{template "connections-nodes" .Nodes}}
             </div>
             <div class="fld connections-select">
               <label for="subscription-fallback-{{$id}}">{{$.Text.connections_reserve_label}}</label>
-              <select id="subscription-fallback-{{$id}}" name="fallback.{{$id}}"{{if $.ViewOnly}} disabled{{end}}>
+              <select id="subscription-fallback-{{$id}}" name="fallback.{{$id}}" aria-describedby="subscription-id-{{$id}}"{{if $.ViewOnly}} disabled{{end}}>
                 {{$current := .Fallback}}
                 {{if .AllowUnset}}<option value=""{{if not .Fallback}} selected{{end}}>{{$.Text.connections_reserve_unset}}</option>{{end}}
                 {{range $.Connections.Reserve}}<option value="{{.Target}}"{{if eq .Target $current}} selected{{end}}>{{.Label}}</option>{{end}}
               </select>
             </div>
             <div class="row-btns">
-              {{if $.ViewOnly}}<button class="btn soft" type="button" disabled>{{$.Text.setup_replace}}</button>
-              {{else}}<a class="btn soft" href="{{.Path}}/replace">{{$.Text.setup_replace}}</a>{{end}}
-              <button class="btn detail-delete" type="submit" form="subscription-remove-{{$id}}"{{if $.ViewOnly}} disabled{{end}}>{{$.Text.connections_remove_subscription}}</button>
+              {{if $.ViewOnly}}<button class="btn soft" aria-describedby="subscription-id-{{$id}}" type="button" disabled>{{$.Text.setup_replace}}</button>
+              {{else}}<a class="btn soft" href="{{.Path}}/replace" aria-describedby="subscription-id-{{$id}}">{{$.Text.setup_replace}}</a>{{end}}
+              <button class="btn detail-delete" aria-describedby="subscription-id-{{$id}}" type="submit" form="subscription-remove-{{$id}}"{{if $.ViewOnly}} disabled{{end}}>{{$.Text.connections_remove_subscription}}</button>
             </div>
           </section>
           {{else}}
@@ -85,10 +85,13 @@
 
 {{define "connections-nodes"}}
   <div class="connections-head">
-    <h2 class="clip" id="subscription-title-{{.ID}}" title="{{.Title}}">{{.Title}}</h2>
+    <div class="connections-heading">
+      <h2 class="clip" id="subscription-title-{{.ID}}" title="{{.Title}}">{{.Title}}</h2>
+      <span id="subscription-id-{{.ID}}" class="muted small subscription-id">{{printf .Text.subscription_id .ID}}</span>
+    </div>
     <div class="connections-actions">
-      <button class="linkbtn connections-check" type="submit" name="refresh" value="{{.ID}}"{{if .ViewOnly}} disabled{{end}}>{{.Text.overview_refresh}}</button>
-      <button class="linkbtn connections-check" type="submit" name="check" value="{{.ID}}:"{{if or .ViewOnly .CheckingAll (not .Rows)}} disabled{{end}}>{{.Text.connections_check_all}}</button>
+      <button class="linkbtn connections-check" aria-describedby="subscription-id-{{.ID}}" type="submit" name="refresh" value="{{.ID}}"{{if .ViewOnly}} disabled{{end}}>{{.Text.overview_refresh}}</button>
+      <button class="linkbtn connections-check" aria-describedby="subscription-id-{{.ID}}" type="submit" name="check" value="{{.ID}}:"{{if or .ViewOnly .CheckingAll (not .Rows)}} disabled{{end}}>{{.Text.connections_check_all}}</button>
     </div>
   </div>
   <div class="prov">
@@ -110,7 +113,7 @@
           </div>
         </td>
         <td class="connections-probe">{{.Probe}}</td>
-        <td class="c-tg"><button class="linkbtn connections-check" type="submit" name="check" value="{{$.ID}}:{{.ID}}" aria-label="{{printf $.Text.connections_check_node .Name}}"{{if or $.ViewOnly .Checking}} disabled{{end}}>{{$.Text.setup_check}}</button></td>
+        <td class="c-tg"><button class="linkbtn connections-check" type="submit" name="check" value="{{$.ID}}:{{.ID}}" aria-label="{{printf $.Text.connections_check_node .Name}}" aria-describedby="subscription-id-{{$.ID}}"{{if or $.ViewOnly .Checking}} disabled{{end}}>{{$.Text.setup_check}}</button></td>
       </tr>
       {{end}}
     </tbody>

@@ -75,11 +75,13 @@ KeenProxy accepts HTTPS Xray share lists in plain text or Base64, up to 2 MiB an
 
 ### Manage subscriptions { #manage-subscriptions }
 
+Use the subscription ID shown beside the provider title to tell subscriptions apart. The replacement form and the removal warning show the ID of the affected subscription.
+
 - Choose **Add subscription**, paste the HTTPS link, and use **Check**. Review the result and confirm with **Add subscription**. The new source becomes available in the connection list. Your saved network, device, and provider rules settings stay in place.
 - Choose **Replace link** in the subscription's block, use **Check** on the new link, then confirm **Replace link**. That subscription keeps its ID and reserve, and saved routing references still point to it.
 - Choose **Remove subscription** in its block. If a saved setting still uses the subscription, KeenProxy lists the references and keeps the subscription. Change or clear those references and try again. This includes a saved provider rules source even when its rules are turned off. Use [YAML](#edit-and-reload-yaml) for references outside the panel.
 
-Checking a subscription link sends the provider its stable device identifier (HWID) and may use a device slot before you save. Adding or replacing a link saves `send_hwid: true` for future refreshes, including when the old link had HWID disabled. To replace a link with HWID disabled, edit its `url` in YAML and keep `send_hwid: false`. [Edit and reload YAML](#edit-and-reload-yaml)
+If a check fails while adding or replacing a subscription, paste the link again to retry. Checking a subscription link sends the provider its stable device identifier (HWID) and may use a device slot before you save. Adding or replacing a link saves `send_hwid: true` for future refreshes, including when the old link had HWID disabled. To replace a link with HWID disabled, edit its `url` in YAML and keep `send_hwid: false`. [Edit and reload YAML](#edit-and-reload-yaml)
 
 ### Add or replace a manual connection { #manual-connections }
 

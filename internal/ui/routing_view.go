@@ -76,7 +76,8 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 	}
 	page.ProviderHint = text[cmp.Or(providerProblem, "routing_provider_hint")]
 	page.ProviderMode, page.ProviderHeading = text["routing_mode_provider"], text["routing_provider_rules"]
-	if name := state.sub.Metadata.Title; name != "" {
+	if state.sub.ID != "" {
+		name := state.sub.label(text)
 		page.ProviderMode = fmt.Sprintf(text["routing_mode_named_provider"], name)
 		page.ProviderHeading = fmt.Sprintf(text["routing_named_provider_rules"], name)
 	}

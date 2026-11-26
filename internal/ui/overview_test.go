@@ -46,7 +46,7 @@ func TestOverviewStates(t *testing.T) {
 			banner, _, _ := strings.Cut(body, `aria-label="KeenProxy sections"`)
 			assertContains(t, banner, ">"+tc.status+"</span>", tc.detail)
 			assertContains(t, body, tc.renewal, "18 GB of 200 GB", `value="19327352832" max="214748364800"`,
-				"Last updated", "Next update", "Maintenance tonight", `href="/setup"`, "Routing by Example VPN",
+				"Last updated", "Next update", "Maintenance tonight", `href="/setup"`, "Routing by sample · Example VPN",
 				"1 of 2 rules enabled", "Own site entries: 1", "KeenProxy handles 2 of 3 devices")
 			if tc.renewal == "Renew" {
 				assertContains(t, body, `href="https://provider.example/account"`)
@@ -64,7 +64,7 @@ func TestOverviewIgnoresDormantProviderRules(t *testing.T) {
 	h := New(f, setupTestOptions(RoleManage))
 	page := setupRequest(h, "/", nil)
 	assertContains(t, page.Body.String(), "Follow the subscription profile")
-	if strings.Contains(page.Body.String(), "Routing by Example VPN") || strings.Contains(page.Body.String(), "1 of 2 rules enabled") {
+	if strings.Contains(page.Body.String(), "Routing by sample · Example VPN") || strings.Contains(page.Body.String(), "1 of 2 rules enabled") {
 		t.Error("overview presented dormant rules as active")
 	}
 }
@@ -221,7 +221,7 @@ func TestOverviewTargets(t *testing.T) {
 			}
 			h := New(f, setupTestOptions(RoleManage))
 			body := setupRequest(h, "/", nil).Body.String()
-			assertContains(t, body, `<optgroup label="Example VPN">`, `<optgroup label="Manual connections">`,
+			assertContains(t, body, `<optgroup label="sample · Example VPN">`, `<optgroup label="Manual connections">`,
 				"North · 42 ms", "Cabin · WireGuard · 35 ms", "Office · VLESS · No response", "Office SOCKS · SOCKS · Disabled",
 				`value="`+tc.target+`"`)
 			w := setupRequest(h, "/overview/connection", url.Values{"rev": {formField(t, body, "rev")}, "target": {tc.target}})
@@ -397,7 +397,7 @@ func TestOverviewRejectsViewWritesAndStaleForms(t *testing.T) {
 				page := setupRequest(h, "/", nil)
 				rev = formField(t, page.Body.String(), "rev")
 				assertContains(t, page.Body.String(), "View only", `data-autosubmit disabled`, `type="submit" disabled`,
-					`<button class="btn soft" type="button" disabled>Replace link</button>`)
+					`<button class="btn soft" aria-describedby="overview-subscription-id" type="button" disabled>Replace link</button>`)
 			}
 			post := setupRequest(h, path, url.Values{"rev": {rev}, "target": {"backup"}})
 			if post.Code != tc.code || f.applies != 0 || len(f.refreshes) != 0 {

@@ -283,6 +283,7 @@
 .kp .help { color: var(--gray); }
 .kp .help:hover { color: var(--accent-text); }
 .clip { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subscription-id { display: block; overflow-wrap: anywhere; }
 .facts { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px 24px; margin: 20px 0 0; }
 .facts dt { color: var(--gray); }
 .facts dd { min-width: 0; margin: 0; }
@@ -528,7 +529,7 @@
 .tabs + #connections-settings > .connections-section:first-of-type { margin-top: 32px; }
 .connections-head { align-items: center; }
 .connections-head h2 { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
-.connections-head .clip { flex: 1 1 150px; }
+.connections-heading { flex: 1 1 150px; min-width: 0; }
 .connections-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
 .connections-select { margin-top: 28px; }
 .connections-check { min-height: 24px; }

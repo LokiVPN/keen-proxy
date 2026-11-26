@@ -4,7 +4,12 @@
         {{template "page-help" .}}
       </div>
       {{if .Setup.Managing}}{{template "tabs" .}}{{end}}
-      {{if .Setup.SourceTitle}}<p class="lead clip" title="{{.Setup.SourceTitle}}">{{.Setup.SourceTitle}}</p>{{end}}
+      {{if .Setup.SourceID}}
+      <div class="lead">
+        <span class="clip" title="{{.Setup.SourceTitle}}">{{.Setup.SourceTitle}}</span>
+        <span id="setup-source-id" class="muted small subscription-id">{{printf .Text.subscription_id .Setup.SourceID}}</span>
+      </div>
+      {{end}}
       <p class="lead">{{if .Setup.Replacing}}{{.Text.setup_replace_intro}}{{else if .Setup.KeepRouting}}{{.Text.setup_add_intro}}{{else}}{{.Text.setup_intro}}{{end}}</p>
       {{$checked := or .Setup.Result .Setup.Input}}
       {{$disabled := or .ViewOnly (not .Setup.Rev)}}
@@ -28,6 +33,7 @@
           <h2 id="setup-provider" class="clip">{{or .Title $.Text.setup_untitled}}</h2>
           <span class="chip {{if .Active}}ok{{else}}warn{{end}}">{{.Chip}}</span>
         </div>
+        {{if .SourceID}}<span id="setup-preview-id" class="muted small subscription-id">{{printf $.Text.subscription_id .SourceID}}</span>{{end}}
         {{if .Active}}
         <dl class="facts">
           {{if .Expiry}}<dt>{{$.Text.setup_expiry}}</dt><dd>{{.Expiry}}</dd>{{end}}
@@ -68,7 +74,7 @@
         <form method="post" action="{{$.Setup.ConfirmPath}}" class="actions">
           <input type="hidden" name="rev" value="{{$.Setup.Rev}}">
           <input type="hidden" name="preview" value="{{.Token}}">
-          <button class="btn" type="submit"{{if $disabled}} disabled{{end}}>{{if $.Setup.Replacing}}{{$.Text.setup_replace}}{{else if $.Setup.KeepRouting}}{{$.Text.setup_add}}{{else}}{{$.Text.setup_enable}}{{end}}</button>
+          <button class="btn"{{if $.Setup.SourceID}} aria-describedby="setup-source-id"{{else if .SourceID}} aria-describedby="setup-preview-id"{{end}} type="submit"{{if $disabled}} disabled{{end}}>{{if $.Setup.Replacing}}{{$.Text.setup_replace}}{{else if $.Setup.KeepRouting}}{{$.Text.setup_add}}{{else}}{{$.Text.setup_enable}}{{end}}</button>
           <a class="btn soft" href="{{$.Setup.CancelPath}}">{{$.Text.setup_cancel}}</a>
         </form>
         {{else}}

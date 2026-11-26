@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
@@ -17,6 +19,91 @@ const (
 	testSubscriptionReplace = "/connections/subscriptions/new/replace"
 	testSubscriptionRemove  = "/connections/subscriptions/new/remove"
 )
+
+func TestSubscriptionManagementDistinguishesMatchingTitles(t *testing.T) {
+	f := newSubscriptionManagementFixture(t)
+	title := "Identical provider title"
+	f.subs[0].Metadata.Title, f.subs[1].Metadata.Title = title, title
+	f.subs[1].Nodes = slices.Clone(f.subs[0].Nodes)
+	f.cfg.ProviderRules = &model.ProviderRulesSettings{Source: "new", Off: true}
+	h := New(f, setupTestOptions(RoleManage))
+
+	page := setupRequest(h, "/connections", nil)
+	body := page.Body.String()
+	if page.Code != http.StatusOK || strings.Count(body, ">Subscription "+title+"</h2>") != 2 {
+		t.Fatal("both matching subscription cards should render")
+	}
+	for _, id := range []string{"sample", "new"} {
+		base := "/connections/subscriptions/" + id
+		description := `aria-describedby="subscription-id-` + id + `"`
+		assertContains(t, body, `>Subscription ID `+id+`</span>`,
+			`href="`+base+`/replace" `+description, description+` type="submit" form="subscription-remove-`+id+`"`)
+
+		preview := setupRequest(h, base+"/replace", nil)
+		if preview.Code != http.StatusOK {
+			t.Fatalf("replacement for %s returned HTTP %d", id, preview.Code)
+		}
+		assertContains(t, preview.Body.String(), title, `>Subscription ID `+id+`</span>`)
+		refused := setupRequest(h, base+"/remove", url.Values{"rev": {Revision(f.Config())}})
+		if refused.Code != http.StatusConflict {
+			t.Fatalf("referenced removal for %s returned HTTP %d", id, refused.Code)
+		}
+		assertContains(t, refused.Body.String(), "Remove these references before removing subscription "+id+".")
+		for _, result := range []string{body, preview.Body.String(), refused.Body.String()} {
+			if strings.Contains(result, "second-private") || strings.Contains(result, "synthetic-token") {
+				t.Fatal("the stable labels exposed subscription links")
+			}
+		}
+	}
+	overview := setupRequest(h, "/", nil)
+	assertContains(t, overview.Body.String(), `>Subscription ID sample</span>`,
+		`<optgroup label="sample · `+title+`">`, `<optgroup label="new · `+title+`">`)
+	routing := setupRequest(h, "/routing", nil)
+	assertContains(t, routing.Body.String(), "By new · "+title+" rules")
+}
+
+func TestSubscriptionManagementRejectsCheckWithoutReturningLink(t *testing.T) {
+	const token = "synthetic-rejected-credential"
+	valid := "https://provider.example/secret?key=" + token
+	for _, tc := range []struct {
+		name, link, state, message string
+		status                     int
+		expire                     int64
+	}{
+		{"malformed", "https://provider.example/%xx?key=" + token, "", "Enter a valid HTTPS subscription link.", http.StatusBadRequest, 0},
+		{"invalid scheme", "http://provider.example/" + token, "", "Enter a valid HTTPS subscription link.", http.StatusBadRequest, 0},
+		{"network error", valid, subscription.StateNetworkError, "Could not check the subscription.", http.StatusOK, 0},
+		{"HTTP error", valid, subscription.StateHTTPError, "Could not check the subscription.", http.StatusOK, 0},
+		{"unusable list", valid, subscription.StateUnsupported, "Could not check the subscription.", http.StatusOK, 0},
+		{"expired", valid, subscription.StateReady, "The subscription expired on", http.StatusOK, time.Now().Add(-time.Hour).Unix()},
+		{"device limit", valid, subscription.StateHWIDLimit, "All device slots", http.StatusOK, 0},
+	} {
+		for _, base := range []string{testSubscriptionNew, testSubscriptionReplace, "/setup"} {
+			t.Run(base+"/"+tc.name, func(t *testing.T) {
+				f := newSubscriptionManagementFixture(t)
+				f.preview.State = tc.state
+				f.preview.Metadata.Usage = &subscription.Usage{Expire: tc.expire}
+				h := New(f, setupTestOptions(RoleManage))
+				w := setupRequest(h, base+"/check", url.Values{"rev": {Revision(f.Config())}, "url": {tc.link}})
+				assertPageHeaders(t, w.Result(), "en")
+				body := w.Body.String()
+				if w.Code != tc.status || !strings.Contains(body, tc.message) || !strings.Contains(body, `action="`+base+`/check"`) {
+					t.Fatalf("rejected check returned HTTP %d or lost its error or retry", w.Code)
+				}
+				if strings.Contains(body, token) || strings.Contains(body, `name="preview"`) {
+					t.Fatal("rejected check must offer an empty retry field and omit the private link and confirmation")
+				}
+				input := connectionControl(t, body, "input", "url", "")
+				if _, disabled := input["disabled"]; disabled {
+					t.Fatal("rejected check disabled the retry field")
+				}
+				if f.applies != 0 || (tc.status == http.StatusBadRequest && f.checks != 0) {
+					t.Fatal("rejected check reached an unexpected operation")
+				}
+			})
+		}
+	}
+}
 
 func TestSubscriptionManagementAddsCheckedSource(t *testing.T) {
 	f := newSubscriptionManagementFixture(t)
@@ -141,7 +228,7 @@ func TestSubscriptionManagementListsEveryRemovalReference(t *testing.T) {
 	}
 	assertPageHeaders(t, w.Result(), "en")
 	body := w.Body.String()
-	assertContains(t, body, "Remove these references before removing this subscription.", "<ul>",
+	assertContains(t, body, "Remove these references before removing subscription new.", "<ul>",
 		"Main connection for Home", "Default route for Guest &lt;LAN&gt;", "Routing group own-vpn",
 		"Reserve for Office", "Reserve for subscription sample", "Device Desktop", "Provider routing rules",
 		"Sing-box profile Cabin")

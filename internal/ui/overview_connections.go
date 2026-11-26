@@ -31,7 +31,7 @@ func connectionOptions(cfg *model.Config, subs []AppliedSubscription, health map
 	groups := make([]connectionGroup, 0, len(cfg.Subscriptions)+1)
 	for _, source := range cfg.Subscriptions {
 		sub := appliedSubscriptionFor(subs, source.ID)
-		group := connectionGroup{Label: sub.title(text)}
+		group := connectionGroup{Label: sub.label(text)}
 		for _, mode := range []struct{ target, key string }{
 			{"auto", "overview_auto"},
 			{model.SubscriptionRoundRobin, "overview_round_robin"},
@@ -86,8 +86,17 @@ func appliedSubscriptionFor(subs []AppliedSubscription, id string) AppliedSubscr
 	return AppliedSubscription{ID: id}
 }
 
-func (sub AppliedSubscription) title(text map[string]string) string {
-	return cmp.Or(sub.Metadata.Title, sub.ID, text["overview_subscription"])
+func (sub AppliedSubscription) label(text map[string]string) string {
+	return cmp.Or(subscriptionLabel(sub.ID, sub.Metadata.Title), text["overview_subscription"])
+}
+
+// subscriptionLabel leads with the saved ID in compact labels so that titles
+// supplied by providers cannot make two subscriptions look identical.
+func subscriptionLabel(id, title string) string {
+	if id != "" && title != "" && title != id {
+		return id + " · " + title
+	}
+	return cmp.Or(id, title)
 }
 
 func nodeLabel(node SubscriptionNode, text map[string]string) string {
@@ -172,7 +181,7 @@ func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscrip
 
 func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	selection := connectionSelection{
-		Name: sub.title(text), Expiry: setupExpiry(sub.Metadata.Usage), Subscription: true,
+		Name: sub.label(text), Expiry: setupExpiry(sub.Metadata.Usage), Subscription: true,
 	}
 	selection.Detail = selection.Name
 	if model.IsSubscriptionBalance(mode) {
