@@ -168,6 +168,15 @@ type connectionSelection struct {
 	ReserveDirect, Blocked                bool
 }
 
+// withSubscription supplies context when the detail describes a reserve or
+// unavailable nodes without already naming their subscription.
+func (s connectionSelection) withSubscription(detail string) string {
+	if s.Subscription && s.Name != "" {
+		return s.Name + " · " + detail
+	}
+	return detail
+}
+
 func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscription, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	if id, mode, managed := model.ParseManagedTarget(target); managed {
 		sub := appliedSubscriptionFor(subs, id)

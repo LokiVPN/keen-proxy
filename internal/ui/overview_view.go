@@ -21,7 +21,7 @@ type overviewPage struct {
 	Paused, CanSelect            bool
 	Status                       overviewChip
 	StatusDetail                 string
-	Subscription                 *overviewSubscription
+	Subscriptions                []overviewSubscription
 	Main, MissingTarget, Current string
 	Choices                      []connectionGroup
 	Routing, RoutingDetail       string
@@ -32,6 +32,7 @@ type overviewChip struct{ Label, Class string }
 
 type overviewSubscription struct {
 	ID, Title, Expiry, Notice, AccountURL string
+	ReplaceURL                            string
 	Status                                overviewChip
 	ExpiryReminder                        string
 	ShowRefreshFailure                    bool
@@ -70,14 +71,20 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 	page := &overviewPage{
 		Rev: Revision(cfg), Paused: cfg.Paused, Choices: connectionOptions(cfg, subs, status.Connections, text),
 	}
-	if len(cfg.Subscriptions) > 0 {
-		page.Subscription = subscriptionView(appliedSubscriptionFor(subs, cfg.Subscriptions[0].ID), now, lang)
-	}
 	network := cfg.HomeNetwork()
 	if network != nil {
 		page.Main = network.Target
 		for _, group := range page.Choices {
 			page.CanSelect = page.CanSelect || slices.ContainsFunc(group.Options, func(option connectionOption) bool { return !option.Disabled })
+		}
+	}
+	mainSource, _, _ := model.ParseManagedTarget(page.Main)
+	for _, source := range cfg.Subscriptions {
+		view := subscriptionView(appliedSubscriptionFor(subs, source.ID), now, lang)
+		if source.ID == mainSource {
+			page.Subscriptions = slices.Insert(page.Subscriptions, 0, view)
+		} else {
+			page.Subscriptions = append(page.Subscriptions, view)
 		}
 	}
 	page.setMissingTarget(text)
@@ -92,8 +99,11 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 		if network.Mode == model.ModeOff || (network.Mode == model.ModeFull && selection.Class == stats.TargetDirect) {
 			page.NewDevices = text["overview_new_devices_direct"]
 		}
-		current := cmp.Or(selection.Reserve, selection.Detail)
-		if selection.Class == stats.TargetMixed && selection.Reserve == "" {
+		current := selection.Detail
+		switch {
+		case selection.Reserve != "":
+			current = selection.withSubscription(selection.Reserve)
+		case selection.Class == stats.TargetMixed:
 			current = selection.Name
 		}
 		if status.Ready && !cfg.Paused && activeHome && !mixedHome && !selection.Blocked && current != "" {
@@ -167,25 +177,25 @@ func overviewStatus(paused bool, status OverviewStatus, network *model.Network, 
 		return outage, text["overview_choose_connection"]
 	case selection.Health == connectionUnavailable:
 		if selection.Reserve != "" {
-			return outage, text["overview_reserve_down"]
+			return outage, selection.withSubscription(text["overview_reserve_down"])
 		}
 		if selection.Subscription {
-			return outage, text["overview_subscription_down"]
+			return outage, selection.withSubscription(text["overview_subscription_down"])
 		}
 		return outage, text["overview_connection_down"]
 	case selection.SubscriptionUnavailable && !selection.Blocked && selection.Reserve != "":
 		if selection.ReserveDirect {
-			return overviewChip{text["overview_direct"], ""}, text["overview_direct_reserve"]
+			return overviewChip{text["overview_direct"], ""}, selection.withSubscription(text["overview_direct_reserve"])
 		}
-		return overviewChip{text["overview_reserve_connection"], ""}, fmt.Sprintf(text["overview_using_reserve"], selection.Reserve)
+		return overviewChip{text["overview_reserve_connection"], ""}, selection.withSubscription(fmt.Sprintf(text["overview_using_reserve"], selection.Reserve))
 	case selection.SubscriptionUnavailable || (selection.Subscription && selection.Blocked):
-		return outage, text["overview_subscription_down"]
+		return outage, selection.withSubscription(text["overview_subscription_down"])
 	case selection.Blocked:
 		return outage, text["overview_connection_down"]
 	case selection.Class == stats.TargetDirect:
 		detail := text["overview_direct_hint"]
 		if selection.Reserve != "" {
-			detail = text["overview_direct_reserve"]
+			detail = selection.withSubscription(text["overview_direct_reserve"])
 		}
 		return overviewChip{text["overview_direct"], ""}, detail
 	case expired(selection.Expiry, now):
@@ -207,12 +217,12 @@ func expiring(expiry, now time.Time) bool {
 	return expiry.After(now) && !expiry.After(now.Add(expiryWarning))
 }
 
-func subscriptionView(sub AppliedSubscription, now time.Time, lang string) *overviewSubscription {
+func subscriptionView(sub AppliedSubscription, now time.Time, lang string) overviewSubscription {
 	text := translations[lang]
 	metadata := sub.Metadata
-	view := &overviewSubscription{
+	view := overviewSubscription{
 		ID: sub.ID, Title: cmp.Or(metadata.Title, text["overview_subscription"]), Notice: metadata.Announce, AccountURL: metadata.ProfileURL,
-		Traffic: setupTraffic(metadata.Usage, lang),
+		ReplaceURL: subscriptionPath(sub.ID) + "/replace", Traffic: setupTraffic(metadata.Usage, lang),
 	}
 	expiry := setupExpiry(metadata.Usage)
 	failed := sub.State != "" && sub.State != "pending" && sub.State != subscription.StateReady

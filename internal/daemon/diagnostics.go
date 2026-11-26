@@ -41,11 +41,11 @@ type DiagnosticReport struct {
 	CheckedAt  time.Time
 }
 
-// DiagnosticNode projects one subscription member from the applied catalog.
-// A private name is blank and the position supplies its generic display label.
+// DiagnosticNode projects a node and its subscription title observed together.
+// A private node name is blank and its position supplies a generic label.
 type DiagnosticNode struct {
-	Name     string
-	Position int
+	Name, SubscriptionTitle string
+	Position                int
 }
 
 // ErrDiagnosticConnection means the requested profile is absent from applied runtime state.
@@ -112,8 +112,9 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 	out, engineContext, skipped, err := d.eng.DiagnosticLeaf(tag, d.diagnosticReserveLocked)
 	var node subscription.Node
 	var position int
+	var title string
 	if out != nil {
-		node, position = d.diagnosticNodeLocked(out.Tag())
+		node, position, title = d.diagnosticNodeLocked(out.Tag())
 	}
 	d.mu.Unlock()
 	if err != nil {
@@ -126,7 +127,7 @@ func (d *Daemon) DiagnosticTargetIfCurrent(ctx context.Context, target, revision
 	if report.Group == "" && report.Connection != tag {
 		report.Group = tag
 	}
-	report.Node = diagnosticNode(node, position)
+	report.Node = diagnosticNode(node, position, title)
 	report.SkippedVPN = skipped
 	if skipped {
 		return report, nil
@@ -144,24 +145,25 @@ func (d *Daemon) diagnosticRoutingLocked() bool {
 // DiagnosticNode reads the same protected display label used by the report.
 func (d *Daemon) DiagnosticNode(tag string) DiagnosticNode {
 	d.mu.Lock()
-	node, position := d.diagnosticNodeLocked(tag)
+	node, position, title := d.diagnosticNodeLocked(tag)
 	d.mu.Unlock()
-	return diagnosticNode(node, position)
+	return diagnosticNode(node, position, title)
 }
 
-func (d *Daemon) diagnosticNodeLocked(tag string) (subscription.Node, int) {
+func (d *Daemon) diagnosticNodeLocked(tag string) (subscription.Node, int, string) {
 	if id, node, managed := model.ParseManagedTarget(tag); managed {
-		for index, entry := range d.subscriptions.states[id].snapshot.Nodes {
+		state := d.subscriptions.states[id]
+		for index, entry := range state.snapshot.Nodes {
 			if entry.ID == node {
-				return entry, index + 1
+				return entry, index + 1, diagnosticSubscriptionTitle(state)
 			}
 		}
 	}
-	return subscription.Node{}, 0
+	return subscription.Node{}, 0, ""
 }
 
-func diagnosticNode(node subscription.Node, position int) DiagnosticNode {
-	return DiagnosticNode{connectionimport.SafeLinkLabel(node.Link, node.Name), position}
+func diagnosticNode(node subscription.Node, position int, title string) DiagnosticNode {
+	return DiagnosticNode{Name: connectionimport.SafeLinkLabel(node.Link, node.Name), Position: position, SubscriptionTitle: title}
 }
 
 // diagnosticReserveLocked identifies a configured reserve from the actual
@@ -237,10 +239,13 @@ func (d *Daemon) diagnosticAutomaticLocked(source, target string) DiagnosticRepo
 }
 
 func (d *Daemon) diagnosticGroupLocked(source, target string) DiagnosticReport {
-	state := d.subscriptions.states[source]
 	return DiagnosticReport{
-		Group: target, GroupName: cmp.Or(state.attempt.result.Metadata.Title, state.snapshot.Metadata.Title, source),
+		Group: target, GroupName: cmp.Or(diagnosticSubscriptionTitle(d.subscriptions.states[source]), source),
 	}
+}
+
+func diagnosticSubscriptionTitle(state appliedSubscription) string {
+	return cmp.Or(state.attempt.result.Metadata.Title, state.snapshot.Metadata.Title)
 }
 
 func (d *Daemon) diagnosticSubscriptionReserveLocked(source string, report DiagnosticReport, inactive string) DiagnosticReport {

@@ -25,7 +25,7 @@ type managementDaemon interface {
 	Devices() []daemon.Device
 	PreviewSubscriptionDetails(context.Context, subscription.Source) daemon.SubscriptionPreviewDetails
 	ApplyIfCurrent(context.Context, *model.Config, string) error
-	ApplyRuleSwitchesIfCurrent(context.Context, *model.Config, string, string) error
+	ApplyUnlessRulesWithheld(context.Context, *model.Config, string, string) error
 	CompileConnectionDraft(*model.Config) (compile.Output, error)
 	CompileConnectionSettings(*model.Config) ([]byte, error)
 	ApplySubscriptionPreview(context.Context, *model.Config, string, subscription.PreviewRef) error
@@ -77,9 +77,9 @@ func (d uiDeps) Apply(ctx context.Context, cfg *model.Config, revision string) e
 	return d.daemon.ApplyIfCurrent(ctx, cfg, revision)
 }
 
-func (d uiDeps) ApplyRuleSwitches(ctx context.Context, cfg *model.Config, revision, source string) error {
+func (d uiDeps) ApplyUnlessRulesWithheld(ctx context.Context, cfg *model.Config, revision, source string) error {
 	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
-	return d.daemon.ApplyRuleSwitchesIfCurrent(ctx, cfg, revision, source)
+	return d.daemon.ApplyUnlessRulesWithheld(ctx, cfg, revision, source)
 }
 
 func (d uiDeps) ConnectionRuntimeTags(cfg *model.Config) ([]string, error) {

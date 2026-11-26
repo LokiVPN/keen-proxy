@@ -28,10 +28,10 @@ const (
 // routingDraft holds the fields submitted for the selected mode. An absent
 // list keeps the corresponding applied group.
 type routingDraft struct {
-	Mode        string
-	VPN, Direct *routingList
-	Switches    map[string]bool
-	Overlap     bool
+	Mode, Source string
+	VPN, Direct  *routingList
+	Switches     map[string]bool
+	Overlap      bool
 }
 
 type routingList struct {
@@ -82,29 +82,30 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	form := r.PostForm
-	mode := form.Get("mode")
-	state := p.routingState(cfg, network)
-	providerProblem := state.providerProblem()
-	keepProvider := state.keepsWithheldProvider(network, cfg.ActiveProviderRules())
-	if keepProvider && !form.Has("mode") {
-		mode = routingProvider
+	savedSource := routingRulesSource(cfg, network)
+	draft := routingDraft{Mode: form.Get("mode"), Source: savedSource}
+	sources, sourceSubmitted := form["source"]
+	if sourceSubmitted {
+		if len(sources) != 1 || subscriptionIndex(cfg, sources[0]) < 0 {
+			p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, "subscription_choose_configured")
+			return
+		}
+		draft.Source = sources[0]
 	}
-	switch {
-	case len(form["mode"]) > 1 || (mode != routingProvider && mode != routingAll && mode != routingOwn):
-		p.renderRouting(w, r, http.StatusBadRequest, cfg, nil, "routing_invalid_mode")
-		return
-	case mode == routingProvider && providerProblem != "" && !keepProvider:
-		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, providerProblem)
-		return
-	case mode == routingAll && !state.canUseVPN():
-		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, state.mainProblem())
-		return
-	case len(form[ownVPNGroup]) > 1 || len(form[ownDirectGroup]) > 1:
-		p.renderRouting(w, r, http.StatusBadRequest, cfg, nil, "routing_invalid_form")
+	sourceChanged := draft.Source != savedSource
+	review := form.Get("review_source") == "1"
+	state := p.routingState(cfg, network, draft.Source)
+	providerProblem := state.providerProblem()
+	active := cfg.ActiveProviderRules()
+	keepProvider := state.keepsWithheldProvider(network, active)
+	if keepProvider && !form.Has("mode") {
+		draft.Mode = routingProvider
+	}
+	if len(form[ownVPNGroup]) > 1 || len(form[ownDirectGroup]) > 1 {
+		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
 		return
 	}
 
-	draft := routingDraft{Mode: mode}
 	vpn, direct := routingOwnGroups(cfg, ownVPNGroup, network.Target), routingOwnGroups(cfg, ownDirectGroup, model.TargetDirect)
 	vpnEditable, directEditable := state.canUseVPN() && !vpn.readOnly(), !direct.readOnly()
 	if (form.Has(ownVPNGroup) && !vpnEditable) || (form.Has(ownDirectGroup) && !directEditable) {
@@ -123,14 +124,32 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
 		return
 	}
+	if sourceChanged {
+		// The submitted switches belong to the source selected before this edit.
+		draft.Switches = nil
+	}
+	if review {
+		p.renderRouting(w, r, http.StatusOK, cfg, &draft, "")
+		return
+	}
+	switch {
+	case len(form["mode"]) > 1 || (draft.Mode != routingProvider && draft.Mode != routingAll && draft.Mode != routingOwn):
+		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_mode")
+		return
+	case draft.Mode == routingProvider && providerProblem != "" && !keepProvider:
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, providerProblem)
+		return
+	case draft.Mode == routingAll && !state.canUseVPN():
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, state.mainProblem())
+		return
+	}
 	switchesChanged := draft.changesSwitches(cfg.ProviderRules)
-	if switchesChanged {
-		if providerProblem == "setup_rules_withheld" {
-			draft.Switches = nil
-			p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "routing_rules_changed")
-			return
-		}
-	} else {
+	if switchesChanged && providerProblem == "setup_rules_withheld" {
+		draft.Switches = nil
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "routing_rules_changed")
+		return
+	}
+	if !switchesChanged {
 		// A ready form submits unchanged controls along with unrelated edits.
 		draft.Switches = nil
 	}
@@ -145,19 +164,24 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "")
 		return
 	}
-	draft.apply(cfg, network, state.source)
+	selectsProvider := draft.Mode == routingProvider && (sourceChanged || active == nil || network.Default != model.DefaultProfile)
+	draft.apply(cfg, network, sourceSubmitted)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
 	revision := form.Get("rev")
 	var err error
-	if switchesChanged {
-		err = p.deps.ApplyRuleSwitches(ctx, cfg, revision, state.source)
+	if selectsProvider || switchesChanged {
+		err = p.deps.ApplyUnlessRulesWithheld(ctx, cfg, revision, draft.Source)
 	} else {
 		err = p.deps.Apply(ctx, cfg, revision)
 	}
 	if err == nil {
-		redirectWithFlash(w, r, "/routing", "flash_saved")
+		flash := "flash_saved"
+		if sourceChanged {
+			flash = "flash_routing_source_saved"
+		}
+		redirectWithFlash(w, r, "/routing", flash)
 		return
 	}
 	current := p.deps.Config()
@@ -169,7 +193,11 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusConflict, current, nil, "revision_changed")
 	case errors.Is(err, subscription.ErrRulesWithheld):
 		draft.Switches = nil
-		p.renderRouting(w, r, http.StatusUnprocessableEntity, current, &draft, "routing_rules_changed")
+		message := "setup_rules_withheld"
+		if switchesChanged {
+			message = "routing_rules_changed"
+		}
+		p.renderRouting(w, r, http.StatusUnprocessableEntity, current, &draft, message)
 	default:
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, current, &draft, "routing_apply_error")
 	}
@@ -181,7 +209,7 @@ func routingRulesSource(cfg *model.Config, network *model.Network) string {
 	if cfg.ProviderRules != nil {
 		return cfg.ProviderRules.Source
 	}
-	if id, _, ok := model.ParseManagedTarget(network.Target); ok {
+	if id, _, ok := model.ParseManagedTarget(network.Target); ok && subscriptionIndex(cfg, id) >= 0 {
 		return id
 	}
 	if len(cfg.Subscriptions) != 0 {
@@ -190,14 +218,22 @@ func routingRulesSource(cfg *model.Config, network *model.Network) string {
 	return ""
 }
 
-func (p pages) routingState(cfg *model.Config, network *model.Network) routingState {
-	source := routingRulesSource(cfg, network)
+func (p pages) routingState(cfg *model.Config, network *model.Network, source string) routingState {
 	health := p.deps.OverviewStatus().Connections
 	subs := p.deps.Subscriptions()
-	return routingState{
+	state := routingState{
 		source: source, sub: appliedSubscriptionFor(subs, source), subscriptions: subs,
-		rules: p.routingRules(cfg), class: connectionClass(network.Target, health), health: health,
+		rules: RoutingRules{State: "off"}, class: connectionClass(network.Target, health), health: health,
 	}
+	if active := cfg.ActiveProviderRules(); active != nil && active.Source == source {
+		state.rules = p.appliedRoutingRules(source)
+	}
+	// A restored snapshot can retain the last withholding decision while a
+	// fresh evaluation is pending for the current installation identity.
+	if state.withholdsRules() && state.rules.State != "pending" {
+		state.rules = RoutingRules{State: "withheld"}
+	}
+	return state
 }
 
 func (s routingState) canUseVPN() bool {
@@ -217,7 +253,7 @@ func (s routingState) mainProblem() string {
 
 func (s routingState) providerProblem() string {
 	switch {
-	case s.sub.RulesWithheld || s.rules.State == "withheld":
+	case s.withholdsRules():
 		return "setup_rules_withheld"
 	case s.source == "":
 		return "routing_need_subscription"
@@ -227,26 +263,34 @@ func (s routingState) providerProblem() string {
 	return ""
 }
 
-// Keeping the saved policy does not select a currently unavailable mode.
-func (s routingState) keepsWithheldProvider(network *model.Network, settings *model.ProviderRulesSettings) bool {
-	return s.providerProblem() == "setup_rules_withheld" && settings != nil && network.Default == model.DefaultProfile
+func (s routingState) withholdsRules() bool {
+	return s.sub.RulesWithheld || s.sub.RulesState == "withheld" || s.rules.State == "withheld"
 }
 
-func (d routingDraft) apply(cfg *model.Config, network *model.Network, source string) {
+// Keeping the saved policy does not select a currently unavailable mode.
+func (s routingState) keepsWithheldProvider(network *model.Network, settings *model.ProviderRulesSettings) bool {
+	return s.withholdsRules() && settings != nil && settings.Source == s.source && network.Default == model.DefaultProfile
+}
+
+func (d routingDraft) apply(cfg *model.Config, network *model.Network, sourceSubmitted bool) {
 	if d.Mode == routingProvider {
 		network.Default = model.DefaultProfile
-		if cfg.ProviderRules == nil {
-			cfg.ProviderRules = &model.ProviderRulesSettings{Source: source}
-		}
 	} else {
 		network.Default = model.TargetDirect
 		if d.Mode == routingAll {
 			network.Default = network.Target
 		}
 	}
+	if cfg.ProviderRules == nil && (d.Mode == routingProvider || sourceSubmitted) {
+		cfg.ProviderRules = &model.ProviderRulesSettings{Source: d.Source}
+	}
 	if cfg.ProviderRules != nil {
+		if cfg.ProviderRules.Source != d.Source {
+			cfg.ProviderRules.Source, cfg.ProviderRules.Disabled = d.Source, nil
+		} else {
+			d.saveSwitches(cfg.ProviderRules)
+		}
 		cfg.ProviderRules.Off = d.Mode != routingProvider
-		d.saveSwitches(cfg.ProviderRules)
 	}
 	saveRoutingList(cfg, ownVPNGroup, network.Target, d.VPN)
 	saveRoutingList(cfg, ownDirectGroup, model.TargetDirect, d.Direct)

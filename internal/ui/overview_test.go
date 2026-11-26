@@ -46,7 +46,7 @@ func TestOverviewStates(t *testing.T) {
 			banner, _, _ := strings.Cut(body, `aria-label="KeenProxy sections"`)
 			assertContains(t, banner, ">"+tc.status+"</span>", tc.detail)
 			assertContains(t, body, tc.renewal, "18 GB of 200 GB", `value="19327352832" max="214748364800"`,
-				"Last updated", "Next update", "Maintenance tonight", `href="/setup"`, "Routing by sample · Example VPN",
+				"Last updated", "Next update", "Maintenance tonight", `href="/connections/subscriptions/sample/replace"`, "Routing by sample · Example VPN",
 				"1 of 2 rules enabled", "Own site entries: 1", "KeenProxy handles 2 of 3 devices")
 			if tc.renewal == "Renew" {
 				assertContains(t, body, `href="https://provider.example/account"`)
@@ -235,6 +235,79 @@ func TestOverviewTargets(t *testing.T) {
 	}
 }
 
+func TestOverviewShowsAndRefreshesEachSubscription(t *testing.T) {
+	f := newOverviewFixture()
+	addSecondSubscription(f)
+	f.cfg.Subscriptions = append(f.cfg.Subscriptions, subscription.Source{ID: "sub3", URL: "https://third.example/list"})
+	second, third := &f.subs[1], f.cfg.Subscriptions[2]
+	second.Metadata.Usage = &subscription.Usage{Download: 5 << 30, Total: 80 << 30, Expire: time.Now().Add(-time.Hour).Unix()}
+	latency := int64(27)
+	second.Nodes = []SubscriptionNode{{ID: overviewNodeID, Name: "South", Health: connectionAvailable, LatencyMS: &latency}}
+	network := &f.cfg.Networks[0]
+	network.Target = model.ManagedTarget("sub2", "auto")
+	network.Default, f.cfg.Groups[0].Target = network.Target, network.Target
+	f.cfg.ProviderRules.Source, f.cfg.ProviderRules.Off = third.ID, true
+	f.status.Connections[network.Target] = ConnectionStatus{Class: stats.TargetVPN}
+	h := New(f, setupTestOptions(RoleManage))
+	page := setupRequest(h, "/", nil)
+	body := page.Body.String()
+	_, cards, _ := strings.Cut(body, `aria-labelledby="subscription-title">`)
+	cards, _, _ = strings.Cut(cards, `aria-labelledby="connection-title">`)
+	for _, id := range []string{"sub2", "sample", third.ID} {
+		assertContains(t, cards, "Subscription ID "+id, `name="source" value="`+id+`"`,
+			`href="/connections/subscriptions/`+id+`/replace"`)
+	}
+	if strings.Index(cards, "Subscription ID sub2") > strings.Index(cards, "Subscription ID sample") ||
+		strings.Index(cards, "Subscription ID sample") > strings.Index(cards, "Subscription ID sub3") {
+		t.Error("cards did not put the main subscription first and keep the rest in configuration order")
+	}
+	assertContains(t, cards, "5 GB of 80 GB", "18 GB of 200 GB", ">Expired</span>", ">Active</span>", ">Pending</span>")
+	assertContains(t, body, "sub2 · Example VPN · South · 27 ms", `>Subscription expired</span>`)
+	_, options, _ := strings.Cut(body, `<optgroup label="sub2 · Example VPN">`)
+	options, _, _ = strings.Cut(options, `</optgroup>`)
+	for _, mode := range []string{"auto", model.SubscriptionRoundRobin, model.SubscriptionConsistentHash, model.SubscriptionStickySession, overviewNodeID} {
+		assertContains(t, options, `value="`+model.ManagedTarget("sub2", mode)+`"`)
+	}
+	assertContains(t, options, "South · 27 ms")
+	assertContains(t, body, `<optgroup label="sample · Example VPN">`, `<optgroup label="Manual connections">`)
+
+	rev := formField(t, body, "rev")
+	refresh := setupRequest(h, "/overview/refresh", url.Values{"rev": {rev}, "source": {"sub2"}})
+	if refresh.Code != http.StatusSeeOther || !reflect.DeepEqual(f.refreshes, []string{"sub2"}) || f.applies != 0 {
+		t.Fatalf("refresh returned HTTP %d, refreshes %v, applies %d", refresh.Code, f.refreshes, f.applies)
+	}
+	for _, sources := range [][]string{nil, {""}, {"missing"}, {"sample", "sub2"}} {
+		post := setupRequest(h, "/overview/refresh", url.Values{"rev": {rev}, "source": sources})
+		if post.Code != http.StatusUnprocessableEntity || !reflect.DeepEqual(f.refreshes, []string{"sub2"}) {
+			t.Fatalf("refresh with sources %q returned HTTP %d, refreshes %v", sources, post.Code, f.refreshes)
+		}
+	}
+
+	// R31 moves the managed targets while the source of routing rules stays independent.
+	pinned := model.ManagedTarget("sample", overviewNodeID)
+	want := f.Config()
+	want.Networks[0].Target, want.Networks[0].Default, want.Groups[0].Target = pinned, pinned, pinned
+	change := setupRequest(h, "/overview/connection", url.Values{"rev": {rev}, "target": {pinned}})
+	if change.Code != http.StatusSeeOther || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
+		t.Fatalf("main connection change returned HTTP %d with %d applies", change.Code, f.applies)
+	}
+}
+
+func TestOverviewNamesTheSubscriptionUsingAReserve(t *testing.T) {
+	f := newOverviewFixture()
+	addSecondSubscription(f)
+	f.cfg.Networks[0].Target = model.ManagedTarget("sub2", "auto")
+	f.cfg.Subscriptions[1].Fallback = "backup"
+	f.subs[1].Unavailable, f.subs[1].SwitchReason = true, "fallback"
+	h := New(f, setupTestOptions(RoleManage))
+	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Reserve connection</span>`,
+		"sub2 · Example VPN · Using reserve Cabin.", "Current connection · sub2 · Example VPN · Cabin")
+
+	f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN, Checked: true}
+	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>No connection</span>`,
+		"sub2 · Example VPN · The reserve connection is unavailable.")
+}
+
 func TestOverviewLeavesReadOnlyOwnVPNGroupsInPlace(t *testing.T) {
 	main := model.ManagedTarget("sample", "auto")
 	for _, tc := range []struct {
@@ -397,7 +470,7 @@ func TestOverviewRejectsViewWritesAndStaleForms(t *testing.T) {
 				page := setupRequest(h, "/", nil)
 				rev = formField(t, page.Body.String(), "rev")
 				assertContains(t, page.Body.String(), "View only", `data-autosubmit disabled`, `type="submit" disabled`,
-					`<button class="btn soft" aria-describedby="overview-subscription-id" type="button" disabled>Replace link</button>`)
+					`<button class="btn soft" aria-describedby="overview-subscription-id-sample" type="button" disabled>Replace link</button>`)
 			}
 			post := setupRequest(h, path, url.Values{"rev": {rev}, "target": {"backup"}})
 			if post.Code != tc.code || f.applies != 0 || len(f.refreshes) != 0 {
@@ -427,7 +500,7 @@ func TestOverviewRefreshAndConcurrentApply(t *testing.T) {
 	f := newOverviewFixture()
 	f.cfg.Subscriptions = append(f.cfg.Subscriptions, subscription.Source{ID: "extra", URL: "https://second.example/config"})
 	h := New(f, setupTestOptions(RoleManage))
-	form := url.Values{"rev": {Revision(f.Config())}}
+	form := url.Values{"rev": {Revision(f.Config())}, "source": {"sample"}}
 	w := setupRequest(h, "/overview/refresh", form)
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" ||
 		!reflect.DeepEqual(f.refreshes, []string{"sample"}) || f.applies != 0 {
@@ -526,6 +599,10 @@ func (f *overviewFixture) Apply(ctx context.Context, cfg *model.Config, rev stri
 		return f.saveErr
 	}
 	return f.setupFixture.Apply(ctx, cfg, rev)
+}
+
+func (f *overviewFixture) ApplyUnlessRulesWithheld(ctx context.Context, cfg *model.Config, revision, _ string) error {
+	return f.Apply(ctx, cfg, revision)
 }
 
 func (f *overviewFixture) RefreshSubscription(id, revision string) error {

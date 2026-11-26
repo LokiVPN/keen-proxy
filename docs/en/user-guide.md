@@ -33,19 +33,22 @@ For a manual setup, open [Connections](#connections). From the initial setup scr
 
 ## Overview { #overview }
 
-- **Enabled** pauses or resumes routing for the whole network. While paused, devices use their regular internet path. **Main connection** selects an automatic or balanced subscription target, a specific node, or a manual connection. Both controls apply immediately. With JavaScript disabled, use the accompanying **Save** button.
-- The status names the active connection or reserve and shows when a path is unavailable. It also covers devices with saved routing when new devices connect directly by default. If those devices use different connections, Overview reports device-specific routing. **Subscription** shows the provider's expiry and usage, when supplied, and the last and next refresh. **Update now** queues a refresh for the subscription shown here.
+- **Enabled** pauses or resumes routing for the whole network. While paused, devices use their regular internet path. **Main connection** groups automatic selection, balancing modes, and pinned nodes under each subscription. The list shows measured node latency where available and includes your manual connections. Both controls apply immediately. With JavaScript disabled, use the accompanying **Save** button.
+- The status names the active connection or reserve, identifies its subscription if applicable, and shows when a path is unavailable. It also covers devices with saved routing when new devices connect directly by default. If those devices use different connections, Overview reports device-specific routing.
+- Each subscription has its own status, expiry, usage, and refresh information when available. The subscription used by **Main connection** appears first. **Update now** queues a refresh for that block's subscription and **Replace link** opens its replacement form.
 - **VPN traffic** covers the last 30 minutes. Raw groups that can use both direct and VPN members may include direct traffic in the chart. The device and routing summaries link to their tabs.
 
 <a name="routing"></a>
 
 ## Routing { #routing }
 
-Choose a mode and select **Save**.
+Choose one source under **Rules from subscription**. You can use rules from a different subscription than the one used by **Main connection**. If you change the source, select **Review source** to see whether the chosen subscription offers rules before saving. Choose a mode and select **Save** to apply the source and mode together.
 
 - **By subscription rules** follows the provider's rules and default route. Review the **Through VPN**, **Direct**, and **Block** sections. Switch off individual rules as needed. A disabled rule stays off after the subscription refreshes. The page explains when rules are loading, missing, or unavailable. If the provider stops sending rules, you can keep the saved subscription mode and save your site lists.
 - **All traffic through VPN** uses the main connection for traffic beyond the home network, subject to your exceptions. For a mixed main connection, the label names the connection and the page shows a selected reserve when known.
 - **Only my sites** sends the listed sites through the main connection and sends unmatched traffic directly.
+
+Saving a different source resets all of the previous subscription's rule switches. When subscription rules are on, KeenProxy evaluates the new source after saving. In the other modes, it saves the source with rules off. Changing modes with the same source keeps its switches.
 
 In **My sites**, enter one domain, IP address, or subnet per line. Domains include their subdomains. Use the direct list for exceptions and keep each entry in just one list. Advanced routing groups and DNS settings are managed in YAML. [Routing and DNS](routing.md)
 
@@ -98,7 +101,7 @@ Choose **Show parameters** only when you need to read credentials on screen, or 
 ## Diagnostics { #diagnostics }
 
 - Read core, interception, DNS, configuration, country database, watchdog, and load status. Use the refresh link for a new status snapshot.
-- **Run check** measures HTTP, HTTPS with certificate verification, and a 64 KiB transfer separately. The check uses the current main VPN path without triggering a switch to its reserve. When the selected subscription path uses a reserve or blocks traffic, the report names that path and skips the VPN measurements. This applies to automatic selection, balancing without an eligible TCP node, and a missing pinned node. KeenProxy also reports when routing is stopped or paused. Verify the affected app from a device before deciding the issue is resolved.
+- **Run check** measures HTTP, HTTPS with certificate verification, and a 64 KiB transfer separately. The check uses the current main VPN path without triggering a switch to its reserve. The result identifies the subscription alongside the tested node. When the selected subscription path uses a reserve or blocks traffic, the report names that path and skips the VPN measurements. This applies to automatic selection, balancing without an eligible TCP node, and a missing pinned node. KeenProxy also reports when routing is stopped or paused. Verify the affected app from a device before deciding the issue is resolved.
 - Under **Support report**, choose **Download ZIP** with a management account. The archive includes status, build details, and recent errors. Review the archive before sharing it. **Copy** copies the build identity. [Diagnostic ZIP contents](troubleshooting.md#download-the-diagnostic-zip)
 - Under **Updates**, check for a release, install it, or roll back to the recorded previous version. Confirm the version and wait for the service to come back. If you enable **Install automatically**, save a time in the router's time zone. [Update and rollback requirements](getting-started.md#update-from-the-panel)
 

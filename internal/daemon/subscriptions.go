@@ -407,13 +407,6 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, 
 			d.mu.Unlock()
 			return model.ErrConfigChanged
 		}
-		if source := conditions.switchSource; source != "" {
-			snapshot := d.subscriptions.states[source].snapshot
-			if snapshot.RulesWithheld || snapshot.Rules.state() == ProviderRulesWithheld {
-				d.mu.Unlock()
-				return subscription.ErrRulesWithheld
-			}
-		}
 		now := time.Now()
 		d.expireSubscriptionPreviewsLocked(now)
 		if checked != nil {
@@ -427,6 +420,10 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, 
 			}
 		}
 		source, missing := d.missingSubscriptionLocked(cfg, candidates)
+		if id := conditions.requireRulesFrom; id != "" && d.providerRulesWithheldLocked(id, candidates) {
+			d.mu.Unlock()
+			return subscription.ErrRulesWithheld
+		}
 		if !missing {
 			identity, pending := d.pendingProviderRulesLocked(cfg, candidates, checkedSource)
 			if !pending {
@@ -461,6 +458,21 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, 
 		}
 		candidates[subscriptionIdentity(source)] = attempt
 	}
+}
+
+// providerRulesWithheldLocked checks the applied snapshot and any candidate
+// fetched during Apply before committing a selection or switch edit.
+func (d *Daemon) providerRulesWithheldLocked(id string, candidates map[subscription.Source]subscriptionAttempt) bool {
+	snapshot := d.subscriptions.states[id].snapshot
+	if snapshot.RulesWithheld || snapshot.Rules.state() == ProviderRulesWithheld {
+		return true
+	}
+	for source, candidate := range candidates {
+		if source.ID == id && candidate.result.Routing == nil && candidate.result.RoutingError == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Daemon) missingSubscriptionLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) (subscription.Source, bool) {

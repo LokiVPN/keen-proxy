@@ -443,7 +443,7 @@ func TestRoutingRetainsSavedProviderModeWhileRulesAreWithheld(t *testing.T) {
 				}) {
 				t.Error("the list save changed the previously selected provider policy or lost the direct exception")
 			}
-			assertContains(t, setupRequest(h, "/routing", nil).Body.String(), providerRadio+">", "The provider does not supply routing rules.")
+			assertContains(t, setupRequest(h, "/routing", nil).Body.String(), providerRadio+" disabled>", "The provider does not supply routing rules.")
 		})
 	}
 }
@@ -575,10 +575,6 @@ type routingFixture struct {
 }
 
 func (f *routingFixture) ProviderRules() RoutingRules { return f.rules }
-
-func (f *routingFixture) ApplyRuleSwitches(ctx context.Context, cfg *model.Config, revision, _ string) error {
-	return f.Apply(ctx, cfg, revision)
-}
 
 func newRoutingFixture() *routingFixture {
 	return &routingFixture{

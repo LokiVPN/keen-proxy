@@ -338,7 +338,7 @@ func TestDiagnosticAutomaticTargetFollowsSubscriptionSelection(t *testing.T) {
 				return d
 			},
 			want: DiagnosticReport{Group: auto, GroupName: "Office subscription", Connection: secondTag,
-				Node: DiagnosticNode{Name: "Second region", Position: 2}},
+				Node: DiagnosticNode{Name: "Second region", Position: 2, SubscriptionTitle: "Office subscription"}},
 			probe: true,
 		},
 		{

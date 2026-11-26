@@ -160,8 +160,8 @@ type diagnosticResultView struct {
 func diagnosticResult(result DiagnosticCheckResult, cfg *model.Config, text map[string]string) diagnosticResultView {
 	view := diagnosticResultView{Node: diagnosticNodeName(result.Node, text), SkippedVPN: result.SkippedVPN}
 	groupID := diagnosticSubscriptionID(cfg, result.Group)
-	if leafID := diagnosticSubscriptionID(cfg, result.Leaf); view.Node != "" && leafID != groupID {
-		view.Node = subscriptionLabel(leafID, view.Node)
+	if leafID := diagnosticSubscriptionID(cfg, result.Leaf); view.Node != "" && leafID != "" && leafID != groupID {
+		view.Node = subscriptionLabel(leafID, result.Node.SubscriptionTitle) + " · " + view.Node
 	}
 	if result.Group != "" {
 		group := cmp.Or(result.GroupName, diagnosticPathName(cfg, result.Group, text))

@@ -6,11 +6,13 @@ For diagrams of interception, DNS, and route selection, see [How traffic flows](
 
 Choose how the home split policy handles traffic and select **Save** to apply the changes.
 
+**Rules from subscription** selects one configured subscription as the source for provider rules. Use **Review source** to see the selected source's availability before saving. The source and main connection are separate settings. Saving a change to the source clears the previous source's rule switches.
+
 - **By subscription rules** uses the provider's rules and its default for unmatched traffic. The option is unavailable when the provider withholds its rules. The table groups rules by their action. Site and address lists each have one switch for their literal entries. Unavailable rules show a reason.
 - **All traffic through VPN** uses the main connection for unmatched traffic. Add exceptions under **Always direct**.
 - **Only my sites** sends unmatched traffic directly. Enter sites for the main connection under **Always through VPN**.
 
-Both lists are visible in every mode. Enter one domain, IP address, or subnet per line. Domains include their subdomains. Your lists take priority over provider rules. A line error or the same entry in both editable lists stops the save. Groups with advanced settings are read-only on this tab and their entries don't count toward that check. Rules you switched off stay off when you return to the subscription mode. If the provider withholds rules, you can keep the saved subscription mode when you edit your lists. A direct or blocking main connection makes the VPN option unavailable. If a subscription has no nodes for the selected target, the option follows the [reserve](#subscription-reserve) used for that target. Additional configured groups keep their existing routes and ordering, and device policies continue to determine which devices use these settings.
+Both lists are visible in every mode. Enter one domain, IP address, or subnet per line. Domains include their subdomains. Your lists take priority over provider rules. A line error or the same entry in both editable lists stops the save. Groups with advanced settings are read-only on this tab and their entries don't count toward that check. Rules you switched off stay off when you return to the subscription mode with the same source. If that subscription withholds rules, you can keep the saved mode while editing your lists. A direct or blocking main connection makes the VPN option unavailable. If a subscription has no nodes for the selected target, the option follows the [reserve](#subscription-reserve) used for that target. Additional configured groups keep their existing routes and ordering, and device policies continue to determine which devices use these settings.
 
 ## Policy building blocks
 
@@ -115,6 +117,8 @@ provider_rules:
 ```
 
 Set `off: true` inside `provider_rules` to turn all provider rules off while keeping `source` and `disabled`. Remove the flag or set `off: false` to use the saved switches again. A `profile` default uses the policy's target while the rules are off.
+
+The `disabled` keys belong to one source. When changing `source` in YAML, clear `disabled` to reset the previous subscription's switches. Saving a different source in the panel clears them automatically.
 
 A category that contains private subscription data has an opaque switch key. Previously saved keys still control their corresponding rules.
 

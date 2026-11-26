@@ -314,13 +314,13 @@ func (d *Daemon) ApplyIfCurrent(ctx context.Context, cfg *model.Config, revision
 	return d.apply(ctx, cfg, applyConditions{revision: revision})
 }
 
-// ApplyRuleSwitchesIfCurrent also requires that the edited source has not
-// withheld its rules at the point the draft is committed.
-func (d *Daemon) ApplyRuleSwitchesIfCurrent(ctx context.Context, cfg *model.Config, revision, source string) error {
+// ApplyUnlessRulesWithheld checks the revision and source under the commit
+// lock when selecting provider mode or editing its rule switches.
+func (d *Daemon) ApplyUnlessRulesWithheld(ctx context.Context, cfg *model.Config, revision, source string) error {
 	if revision == "" {
 		return model.ErrConfigChanged
 	}
-	return d.apply(ctx, cfg, applyConditions{revision: revision, switchSource: source})
+	return d.apply(ctx, cfg, applyConditions{revision: revision, requireRulesFrom: source})
 }
 
 // ApplySubscriptionPreview applies only the checked attempt for the selected
@@ -339,9 +339,9 @@ func (d *Daemon) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config
 }
 
 type applyConditions struct {
-	revision     string
-	checked      *subscription.PreviewRef
-	switchSource string // set for a submitted change to this source's rule switches
+	revision         string
+	checked          *subscription.PreviewRef
+	requireRulesFrom string
 }
 
 func (d *Daemon) apply(ctx context.Context, cfg *model.Config, conditions applyConditions) error {

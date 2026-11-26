@@ -76,7 +76,12 @@ func (p pages) overviewRefresh(w http.ResponseWriter, r *http.Request) {
 		p.renderOverview(w, r, http.StatusUnprocessableEntity, cfg, "overview_no_subscription")
 		return
 	}
-	err := p.deps.RefreshSubscription(cfg.Subscriptions[0].ID, r.PostForm.Get("rev"))
+	sources := r.PostForm["source"]
+	if len(sources) != 1 || subscriptionIndex(cfg, sources[0]) < 0 {
+		p.renderOverview(w, r, http.StatusUnprocessableEntity, cfg, "subscription_choose_configured")
+		return
+	}
+	err := p.deps.RefreshSubscription(sources[0], r.PostForm.Get("rev"))
 	switch {
 	case errors.Is(err, model.ErrConfigChanged):
 		p.renderOverview(w, r, http.StatusConflict, p.deps.Config(), "revision_changed")

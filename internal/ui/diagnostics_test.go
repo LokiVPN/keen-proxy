@@ -191,6 +191,33 @@ func TestDiagnosticsPinnedLabelHidesCredentialsForBothRoles(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsNamesThePinnedSubscriptionInItsSavedResult(t *testing.T) {
+	const node = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	pinned := model.ManagedTarget("sub2", node)
+	cfg := &model.Config{
+		Networks:      []model.Network{{Name: "Home", Target: pinned}},
+		Subscriptions: []subscription.Source{{ID: "main"}, {ID: "sub2"}},
+	}
+	f := &diagnosticsFixture{
+		fakeDeps: fakeDeps{config: cfg}, pinned: DiagnosticNode{Name: "North", Position: 1, SubscriptionTitle: "Shared <provider>"}, leaf: pinned,
+		subs: []AppliedSubscription{
+			{ID: "main", Metadata: subscription.Metadata{Title: "Shared <provider>"}},
+			{ID: "sub2", Metadata: subscription.Metadata{Title: "Shared <provider>"}},
+		},
+	}
+	h := diagnosticsHandler(f)
+	page := diagnosticRequest(h, http.MethodGet, "/diagnostics", "owner", nil)
+	assertContains(t, page.Body.String(), `value="sub2 · Shared &lt;provider&gt; · North"`)
+	post := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", url.Values{"rev": {Revision(cfg)}})
+	if post.Code != http.StatusSeeOther {
+		t.Fatalf("pinned check returned HTTP %d", post.Code)
+	}
+	f.subs[1].Metadata.Title = "New provider title"
+	fragment := strings.Replace(post.Header().Get("Location"), "/diagnostics?", "/fragments/diagnostics/check?", 1)
+	result := diagnosticRequest(h, http.MethodGet, fragment, "owner", nil)
+	assertContains(t, result.Body.String(), "Tested sub2 · Shared &lt;provider&gt; · North")
+}
+
 func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
 	first, second := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	auto := model.ManagedTarget("main", "auto")

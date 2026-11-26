@@ -490,22 +490,22 @@ func (v overviewTestDeps) TrafficSeries() []stats.Point { return nil }
 
 func (v overviewTestDeps) Subscriptions() []ui.AppliedSubscription {
 	statuses := v.d.Subscriptions()
-	if len(statuses) == 0 {
-		return nil
+	var subs []ui.AppliedSubscription
+	for _, status := range statuses {
+		sub := ui.AppliedSubscription{
+			ID: status.ID, State: status.State, Metadata: status.Metadata, Unavailable: status.Unavailable,
+			ActiveNode: status.ActiveNode, SwitchReason: status.SwitchReason,
+			RulesState: string(status.RulesState), RulesWithheld: status.RulesWithheld,
+		}
+		if status.LastSuccess != nil {
+			sub.LastSuccess = *status.LastSuccess
+		}
+		for _, node := range status.Nodes {
+			sub.Nodes = append(sub.Nodes, ui.SubscriptionNode{ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS})
+		}
+		subs = append(subs, sub)
 	}
-	status := statuses[0]
-	sub := ui.AppliedSubscription{
-		ID: status.ID, State: status.State, Metadata: status.Metadata, Unavailable: status.Unavailable,
-		ActiveNode: status.ActiveNode, SwitchReason: status.SwitchReason,
-		RulesWithheld: status.RulesWithheld,
-	}
-	if status.LastSuccess != nil {
-		sub.LastSuccess = *status.LastSuccess
-	}
-	for _, node := range status.Nodes {
-		sub.Nodes = append(sub.Nodes, ui.SubscriptionNode{ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS})
-	}
-	return []ui.AppliedSubscription{sub}
+	return subs
 }
 
 func (v overviewTestDeps) ProviderRules() ui.RoutingRules {

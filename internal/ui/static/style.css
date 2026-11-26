@@ -407,6 +407,7 @@
 }
 .kp :is(.overview-section-head, .connections-head, .routing-section) h2 { font-size: 20px; line-height: 28px; }
 .overview-provider { max-width: 100%; font-size: 16px; font-weight: 500; }
+.overview-subscription + .overview-subscription { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
 .overview-renewal > .icon { color: var(--caut-t); }
 .overview-usage { max-width: 420px; margin-top: 16px; }
 .overview-usage-label {
@@ -473,7 +474,10 @@
 .kp .routing-intro, .kp .devices-intro { margin-top: 24px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .routing-fields, .routing-modes, .devices-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
-.routing-modes { display: grid; gap: 16px; margin-top: 20px; }
+.routing-source { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 24px; }
+.routing-source .fld { flex: 1 1 260px; min-width: 0; max-width: 420px; margin: 0; }
+.routing-source select { text-overflow: ellipsis; }
+.routing-modes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-top: 20px; }
 .routing-radio { display: flex; align-items: flex-start; gap: 14px; cursor: pointer; }
 .routing-radio input {
   flex: none;
@@ -512,7 +516,8 @@
 .routing-rules .routing-rule-setting { text-align: right; }
 .routing-rules .tg { min-height: 22px; vertical-align: middle; }
 .routing-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
-.routing-form:not(:has(#routing-mode-provider:checked)) .routing-provider { display: none; }
+.routing-form:not(:has(#routing-mode-provider:checked)) .routing-provider,
+.routing-form:has(#routing-source):not(:has(#routing-source option[selected]:checked)) .routing-provider { display: none; }
 .routing-errors { margin: 4px 0 0; padding-left: 20px; color: var(--warn-t); }
 .fld textarea[aria-invalid="true"] { border-color: var(--warn-t); }
 

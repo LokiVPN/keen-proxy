@@ -11,7 +11,9 @@ import (
 )
 
 type routingPage struct {
-	Revision, Mode                   string
+	Revision, Mode, Source           string
+	Sources                          []connectionOption
+	Draft                            bool
 	Unavailable, CustomMode          string
 	CanProvider, CanAll, OtherGroups bool
 	VPN, Direct                      *routingList
@@ -62,7 +64,15 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 		return &page
 	}
 	settings := cfg.ActiveProviderRules()
-	state := p.routingState(cfg, network)
+	page.Source = routingRulesSource(cfg, network)
+	if draft != nil {
+		page.Source, page.Draft = draft.Source, true
+	}
+	state := p.routingState(cfg, network, page.Source)
+	for _, source := range cfg.Subscriptions {
+		sub := appliedSubscriptionFor(state.subscriptions, source.ID)
+		page.Sources = append(page.Sources, connectionOption{Target: source.ID, Label: sub.label(text)})
+	}
 	page.CanAll = state.canUseVPN()
 	page.Mode = routingMode(network, settings, page.CanAll)
 	if page.Mode == "" {
@@ -70,7 +80,7 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 	}
 	providerProblem := state.providerProblem()
 	keepProvider := state.keepsWithheldProvider(network, settings)
-	page.CanProvider = providerProblem == "" || keepProvider
+	page.CanProvider = providerProblem == ""
 	if keepProvider {
 		page.Mode, page.CustomMode = routingProvider, ""
 	}
@@ -114,6 +124,9 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 	}
 	if draft != nil {
 		page.Mode = draft.Mode
+		if page.Mode == routingProvider && !page.CanProvider && !keepProvider {
+			page.Mode = ""
+		}
 		page.Overlap = draft.Overlap
 		if draft.VPN != nil {
 			page.VPN = draft.VPN
@@ -150,13 +163,9 @@ func routingMode(network *model.Network, settings *model.ProviderRulesSettings, 
 	return ""
 }
 
-func (p pages) routingRules(cfg *model.Config) RoutingRules {
-	settings := cfg.ActiveProviderRules()
-	if settings == nil {
-		return RoutingRules{State: "off"}
-	}
+func (p pages) appliedRoutingRules(source string) RoutingRules {
 	rules := p.deps.ProviderRules()
-	if rules.Source != settings.Source {
+	if rules.Source != source {
 		return RoutingRules{State: "pending"}
 	}
 	return rules

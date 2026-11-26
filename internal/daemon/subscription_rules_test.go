@@ -607,6 +607,72 @@ func TestRoutingSaveChecksWithholdingAtCommit(t *testing.T) {
 	}
 }
 
+func TestRoutingProviderSourceSwitchThroughApply(t *testing.T) {
+	for _, name := range []string{"reevaluates selected source", "refuses withholding during apply"} {
+		t.Run(name, func(t *testing.T) {
+			const source = "sub2"
+			d, cfg, provider := newRulesTestDaemon(t)
+			settings := cfg.ProviderRules
+			cfg.RouteHomeThroughSubscription("sample", netip.MustParsePrefix("192.0.2.0/24"))
+			cfg.ProviderRules = settings
+			cfg.Subscriptions = append(cfg.Subscriptions, subscription.Source{ID: source, URL: provider.URL + "/sub?source=sub2"})
+			if err := d.Apply(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			requireAppliedProviderRules(t, d)
+			before := d.Config()
+			rev := model.ConfigRevision(before)
+			withholding := name == "refuses withholding during apply"
+			deps := routingWithholdingDeps{overviewTestDeps{d: d}, func() {
+				if !withholding {
+					return
+				}
+				provider.update(func(p *rulesProvider) { p.enable = "0" })
+				refreshAppliedSubscription(t, d, source)
+				request := claimSubscriptionRequest(d, 0)
+				if request == nil || request.source.ID != source {
+					t.Fatal("the second subscription refresh was not scheduled")
+				}
+				d.runSubscriptionRequest(t.Context(), request)
+				if !d.Subscriptions()[1].RulesWithheld || model.ConfigRevision(d.Config()) != rev {
+					t.Fatal("the refresh did not publish withholding at the applied revision")
+				}
+			}}
+			provider.useProfile("/geosite.dat", "/geoip.dat", "domain:second-source.example")
+			h := ui.New(deps, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+			form := url.Values{"rev": {rev}, "source": {source}, "mode": {"provider"}, "rule": {"proxy:geosite:video"}}
+			r := httptest.NewRequest(http.MethodPost, "/routing", strings.NewReader(form.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			post := httptest.NewRecorder()
+			h.ServeHTTP(post, r)
+			if withholding {
+				if post.Code != http.StatusUnprocessableEntity || model.ConfigRevision(d.Config()) != rev ||
+					!strings.Contains(post.Body.String(), "The provider does not supply routing rules.") {
+					t.Fatalf("the racing source selection returned HTTP %d or changed the configuration", post.Code)
+				}
+				requireAppliedProviderRules(t, d)
+				return
+			}
+			want := before.Clone()
+			want.ProviderRules.Source, want.ProviderRules.Disabled = source, nil
+			rules, settings, state := d.ProviderRules()
+			if post.Code != http.StatusSeeOther || !reflect.DeepEqual(want, d.Config()) || settings.Source != source ||
+				state != ProviderRulesPending || len(rules.Rules) != 0 {
+				t.Fatalf("source switch returned HTTP %d, source %+v, state %s", post.Code, settings, state)
+			}
+			request := claimSubscriptionRequest(d, 0)
+			if request == nil || request.source.ID != source {
+				t.Fatal("the selected source was not due for evaluation")
+			}
+			d.runSubscriptionRequest(t.Context(), request)
+			rules, _, state = d.ProviderRules()
+			if state != ProviderRulesReady || !slices.Contains(providerRule(t, rules, "direct:literals:site").Suffix, "second-source.example") {
+				t.Fatalf("the selected source's rules were not applied: %s", state)
+			}
+		})
+	}
+}
+
 type routingWithholdingDeps struct {
 	overviewTestDeps
 	beforeApply func()
@@ -617,9 +683,9 @@ func (v routingWithholdingDeps) Apply(ctx context.Context, cfg *model.Config, re
 	return v.overviewTestDeps.Apply(ctx, cfg, revision)
 }
 
-func (v routingWithholdingDeps) ApplyRuleSwitches(ctx context.Context, cfg *model.Config, revision, source string) error {
+func (v routingWithholdingDeps) ApplyUnlessRulesWithheld(ctx context.Context, cfg *model.Config, revision, source string) error {
 	v.beforeApply()
-	return v.d.ApplyRuleSwitchesIfCurrent(ctx, cfg, revision, source)
+	return v.d.ApplyUnlessRulesWithheld(ctx, cfg, revision, source)
 }
 
 // The accessor and the configured source's status tell why rules are

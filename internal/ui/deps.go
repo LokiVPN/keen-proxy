@@ -23,8 +23,8 @@ type Deps interface {
 	CheckConnectionSettings(ctx context.Context, cfg *model.Config) error
 	ValidateConnectionSettings(ctx context.Context, cfg *model.Config) error
 	Apply(ctx context.Context, cfg *model.Config, revision string) error
-	// ApplyRuleSwitches also checks that the source supplies rules at commit.
-	ApplyRuleSwitches(ctx context.Context, cfg *model.Config, revision, source string) error
+	// ApplyUnlessRulesWithheld rechecks the revision and source at commit.
+	ApplyUnlessRulesWithheld(ctx context.Context, cfg *model.Config, revision, source string) error
 	ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error
 	OverviewStatus() OverviewStatus
 	Devices() []DiscoveredDevice
@@ -69,11 +69,11 @@ type DiagnosticProbe struct {
 	LatencyMS int64
 }
 
-// DiagnosticNode is a subscription member's protected name and position at
-// the time of observation. A name withheld for privacy is empty.
+// DiagnosticNode holds protected display data for the node and subscription
+// at check time. A node name withheld for privacy is empty.
 type DiagnosticNode struct {
-	Name     string
-	Position int
+	Name, SubscriptionTitle string
+	Position                int
 }
 
 // DiagnosticCheckResult records the selected route and any probes it ran.
