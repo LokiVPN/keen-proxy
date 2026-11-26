@@ -14,9 +14,11 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/api"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
@@ -350,7 +352,7 @@ func TestConnectionCheckAndSaveReleaseUserspaceStacks(t *testing.T) {
 	previewField := regexp.MustCompile(`name="preview" value="([^"]+)"`)
 	for range 3 {
 		rev := ui.Revision(d.Config())
-		before := runtime.NumGoroutine()
+		before, stacks := runtime.NumGoroutine(), goroutineStacksByID()
 		checked := post("/connections/id/spare/replace/check", url.Values{
 			"rev": {rev}, "method": {"paste"}, "profile": {"socks5://checked.example.test:1080"},
 		})
@@ -358,33 +360,62 @@ func TestConnectionCheckAndSaveReleaseUserspaceStacks(t *testing.T) {
 		if checked.Code != http.StatusOK || preview == nil {
 			t.Fatalf("wizard Check returned HTTP %d without a preview", checked.Code)
 		}
-		if after := runtime.NumGoroutine(); after > before {
-			t.Errorf("wizard Check retained %d goroutines", after-before)
-		}
-		before = runtime.NumGoroutine()
+		waitForGoroutineTeardown(t, "wizard Check", before, stacks)
+		before, stacks = runtime.NumGoroutine(), goroutineStacksByID()
 		saved := post("/connections/new/save", url.Values{
 			"rev": {rev}, "preview": {html.UnescapeString(preview[1])}, "replace": {"spare"}, "name": {"Reserve"},
 		}, checked.Result().Cookies()...)
 		if saved.Code != http.StatusSeeOther {
 			t.Fatalf("wizard Save returned HTTP %d", saved.Code)
 		}
-		if after := runtime.NumGoroutine(); after > before {
-			t.Errorf("wizard Save retained %d goroutines", after-before)
-		}
-		before = runtime.NumGoroutine()
+		waitForGoroutineTeardown(t, "wizard Save", before, stacks)
+		before, stacks = runtime.NumGoroutine(), goroutineStacksByID()
 		detail := post("/connections/id/spare", url.Values{
 			"rev": {ui.Revision(d.Config())}, "enabled": {"0", "1"}, "fallback": {"wg"},
 		})
 		if detail.Code != http.StatusSeeOther {
 			t.Fatalf("detail Save returned HTTP %d", detail.Code)
 		}
-		if after := runtime.NumGoroutine(); after > before {
-			t.Errorf("detail Save retained %d goroutines", after-before)
-		}
+		waitForGoroutineTeardown(t, "detail Save", before, stacks)
 	}
 	if d.applies != 6 {
 		t.Fatalf("expected both Saves to apply each round, got %d", d.applies)
 	}
+}
+
+// waitForGoroutineTeardown gives stack workers time to exit after their close returns.
+func waitForGoroutineTeardown(t *testing.T, action string, before int, baselineStacks map[string]string) {
+	t.Helper()
+	const timeout = 5 * time.Second
+	deadline := time.Now().Add(timeout)
+	after := runtime.NumGoroutine()
+	for after > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		after = runtime.NumGoroutine()
+	}
+	if after <= before {
+		return
+	}
+	var extra []string
+	for id, stack := range goroutineStacksByID() {
+		if _, existed := baselineStacks[id]; !existed {
+			extra = append(extra, stack)
+		}
+	}
+	t.Fatalf("%s retained %d goroutines after %s (baseline %d, current %d)\n%d new goroutine stacks\n%s",
+		action, after-before, timeout, before, after, len(extra), strings.Join(extra, "\n\n"))
+}
+
+// goroutineStacksByID uses the stable prefix of each stack header, before the wait state.
+func goroutineStacksByID() map[string]string {
+	var dump strings.Builder
+	_ = pprof.Lookup("goroutine").WriteTo(&dump, 2)
+	stacks := make(map[string]string)
+	for stack := range strings.SplitSeq(strings.TrimSpace(dump.String()), "\n\n") {
+		id, _, _ := strings.Cut(stack, " [")
+		stacks[id] = stack
+	}
+	return stacks
 }
 
 type connectionValidationSpy struct {
