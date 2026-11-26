@@ -23,16 +23,21 @@ func TestRoutingModesRoundTrip(t *testing.T) {
 	f.cfg.ProviderRules.Disabled = []string{"block:geosite:ads"}
 	h := New(f, setupTestOptions(RoleManage))
 	assertRoutingMode(t, h, "provider")
+	assertRemainingOption(t, setupRequest(h, "/routing", nil).Body.String(), "profile", "As the subscription says", true)
 	for _, tc := range []struct {
-		mode, def string
-		off       bool
+		mode, remaining, def, label string
+		off                         bool
 	}{
-		{"all", f.cfg.Networks[0].Target, true},
-		{"own", model.TargetDirect, true},
-		{"provider", model.DefaultProfile, false},
+		{"all", "profile", f.cfg.Networks[0].Target, "", true},
+		{"own", "vpn", model.TargetDirect, "", true},
+		{"provider", "direct", model.TargetDirect, "Directly", false},
+		{"provider", "vpn", f.cfg.Networks[0].Target, "Through VPN", false},
+		{"provider", "profile", model.DefaultProfile, "As the subscription says", false},
 	} {
-		t.Run(tc.mode, func(t *testing.T) {
-			resp := setupRequest(h, "/routing", url.Values{"rev": {Revision(f.Config())}, "mode": {tc.mode}})
+		t.Run(tc.mode+"/"+tc.remaining, func(t *testing.T) {
+			resp := setupRequest(h, "/routing", url.Values{
+				"rev": {Revision(f.Config())}, "mode": {tc.mode}, "remaining": {tc.remaining},
+			})
 			if resp.Code != http.StatusSeeOther || resp.Header().Get("Location") != "/routing" {
 				t.Fatalf("mode save returned HTTP %d, location %q", resp.Code, resp.Header().Get("Location"))
 			}
@@ -51,6 +56,69 @@ func TestRoutingModesRoundTrip(t *testing.T) {
 			h.ServeHTTP(w, get)
 			assertContains(t, w.Body.String(), "Settings saved")
 			assertRoutingMode(t, h, tc.mode)
+			if tc.mode == "provider" {
+				assertRemainingOption(t, w.Body.String(), tc.remaining, tc.label, true)
+			}
+		})
+	}
+}
+
+func TestRoutingRejectsInvalidRemainingTraffic(t *testing.T) {
+	for _, choices := range [][]string{{""}, {"backup"}, {"direct", "profile"}} {
+		f := newRoutingFixture()
+		before := f.Config()
+		h := New(f, setupTestOptions(RoleManage))
+		resp := setupRequest(h, "/routing", url.Values{
+			"rev": {Revision(before)}, "mode": {"provider"}, "remaining": choices,
+		})
+		if resp.Code != http.StatusBadRequest || f.applies != 0 || !reflect.DeepEqual(before, f.Config()) {
+			t.Errorf("remaining traffic %q returned HTTP %d with %d applies", choices, resp.Code, f.applies)
+		}
+	}
+}
+
+func TestRoutingRejectsProfileIDAsAFixedVPNDefault(t *testing.T) {
+	f := newRoutingFixture()
+	f.cfg.Networks[0].Target = model.DefaultProfile
+	f.cfg.Connections[0].ID = model.DefaultProfile
+	f.status.Connections[model.DefaultProfile] = ConnectionStatus{Class: stats.TargetVPN}
+	before := f.Config()
+	h := New(f, setupTestOptions(RoleManage))
+	body := setupRequest(h, "/routing", nil).Body.String()
+	assertContains(t, body, `id="routing-mode-provider" required checked>`,
+		`<option value="vpn" disabled>Through VPN</option>`)
+	for _, mode := range []string{"provider", "all"} {
+		resp := setupRequest(h, "/routing", url.Values{
+			"rev": {Revision(before)}, "mode": {mode}, "remaining": {"vpn"},
+		})
+		if resp.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(before, f.Config()) {
+			t.Errorf("mode %s returned HTTP %d with %d applies", mode, resp.Code, f.applies)
+		}
+	}
+}
+
+func TestRoutingLabelsProviderRemainingTraffic(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		hasProfile, globalProxy bool
+		label                   string
+	}{
+		{"direct", true, false, "As the subscription says (now: direct)"},
+		{"VPN", true, true, "As the subscription says (now: through VPN)"},
+		{"pending", false, false, "As the subscription says"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRoutingFixture()
+			f.cfg.Networks[0].Default = model.TargetDirect
+			f.rules.HasProfile, f.rules.GlobalProxy = tc.hasProfile, tc.globalProxy
+			if !tc.hasProfile {
+				f.rules.State, f.rules.Rules = "pending", nil
+			}
+			h := New(f, setupTestOptions(RoleManage))
+			body := setupRequest(h, "/routing", nil).Body.String()
+			assertRemainingOption(t, body, "profile", tc.label+"</option>", false)
+			assertRemainingOption(t, body, "direct", "Directly", true)
+			assertRemainingOption(t, body, "vpn", "Through VPN", false)
 		})
 	}
 }
@@ -192,7 +260,7 @@ func TestRoutingRejectsInvalidListEntries(t *testing.T) {
 	before := f.Config()
 	h := New(f, setupTestOptions(RoleManage))
 	resp := setupRequest(h, "/routing", url.Values{
-		"rev": {Revision(before)}, "mode": {"provider"},
+		"rev": {Revision(before)}, "mode": {"provider"}, "remaining": {"vpn"},
 		"own-vpn":    {"valid.example\n<invalid>\n# comment\ngeoip:ru"},
 		"own-direct": {"country:gb"},
 	})
@@ -200,6 +268,7 @@ func TestRoutingRejectsInvalidListEntries(t *testing.T) {
 		t.Fatalf("invalid submission returned HTTP %d and reached Apply %d times", resp.Code, f.applies)
 	}
 	body := resp.Body.String()
+	assertRemainingOption(t, body, "vpn", "Through VPN", true)
 	assertContains(t, body, `aria-describedby="routing-vpn-errors"`, `aria-describedby="routing-direct-errors"`,
 		"&lt;invalid&gt;", "Enter a domain, IP address, or subnet on line 2.", "Enter a domain, IP address, or subnet on line 4.",
 		"Enter a domain, IP address, or subnet on line 1.")
@@ -207,7 +276,7 @@ func TestRoutingRejectsInvalidListEntries(t *testing.T) {
 
 func TestRoutingRevisionAndViewRole(t *testing.T) {
 	f := newOverviewFixture()
-	form := url.Values{"rev": {Revision(f.Config())}, "mode": {"own"}, "own-vpn": {"new.example"}}
+	form := url.Values{"rev": {Revision(f.Config())}, "mode": {"provider"}, "remaining": {"vpn"}, "own-vpn": {"new.example"}}
 	view := New(f, setupTestOptions(RoleView))
 	page := setupRequest(view, "/routing", nil)
 	assertContains(t, page.Body.String(), "View only", `<fieldset class="routing-fields" disabled>`)
@@ -256,7 +325,7 @@ func TestRoutingProviderTable(t *testing.T) {
 	assertContains(t, body, "By Example VPN rules", "Example VPN rules", "Through VPN", "Direct", "Block",
 		"YouTube", "Russian sites and services", "Other sites from the subscription (3)",
 		"Other IP addresses from the subscription (2)", "Could not download category data.",
-		"Rest of the traffic", "through VPN", "&lt;script&gt;", `value="proxy:geosite:youtube"`)
+		"Remaining traffic", "As the subscription says (now: through VPN)", "&lt;script&gt;", `value="proxy:geosite:youtube"`)
 	for _, forbidden := range []string{"geoip:private", `type="checkbox" role="switch" name="enabled" value="direct:geoip:missing"`, "<script>alert", "synthetic-token", "style="} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("unexpected %q on the routing page", forbidden)
@@ -331,16 +400,17 @@ func TestRoutingProtectedSwitchCanReenableALegacyDisabledKey(t *testing.T) {
 	}
 }
 
-func TestRoutingRefusesWithheldRules(t *testing.T) {
-	for _, off := range []bool{false, true} {
+func TestRoutingRefusesToEnableWithheldRules(t *testing.T) {
+	for _, hasSavedSettings := range []bool{false, true} {
 		f := newRoutingFixture()
 		f.cfg.Networks[0].Default = model.TargetDirect
-		f.cfg.ProviderRules.Off = off
-		f.rules = RoutingRules{Source: "sample", State: "withheld"}
-		if off {
-			f.rules = RoutingRules{State: "off"}
-			f.subs[0].RulesWithheld = true
+		if hasSavedSettings {
+			f.cfg.ProviderRules.Off = true
+		} else {
+			f.cfg.ProviderRules = nil
 		}
+		f.rules = RoutingRules{State: "off"}
+		f.subs[0].RulesWithheld = true
 		h := New(f, setupTestOptions(RoleManage))
 		page := setupRequest(h, "/routing", nil)
 		assertContains(t, page.Body.String(), `value="provider" id="routing-mode-provider" required disabled`,
@@ -349,7 +419,7 @@ func TestRoutingRefusesWithheldRules(t *testing.T) {
 			"rev": {Revision(f.Config())}, "mode": {"provider"},
 		})
 		if w.Code != http.StatusUnprocessableEntity || f.applies != 0 || f.cfg.Networks[0].Default != model.TargetDirect {
-			t.Fatalf("withheld mode with rules off=%v returned HTTP %d with %d applies", off, w.Code, f.applies)
+			t.Fatalf("withheld mode with saved settings=%v returned HTTP %d with %d applies", hasSavedSettings, w.Code, f.applies)
 		}
 	}
 }
@@ -437,7 +507,11 @@ func TestRoutingRetainsSavedProviderModeWhileRulesAreWithheld(t *testing.T) {
 			if w.Code != http.StatusSeeOther || f.applies != applies+1 {
 				t.Fatalf("an unrelated list save returned HTTP %d, applies %d", w.Code, f.applies)
 			}
-			if f.cfg.Networks[0].Default != model.DefaultProfile || !reflect.DeepEqual(before.ProviderRules, f.cfg.ProviderRules) ||
+			wantDefault := model.TargetDirect
+			if refreshed {
+				wantDefault = model.DefaultProfile
+			}
+			if f.cfg.Networks[0].Default != wantDefault || !reflect.DeepEqual(before.ProviderRules, f.cfg.ProviderRules) ||
 				!slices.ContainsFunc(f.cfg.Groups, func(group model.Group) bool {
 					return group.Name == "own-direct" && slices.Equal(group.Entries, []string{"new-direct.example"})
 				}) {
@@ -541,7 +615,7 @@ func TestRoutingProviderRuleStates(t *testing.T) {
 		{"withheld", "The provider does not supply routing rules.", false},
 		{"failed", "Provider routing rules could not be loaded.", false},
 		{"failed", "The provider sent no geosite file.", true},
-		{"ready", "Rest of the traffic", true},
+		{"ready", "Remaining traffic", true},
 	} {
 		t.Run(tc.message, func(t *testing.T) {
 			f := newRoutingFixture()
@@ -557,11 +631,7 @@ func TestRoutingProviderRuleStates(t *testing.T) {
 				t.Fatalf("GET returned HTTP %d", resp.Code)
 			}
 			assertContains(t, body, tc.message)
-			if tc.hasProfile {
-				assertContains(t, body, "Rest of the traffic", ">directly</td>")
-			} else if strings.Contains(body, "Rest of the traffic") {
-				t.Error("unmatched traffic was labeled without a profile")
-			}
+			assertContains(t, body, "Remaining traffic")
 			if strings.Contains(body, `role="switch"`) {
 				t.Error("a missing or unavailable rule rendered a switch")
 			}
@@ -601,5 +671,18 @@ func assertRoutingMode(t *testing.T, h http.Handler, mode string) {
 	isSelected := regexp.MustCompile(`<input [^>]*name="mode" value="` + mode + `"[^>]* checked[ >]`).MatchString(w.Body.String())
 	if w.Code != http.StatusOK || !isSelected {
 		t.Errorf("GET /routing returned HTTP %d without %q selected", w.Code, mode)
+	}
+}
+
+func assertRemainingOption(t *testing.T, body, value, label string, selected bool) {
+	t.Helper()
+	_, selectBody, found := strings.Cut(body, `name="remaining"`)
+	selectBody, _, _ = strings.Cut(selectBody, "</select>")
+	attr := `<option value="` + value + `"`
+	if selected {
+		attr += " selected"
+	}
+	if !found || !strings.Contains(selectBody, attr+">"+label) {
+		t.Errorf("remaining traffic option %q with selected=%t is missing label %q", value, selected, label)
 	}
 }

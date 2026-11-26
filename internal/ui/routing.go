@@ -21,17 +21,18 @@ const (
 	routingProvider = "provider"
 	routingAll      = "all"
 	routingOwn      = "own"
+	routingVPN      = "vpn" // remaining traffic uses the main target
 	ownVPNGroup     = "own-vpn"
 	ownDirectGroup  = "own-direct"
 )
 
-// routingDraft holds the fields submitted for the selected mode. An absent
-// list keeps the corresponding applied group.
+// routingDraft holds the fields submitted for the selected mode. Omitted
+// lists and remaining-traffic choices retain their applicable saved values.
 type routingDraft struct {
-	Mode, Source string
-	VPN, Direct  *routingList
-	Switches     map[string]bool
-	Overlap      bool
+	Mode, Source, Remaining string
+	VPN, Direct             *routingList
+	Switches                map[string]bool
+	Overlap                 bool
 }
 
 type routingList struct {
@@ -101,6 +102,14 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	if keepsProvider && !form.Has("mode") {
 		draft.Mode = routingProvider
 	}
+	switch remaining := form["remaining"]; {
+	case len(remaining) == 0:
+	case len(remaining) == 1 && slices.Contains([]string{model.TargetDirect, routingVPN, model.DefaultProfile}, remaining[0]):
+		draft.Remaining = remaining[0]
+	default:
+		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
+		return
+	}
 	if len(form[ownVPNGroup]) > 1 || len(form[ownDirectGroup]) > 1 {
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_form")
 		return
@@ -132,6 +141,7 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusOK, cfg, &draft, "")
 		return
 	}
+	changesRemainingToVPN := draft.Remaining == routingVPN && routingRemainingChoice(network) != routingVPN
 	switch {
 	case len(form["mode"]) > 1 || (draft.Mode != routingProvider && draft.Mode != routingAll && draft.Mode != routingOwn):
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_mode")
@@ -139,9 +149,11 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	case draft.Mode == routingProvider && providerProblem != "" && !keepsProvider:
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, providerProblem)
 		return
-	case draft.Mode == routingAll && !state.canUseVPN():
-		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, state.mainProblem())
-		return
+	case draft.Mode == routingAll || draft.Mode == routingProvider && changesRemainingToVPN:
+		if message := state.remainingVPNProblem(network.Target); message != "" {
+			p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, message)
+			return
+		}
 	}
 	switchesChanged := draft.changesSwitches(cfg.ProviderRules)
 	if switchesChanged && providerProblem == "setup_rules_withheld" {
@@ -251,6 +263,18 @@ func (s routingState) mainProblem() string {
 	}
 }
 
+// remainingVPNProblem rejects main targets that cannot be stored as a fixed
+// tunnel default. Hand-written connection IDs can coincide with "profile".
+func (s routingState) remainingVPNProblem(target string) string {
+	if target == model.DefaultProfile {
+		return "routing_main_profile_id"
+	}
+	if !s.canUseVPN() {
+		return s.mainProblem()
+	}
+	return ""
+}
+
 func (s routingState) providerProblem() string {
 	switch {
 	case s.withholdsRules():
@@ -270,16 +294,39 @@ func (s routingState) withholdsRules() bool {
 // retainsProviderMode identifies an already applied provider mode from the
 // configuration alone because a refresh can change the rules independently.
 func retainsProviderMode(network *model.Network, active *model.ProviderRulesSettings, source string) bool {
-	return active != nil && active.Source == source && network.Default == model.DefaultProfile
+	return active != nil && active.Source == source && routingRemainingChoice(network) != ""
+}
+
+// routingRemainingChoice recognizes the split defaults editable on this page.
+// A custom default targeting a different connection has no equivalent choice.
+func routingRemainingChoice(network *model.Network) string {
+	switch network.Default {
+	case "", model.TargetDirect:
+		return model.TargetDirect
+	case model.DefaultProfile:
+		return model.DefaultProfile
+	case network.Target:
+		return routingVPN
+	}
+	return ""
 }
 
 func (d routingDraft) apply(cfg *model.Config, network *model.Network, sourceChanged bool) {
-	if d.Mode == routingProvider {
-		network.Default = model.DefaultProfile
-	} else {
+	switch d.Mode {
+	case routingAll:
+		network.Default = network.Target
+	case routingOwn:
 		network.Default = model.TargetDirect
-		if d.Mode == routingAll {
+	case routingProvider:
+		switch d.Remaining {
+		case routingVPN:
 			network.Default = network.Target
+		case model.TargetDirect, model.DefaultProfile:
+			network.Default = d.Remaining
+		case "":
+			if cfg.ActiveProviderRules() == nil || routingRemainingChoice(network) == "" {
+				network.Default = model.TargetDirect
+			}
 		}
 	}
 	if cfg.ProviderRules == nil && (d.Mode == routingProvider || sourceChanged) {

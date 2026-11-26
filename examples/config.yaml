@@ -44,7 +44,7 @@ networks:
   # default), a connection or subscription target, or profile to follow the
   # provider rules. Enable the subscription and provider_rules above, then
   # replace the Home entry with the complete list item below.
-  # - {name: Home, cidr: 192.168.7.0/24, mode: split, target: "subscription:provider:auto", default: profile}
+  # - {name: Home, cidr: 192.168.7.0/24, mode: split, target: "subscription:provider:auto", default: direct}
   - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi}
 clients:
   - {name: Phone, mac: "02:00:00:00:00:10", mode: full, target: fi}

@@ -392,10 +392,9 @@ func (cfg *Config) HomeNetwork() *Network {
 }
 
 // RouteHomeThroughSubscription replaces the networks with one split network,
-// Home, that covers the LAN prefix and routes through the subscription: its
-// provider rules, then the provider profile default (DefaultProfile),
-// both tunnelling to the subscription's auto target. It also turns on provider
-// rules for that subscription, dropping any earlier settings. The reset after
+// Home, covering the LAN prefix. Provider proxy rules use the subscription's
+// auto target and unmatched traffic goes direct. This turns on provider rules
+// for that subscription, dropping any earlier settings. The reset after
 // an upgrade and the first-run setup share it. The caller supplies a configured
 // subscription ID and a LAN prefix; Validate checks the result.
 func (c *Config) RouteHomeThroughSubscription(id string, lan netip.Prefix) {
@@ -404,7 +403,7 @@ func (c *Config) RouteHomeThroughSubscription(id string, lan netip.Prefix) {
 		CIDR:    lan.Masked().String(),
 		Mode:    ModeSplit,
 		Target:  ManagedTarget(id, "auto"),
-		Default: DefaultProfile,
+		Default: TargetDirect,
 	}}
 	c.ProviderRules = &ProviderRulesSettings{Source: id}
 }
@@ -670,6 +669,7 @@ func (c *Config) Validate() error {
 		if n.Default == DefaultProfile && n.Target == "" {
 			add("%s: default profile needs a target", where)
 		}
+		// Provider proxy rules need a target independently of the default route.
 		if n.Mode == ModeSplit && n.Target == "" && providerRulesActive {
 			add("%s: %s", where, splitNeedsTarget)
 		}

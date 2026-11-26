@@ -8,9 +8,11 @@ Choose how the home split policy handles traffic and select **Save** to apply th
 
 **Rules from subscription** selects one configured subscription as the source for provider rules. Use **Review source** to see the selected source's availability before saving. The source and main connection are separate settings. Saving a change to the source clears the previous source's rule switches.
 
-- **By subscription rules** uses the provider's rules and its default for unmatched traffic. The option is unavailable when the provider withholds its rules. The table groups rules by their action. Site and address lists each have one switch for their literal entries. Unavailable rules show a reason.
+- **By subscription rules** uses the provider's rules and your choice under **Remaining traffic**. The option is unavailable when the provider withholds its rules. The table groups rules by their action. Site and address lists each have one switch for their literal entries. Unavailable rules show a reason.
 - **All traffic through VPN** uses the main connection for unmatched traffic. Add exceptions under **Always direct**.
 - **Only my sites** sends unmatched traffic directly. Enter sites for the main connection under **Always through VPN**.
+
+Under **Remaining traffic**, **Directly** (`default: direct`) is the starting choice for setup and for a reset that recreates the Home policy. **Through VPN** uses the main connection. **As the subscription says** (`default: profile`) shows the current provider default when the profile is available and follows it as the subscription refreshes. If no profile applies, this choice uses the main connection. Existing configurations keep their saved defaults until you change them.
 
 Both lists are visible in every mode. Enter one domain, IP address, or subnet per line. Domains include their subdomains. Your lists take priority over provider rules. A line error or the same entry in both editable lists stops the save. Groups with advanced settings are read-only on this tab and their entries don't count toward that check. Rules you switched off stay off when you return to the subscription mode with the same source. If that subscription withholds rules, you can keep the saved mode while editing your lists. A direct or blocking main connection makes the VPN option unavailable. If a subscription has no nodes for the selected target, the option follows the [reserve](#subscription-reserve) used for that target. Additional configured groups keep their existing routes and ordering, and device policies continue to determine which devices use these settings.
 
@@ -99,7 +101,7 @@ Periodic health checks measure HTTP requests, not ICMP ping. They are separate f
 
 In split mode, traffic that matches no group goes direct. A network can set `default` to send that traffic elsewhere: a connection ID or a managed subscription target tunnels it, `direct` (or empty) keeps it direct, and `profile` follows the [provider rules](#provider-rules): such traffic uses the policy's target, unless the applied provider profile says `GlobalProxy: false`, which keeps it direct. Without provider rules, `profile` uses the target too. `block` is rejected; add a block group instead. Devices in the network that split inherit its default. Groups always win over the default.
 
-Traffic never goes direct just because a target is missing. `profile` needs the network's `target`, and a network without one is rejected. While provider rules are active, every split network needs a `target`, because provider proxy rules use it, and so does a split device unless its address is in a network that has one. Devices with a fixed `ip` are checked when the configuration is saved. A device known only by its MAC address gets its address at run time and cannot be checked, so give it its own `target` if it can be outside such a network.
+A `direct` default needs no network target on its own. A `profile` default needs the network's `target`. While provider rules are active, every split network needs a `target` for provider proxy rules. A split device also needs one unless its address is in a network that has one. Devices with a fixed `ip` are checked when the configuration is saved. A device known only by its MAC address gets its address at run time. Give it its own `target` if it can be outside such a network.
 
 ```yaml
 networks:

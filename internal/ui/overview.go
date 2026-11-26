@@ -50,10 +50,13 @@ func (p pages) overviewConnection(w http.ResponseWriter, r *http.Request) {
 		p.renderOverview(w, r, http.StatusUnprocessableEntity, cfg, "overview_invalid_connection")
 		return
 	}
-	// The full-VPN mode stores the previous main target as the split default.
-	// Empty, direct and profile defaults have their own meanings.
-	if network.Default == network.Target && network.Default != "" &&
-		network.Default != model.TargetDirect && network.Default != model.DefaultProfile {
+	// Full-VPN mode and the provider mode's VPN choice both store the main
+	// target as the split default. Empty, direct and profile are independent.
+	if routingRemainingChoice(network) == routingVPN {
+		if target[0] == model.DefaultProfile {
+			p.renderOverview(w, r, http.StatusUnprocessableEntity, cfg, "routing_main_profile_id")
+			return
+		}
 		network.Default = target[0]
 	}
 	vpn := routingOwnGroups(cfg, ownVPNGroup, network.Target)

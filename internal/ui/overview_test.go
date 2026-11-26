@@ -69,6 +69,35 @@ func TestOverviewIgnoresDormantProviderRules(t *testing.T) {
 	}
 }
 
+func TestOverviewDescribesProviderRemainingTraffic(t *testing.T) {
+	for _, tc := range []struct {
+		name, def, source       string
+		hasProfile, globalProxy bool
+		want                    string
+	}{
+		{"direct ignores global proxy", model.TargetDirect, "sample", true, true, "direct"},
+		{"empty default is direct", "", "sample", true, true, "direct"},
+		{"main target ignores global direct", model.ManagedTarget("sample", "auto"), "sample", true, false, "through VPN"},
+		{"profile uses direct", model.DefaultProfile, "sample", true, false, "direct"},
+		{"profile uses VPN", model.DefaultProfile, "sample", true, true, "through VPN"},
+		{"pending profile uses the main target", model.DefaultProfile, "sample", false, false, "through VPN"},
+		{"different source does not supply the default", model.DefaultProfile, "other", true, false, "through VPN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOverviewFixture()
+			f.cfg.Networks[0].Default = tc.def
+			f.status.RulesSource, f.status.RulesHasProfile, f.status.RulesGlobalProxy = tc.source, tc.hasProfile, tc.globalProxy
+			h := New(f, setupTestOptions(RoleManage))
+			body := setupRequest(h, "/", nil).Body.String()
+			_, section, _ := strings.Cut(body, `aria-labelledby="routing-title">`)
+			section, _, _ = strings.Cut(section, "</section>")
+			if !strings.Contains(section, "Routing by Example VPN rules") || !strings.Contains(section, "Remaining traffic: "+tc.want) {
+				t.Errorf("routing summary should describe provider rules and remaining traffic %s", tc.want)
+			}
+		})
+	}
+}
+
 func TestOverviewStatusPrecedence(t *testing.T) {
 	emptyCatalog := func(f *overviewFixture, fallback string) {
 		f.cfg.Subscriptions[0].Fallback = fallback
@@ -233,6 +262,21 @@ func TestOverviewTargets(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOverviewPreservesFixedVPNDefaultWhenMainIDCollidesWithProfile(t *testing.T) {
+	f := newOverviewFixture()
+	f.cfg.Networks[0].Default = f.cfg.Networks[0].Target
+	f.cfg.Connections[0].ID = model.DefaultProfile
+	before := f.Config()
+	h := New(f, setupTestOptions(RoleManage))
+	response := setupRequest(h, "/overview/connection", url.Values{
+		"rev": {Revision(before)}, "target": {model.DefaultProfile},
+	})
+	if response.Code != http.StatusUnprocessableEntity || f.applies != 0 || !reflect.DeepEqual(before, f.Config()) {
+		t.Fatalf("main connection change returned HTTP %d with %d applies", response.Code, f.applies)
+	}
+	assertContains(t, response.Body.String(), "A fixed VPN route requires a main connection ID other than profile.")
 }
 
 func TestOverviewShowsAndRefreshesEachSubscription(t *testing.T) {
@@ -621,6 +665,8 @@ func newOverviewFixture() *overviewFixture {
 	latency := int64(42)
 	cfg := &model.Config{Subscriptions: []subscription.Source{{ID: "sample", URL: setupTestURL}}}
 	cfg.RouteHomeThroughSubscription("sample", netip.MustParsePrefix("192.0.2.0/24"))
+	// Exercise a saved pre-existing setup that follows the subscription default.
+	cfg.Networks[0].Default = model.DefaultProfile
 	cfg.Connections = []model.Connection{
 		{ID: "old", Name: "Office", Type: model.ConnLink, Link: "vless://synthetic-token@example.test"},
 		{ID: "backup", Name: "Cabin", Type: model.ConnWireGuard},
@@ -635,7 +681,7 @@ func newOverviewFixture() *overviewFixture {
 	cfg.Clients = []model.Client{{MAC: "02:00:00:00:00:01", Mode: model.ModeFull, Target: "old"}}
 	return &overviewFixture{
 		setupFixture: setupFixture{cfg: cfg},
-		status: OverviewStatus{Ready: true, Devices: 3, ManagedDevices: 2, RulesState: "ready", RulesActive: 1, RulesTotal: 2,
+		status: OverviewStatus{Ready: true, Devices: 3, ManagedDevices: 2, RulesSource: "sample", RulesState: "ready", RulesActive: 1, RulesTotal: 2,
 			Connections: map[string]ConnectionStatus{
 				model.ManagedTarget("sample", "auto"): {Class: stats.TargetVPN},
 				"old":                                 {Class: stats.TargetVPN, Checked: true},

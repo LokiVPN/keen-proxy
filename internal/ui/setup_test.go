@@ -88,12 +88,13 @@ func TestSetupCheckStates(t *testing.T) {
 				},
 			},
 			want: []string{"Test provider", "Active", "0 of 200 GB", "2: Node A, Node B", "Example routing", "Sites: 2", "ru", "Message from Test provider", "Scheduled maintenance",
-				"Provider profile default: through the VPN.", "Provider rules are pending evaluation.", "KeenProxy evaluates these rules when you enable the subscription."},
+				"Provider profile default: through the VPN.", "Provider rules are pending evaluation.", "KeenProxy evaluates these rules when you enable the subscription.",
+				"Remaining traffic goes directly by default."},
 		},
 		{
 			name: "withheld", url: setupTestURL, status: http.StatusOK, ready: true,
 			preview: SetupPreview{State: subscription.StateReady, NodeCount: 1, RulesState: "withheld"},
-			want:    []string{"The provider does not supply routing rules.", "The Home policy uses the subscription as its default."},
+			want:    []string{"The provider does not supply routing rules.", "Remaining traffic goes directly by default."},
 		},
 		{
 			name: "malformed profile", url: setupTestURL, status: http.StatusOK, ready: true,
@@ -231,9 +232,11 @@ func TestSetupEscapesProviderStrings(t *testing.T) {
 
 func TestSetupEnableFirstRunAndFlash(t *testing.T) {
 	deps := &setupFixture{
-		cfg:     &model.Config{LAN: model.LAN{Interface: "test-lan"}},
-		lan:     netip.MustParsePrefix("192.168.7.1/24"),
-		preview: SetupPreview{State: subscription.StateReady, NodeCount: 1},
+		cfg: &model.Config{LAN: model.LAN{Interface: "test-lan"}},
+		lan: netip.MustParsePrefix("192.168.7.1/24"),
+		preview: SetupPreview{
+			State: subscription.StateReady, NodeCount: 1, Routing: &subscription.RoutingSummary{GlobalProxy: true},
+		},
 	}
 	h := New(deps, setupTestOptions(RoleManage))
 	form := checkSetupLink(t, h)
@@ -249,7 +252,7 @@ func TestSetupEnableFirstRunAndFlash(t *testing.T) {
 		Subscriptions: []subscription.Source{{ID: "main", URL: setupTestURL, SendHWID: true}},
 		Networks: []model.Network{{
 			Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit,
-			Target: "subscription:main:auto", Default: model.DefaultProfile,
+			Target: "subscription:main:auto", Default: model.TargetDirect,
 		}},
 		ProviderRules: &model.ProviderRulesSettings{Source: "main"},
 	}
@@ -344,7 +347,7 @@ func TestOverviewAddsSubscriptionWithoutReplacingNetworks(t *testing.T) {
 	rev := formField(t, setup.Body.String(), "rev")
 	checked := setupRequest(h, "/setup/check", url.Values{"rev": {rev}, "url": {setupTestURL}})
 	assertContains(t, checked.Body.String(), "Add subscription", "Adding the subscription keeps your saved routing mode.")
-	if strings.Contains(checked.Body.String(), "The Home policy uses the subscription as its default.") {
+	if strings.Contains(checked.Body.String(), "Remaining traffic goes directly by default.") {
 		t.Error("adding a subscription promised to change the default route")
 	}
 	post := setupRequest(h, "/setup/enable", url.Values{"rev": {rev}, "preview": {formField(t, checked.Body.String(), "preview")}})

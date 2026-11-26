@@ -22,7 +22,7 @@ If the sign-in check is unavailable or your installation runs on OpenWrt, use [S
 
 1. Open KeenProxy with a management account. On a fresh setup it asks for a subscription link.
 2. Paste the HTTPS subscription link from your provider's account page and choose **Check**. The check sends a stable device identifier (HWID) specific to the provider's HTTPS origin and may use a device slot. Review the server list and any expiry, usage, rules, or provider message returned. If the device limit is reached, remove an unused device in your account. If the subscription has expired, renew it. Check the link again after either change.
-3. Choose **Enable** to save the subscription and apply split routing to the detected home network. This saves `send_hwid: true`, so future refreshes send the identifier. KeenProxy uses the provider profile when available. Without one, unmatched traffic uses the subscription. This setup requires a private IPv4 address on the configured LAN interface.
+3. Choose **Enable** to save the subscription and apply split routing to the detected home network. This saves `send_hwid: true`, so future refreshes send the identifier. KeenProxy applies the provider's rules when available and sends remaining traffic directly. This setup requires a private IPv4 address on the configured LAN interface.
 4. Open **Overview** to confirm the selected connection and **Devices** to choose which devices use it. Test an intended site from one of those devices.
 
 If you already have a home network policy, **Overview → Set up subscription** adds the first subscription and keeps that policy. For additional subscriptions or link changes, see [Manage subscriptions](#manage-subscriptions).
@@ -44,9 +44,11 @@ For a manual setup, open [Connections](#connections). From the initial setup scr
 
 Choose one source under **Rules from subscription**. You can use rules from a different subscription than the one used by **Main connection**. If you change the source, select **Review source** to see whether the chosen subscription offers rules before saving. Choose a mode and select **Save** to apply the source and mode together.
 
-- **By subscription rules** follows the provider's rules and default route. Review the **Through VPN**, **Direct**, and **Block** sections. Switch off individual rules as needed. A disabled rule stays off after the subscription refreshes. The page explains when rules are loading, missing, or unavailable. If the provider stops sending rules, you can keep the saved subscription mode and save your site lists.
+- **By subscription rules** uses the provider's rules and your choice under **Remaining traffic**. Review the **Through VPN**, **Direct**, and **Block** sections. Switch off individual rules as needed. A disabled rule stays off after the subscription refreshes. The page explains when rules are loading, missing, or unavailable. If the provider stops sending rules, you can keep the saved subscription mode and save your site lists.
 - **All traffic through VPN** uses the main connection for traffic beyond the home network, subject to your exceptions. For a mixed main connection, the label names the connection and the page shows a selected reserve when known.
 - **Only my sites** sends the listed sites through the main connection and sends unmatched traffic directly.
+
+For **Remaining traffic**, choose **Directly**, **Through VPN** to use the main connection, or **As the subscription says** to follow the provider's current default. Select **Save** to apply the choice. **Directly** is the default for a new Home policy created by setup or reset. Existing saved choices stay in effect. [Routing and DNS](routing.md#routing-tab)
 
 Saving a different source resets all of the previous subscription's rule switches. When subscription rules are on, KeenProxy evaluates the new source after saving. In the other modes, choosing a different source saves it with rules off. If the page suggests a source because none is saved yet, editing your lists in those modes keeps the source unset. Changing modes with the same saved source keeps its switches.
 

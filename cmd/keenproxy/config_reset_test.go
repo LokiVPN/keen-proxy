@@ -523,8 +523,7 @@ func useLANPrefixes(t *testing.T, lookup prefixLookup) {
 }
 
 // A reset v0.10 file with a subscription and a LAN prefix compiles into split
-// routing through the subscription: LAN sources are intercepted and traffic
-// that matches no rule follows the provider profile.
+// routing with provider rules and a direct default, independent of GlobalProxy.
 func TestResetRoutesLANThroughSubscription(t *testing.T) {
 	var asked string
 	useLANPrefixes(t, func(name string) ([]netip.Prefix, error) {
@@ -540,9 +539,9 @@ func TestResetRoutesLANThroughSubscription(t *testing.T) {
 	if asked != "br1" {
 		t.Fatalf("looked up interface %q, want the LAN interface br1", asked)
 	}
-	want := []model.Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit, Target: "subscription:provider:auto", Default: model.DefaultProfile}}
-	if !slices.Equal(cfg.Networks, want) || cfg.ProviderRules == nil || cfg.ProviderRules.Source != "provider" {
-		t.Fatalf("networks %+v, provider rules %+v", cfg.Networks, cfg.ProviderRules)
+	want := []model.Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit, Target: "subscription:provider:auto", Default: model.TargetDirect}}
+	if !slices.Equal(cfg.Networks, want) || cfg.ActiveProviderRules() == nil || cfg.ProviderRules.Source != "provider" {
+		t.Errorf("networks %+v, provider rules %+v", cfg.Networks, cfg.ProviderRules)
 	}
 	if strings.Contains(logs.String(), "192.168.7") {
 		t.Fatalf("reset log disclosed the LAN prefix: %s", logs)
@@ -573,14 +572,29 @@ func TestResetRoutesLANThroughSubscription(t *testing.T) {
 				final, _ = rule["outbound"].(string)
 			}
 		}
-		wantFinal := "direct"
-		if global {
-			wantFinal = "subscription:provider:auto"
-		}
-		if final != wantFinal {
-			t.Errorf("GlobalProxy %t: LAN default goes to %q, want %q\n%s", global, final, wantFinal, out.SingBox)
+		if final != model.TargetDirect {
+			t.Errorf("GlobalProxy %t: LAN default goes to %q, want direct", global, final)
 		}
 	}
+}
+
+func TestLoadOrResetPreservesSavedProfileDefault(t *testing.T) {
+	const body = `schema_version: 2
+subscriptions:
+  - {id: provider, url: "https://provider.example/sub"}
+provider_rules: {source: provider}
+networks:
+  - {name: Home, cidr: 192.168.7.0/24, mode: split, target: "subscription:provider:auto", default: profile}
+`
+	_, path := writeConfigFile(t, body)
+	cfg, reset, err := loadOrReset(path)
+	if err != nil || reset {
+		t.Fatalf("loading a saved profile default: reset %t, error %v", reset, err)
+	}
+	if network := cfg.HomeNetwork(); network == nil || network.Default != model.DefaultProfile {
+		t.Errorf("loaded Home = %+v, want the saved profile default", network)
+	}
+	assertFileBytes(t, path, body)
 }
 
 // Without a usable LAN prefix the reset keeps no network, as before, and the

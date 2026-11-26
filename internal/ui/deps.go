@@ -116,14 +116,16 @@ type SetupPreview struct {
 	PreviewID  uint64
 }
 
-// OverviewStatus contains routing readiness, device counts and connection
-// observations. Provider rules are exposed as counts and a state only.
+// OverviewStatus contains routing readiness, device counts, connection
+// observations, and the applied source's rule counts and profile default.
 type OverviewStatus struct {
 	Ready                   bool
 	Devices, ManagedDevices int
 	HomeTargets             []string
 	Connections             map[string]ConnectionStatus
-	RulesState              string
+	RulesSource, RulesState string
+	RulesHasProfile         bool
+	RulesGlobalProxy        bool
 	RulesActive, RulesTotal int
 }
 

@@ -515,6 +515,7 @@
 .routing-rule-control { width: 40%; }
 .routing-rules .routing-rule-setting { text-align: right; }
 .routing-rules .tg { min-height: 22px; vertical-align: middle; }
+.routing-remaining { margin-top: 8px; }
 .routing-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
 .routing-form:not(:has(#routing-mode-provider:checked)) .routing-provider,
 .routing-form:has(#routing-source):not(:has(#routing-source option[selected]:checked)) .routing-provider { display: none; }

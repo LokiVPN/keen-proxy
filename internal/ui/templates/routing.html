@@ -51,10 +51,9 @@
           <section class="routing-section routing-provider" aria-labelledby="routing-rules-title">
             <div class="routing-section-head">
               <h2 id="routing-rules-title" class="clip" title="{{.Routing.ProviderHeading}}">{{.Routing.ProviderHeading}}</h2>
-              {{if and .Routing.Unmatched .Routing.SubscriptionUpdated}}<span class="muted small">{{.Routing.SubscriptionUpdated}}</span>{{end}}
+              {{if .Routing.SubscriptionUpdated}}<span class="muted small">{{.Routing.SubscriptionUpdated}}</span>{{end}}
             </div>
             {{if .Routing.RuleState}}<p class="note">{{.Routing.RuleState}}</p>{{end}}
-            {{if or .Routing.RuleGroups .Routing.Unmatched}}
             <table class="tbl routing-rules" aria-labelledby="routing-rules-title">
               <colgroup><col><col class="routing-rule-control"></colgroup>
               {{range .Routing.RuleGroups}}
@@ -76,11 +75,18 @@
                 {{end}}
               </tbody>
               {{end}}
-              {{if .Routing.Unmatched}}
-              <tfoot><tr><td>{{.Text.routing_rest}}</td><td class="routing-rule-setting">{{.Routing.Unmatched}}</td></tr></tfoot>
-              {{end}}
+              <tfoot><tr><td colspan="2">
+                <div class="fld routing-remaining">
+                  <label for="routing-remaining">{{.Text.routing_rest}}</label>
+                  <select id="routing-remaining" name="remaining"{{if .Routing.RemainingVPNProblem}} aria-describedby="routing-remaining-problem"{{end}}>
+                    <option value="direct"{{if eq .Routing.Remaining "direct"}} selected{{end}}>{{.Text.routing_rest_option_direct}}</option>
+                    <option value="vpn"{{if eq .Routing.Remaining "vpn"}} selected{{end}}{{if not .Routing.CanAll}} disabled{{end}}>{{.Text.routing_rest_option_vpn}}</option>
+                    <option value="profile"{{if eq .Routing.Remaining "profile"}} selected{{end}}>{{.Routing.ProfileRemaining}}</option>
+                  </select>
+                  {{if .Routing.RemainingVPNProblem}}<p id="routing-remaining-problem" class="hint">{{.Routing.RemainingVPNProblem}}</p>{{end}}
+                </div>
+              </td></tr></tfoot>
             </table>
-            {{end}}
             {{if .Routing.HasSwitches}}<p class="hint">{{.Text.routing_switch_hint}}</p>{{end}}
           </section>
 

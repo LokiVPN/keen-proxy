@@ -47,9 +47,8 @@
             {{if $.Setup.Replacing}}<p>{{$.Text.setup_mode_kept}}</p>{{else if $.Setup.KeepRouting}}<p>{{$.Text.setup_add_mode_kept}}</p>{{end}}
             {{if and .HasRouting $.Setup.EvaluateRules}}
             <p>{{if $.Setup.Replacing}}{{$.Text.setup_rules_on_replace}}{{else}}{{$.Text.setup_rules_on_enable}}{{end}}</p>
-            {{else if and (not .HasRouting) (not $.Setup.KeepRouting)}}
-            <p>{{$.Text.setup_without_rules_fallback}}</p>
             {{end}}
+            {{if not $.Setup.KeepRouting}}<p>{{$.Text.setup_remaining_direct}}</p>{{end}}
             {{if .Actions}}
             <ul class="setup-rules">
               {{range .Actions}}

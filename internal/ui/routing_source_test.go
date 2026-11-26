@@ -21,10 +21,19 @@ func TestRoutingChangesSourceAndResetsRuleSwitches(t *testing.T) {
 	page := setupRequest(h, "/routing", nil)
 	form := url.Values{
 		"rev": {formField(t, page.Body.String(), "rev")}, "mode": {"provider"}, "source": {"sub2"},
-		"rule": {key}, "own-direct": {"new-direct.example"},
+		"rule": {key}, "own-direct": {"new-direct.example"}, "remaining": {"vpn"},
 	}
+	form.Set("review_source", "1")
+	review := setupRequest(h, "/routing", form)
+	if review.Code != http.StatusOK || f.applies != 0 {
+		t.Fatalf("source review returned HTTP %d with %d applies", review.Code, f.applies)
+	}
+	assertRemainingOption(t, review.Body.String(), "vpn", "Through VPN", true)
+	assertRemainingOption(t, review.Body.String(), "profile", "As the subscription says</option>", false)
+	form.Del("review_source")
 	want := f.Config()
 	want.ProviderRules.Source, want.ProviderRules.Disabled = "sub2", nil
+	want.Networks[0].Default = want.Networks[0].Target
 	want.Groups[1].Entries = []string{"new-direct.example"}
 	post := setupRequest(h, "/routing", form)
 	if post.Code != http.StatusSeeOther || post.Header().Get("Location") != "/routing" || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
@@ -81,6 +90,7 @@ func TestRoutingReviewsWithholdingForTheSelectedSource(t *testing.T) {
 func TestRoutingSavesListEditsAfterWithheldRulesReturn(t *testing.T) {
 	f := newRoutingFixture()
 	addSecondSubscription(f.overviewFixture)
+	f.cfg.Networks[0].Default = f.cfg.Networks[0].Target
 	f.cfg.ProviderRules.Disabled = []string{"block:geosite:ads"}
 	f.rules = RoutingRules{Source: "sample", State: "withheld"}
 	f.subs[0].RulesWithheld = true

@@ -345,11 +345,11 @@ subscriptions:
 		{"profile default without a target", "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: profile}\n", network},
 		{"profile default on an off network without a target", "networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: off, default: profile}\n", network},
 		{"profile default with a target", "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi, default: profile}\n", ""},
-		{"provider rules and a split network without a target", rules + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split}\n", split},
-		{"provider rules and a split network with a target", rules + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi}\n", ""},
+		{"provider rules still need a target with a direct default", rules + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: direct}\n", split},
+		{"provider rules and a direct default with a target", rules + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi, default: direct}\n", ""},
 		{"provider rules and an off network without a target", rules + "networks:\n  - {name: Guest, cidr: 192.168.8.0/24, mode: off}\n", ""},
 		{"a split network without a target and without provider rules", "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split}\n", ""},
-		{"off provider rules and a split network without a target", off + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split}\n", ""},
+		{"direct default needs no target when provider rules are off", off + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: direct}\n", ""},
 		{"off provider rules still need a target for the profile default", off + "networks:\n  - {name: Home, cidr: 192.168.7.0/24, mode: split, default: profile}\n", network},
 		{"off provider rules and a static split device outside every network", off + "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 10.9.0.5, mode: split}\n", ""},
 		{"a static split device outside every network", rules + "clients:\n  - {name: TV, mac: \"02:00:00:00:00:31\", ip: 10.9.0.5, mode: split}\n", split},
@@ -382,7 +382,7 @@ func TestRouteHomeThroughSubscription(t *testing.T) {
 	cfg.Networks = []Network{{Name: "Old", CIDR: "10.9.0.0/16", Mode: ModeFull, Target: "fi"}}
 	cfg.ProviderRules = &ProviderRulesSettings{Source: "other", Disabled: []string{"x"}}
 	cfg.RouteHomeThroughSubscription("prov", netip.MustParsePrefix("192.168.7.1/24"))
-	want := []Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: ModeSplit, Target: "subscription:prov:auto", Default: DefaultProfile}}
+	want := []Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: ModeSplit, Target: "subscription:prov:auto", Default: TargetDirect}}
 	if !slices.Equal(cfg.Networks, want) {
 		t.Fatalf("networks = %+v, want %+v", cfg.Networks, want)
 	}

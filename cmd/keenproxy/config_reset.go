@@ -21,11 +21,10 @@ const resetReason = "an older or unreadable configuration does not load in this 
 // release cannot load, such as a v0.10 file with removed sections, is reset to
 // defaults that keep only the API address, the LAN section and the first valid
 // subscription, so an unattended upgrade keeps the VPN subscription; reset
-// reports that case. When the kept subscription and a private IPv4 prefix of
-// the LAN interface exist, the home LAN routes through the subscription with
-// its provider rules (model.Config.RouteHomeThroughSubscription). A schema 2 file that does not load returns the load
-// error, and a file that cannot be read returns the read error, as model.Load
-// does.
+// reports that case. With a kept subscription and a private IPv4 LAN prefix,
+// the Home policy uses the provider rules and a direct default. A schema 2
+// file that does not load returns the load error, and an unreadable file
+// returns the read error, as model.Load does.
 //
 // The reset happens in memory: loadOrReset never changes a file. The daemon
 // replaces the file at its first save, after keeping the original bytes as

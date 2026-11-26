@@ -277,12 +277,18 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	}
 	rules := cfg.ActiveProviderRules()
 	mode := text["overview_route_own"]
+	remaining := routingRemainingChoice(network)
+	var details []string
 	switch {
 	case network.Mode == model.ModeOff:
 		mode = text["overview_home_off"]
 		if len(status.HomeTargets) > 0 {
 			mode = text["overview_existing_device_policy"]
 		}
+	case network.Mode == model.ModeSplit && rules != nil && remaining != "":
+		mode = fmt.Sprintf(text["overview_route_provider"], titles.label(rules.Source, text))
+		profileDirect := status.RulesSource == rules.Source && status.RulesHasProfile && !status.RulesGlobalProxy
+		details = append(details, providerRemainingDetail(remaining, main, profileDirect, text))
 	case network.Mode == model.ModeFull || (network.Default != "" && network.Default != model.TargetDirect && network.Default != model.DefaultProfile):
 		selection := main
 		if network.Mode != model.ModeFull && network.Default != network.Target {
@@ -301,14 +307,10 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 		}
 	case network.Default == model.DefaultProfile:
 		mode = text["overview_route_profile"]
-		if rules != nil {
-			mode = fmt.Sprintf(text["overview_route_provider"], titles.label(rules.Source, text))
-		}
 	case rules != nil:
 		mode = text["overview_route_custom"]
 	}
-	var details []string
-	if rules != nil {
+	if rules != nil && status.RulesSource == rules.Source {
 		switch status.RulesState {
 		case "ready", "partial":
 			details = append(details, fmt.Sprintf(text["overview_rule_count"], status.RulesActive, status.RulesTotal))
@@ -328,6 +330,22 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	}
 	details = append(details, fmt.Sprintf(text["overview_own_count"], count))
 	return mode, strings.Join(details, " · ")
+}
+
+// providerRemainingDetail describes the applied split default, following the
+// main connection when the profile calls for it or no profile applies.
+func providerRemainingDetail(choice string, main connectionSelection, profileDirect bool, text map[string]string) string {
+	key := "routing_rest_main"
+	switch {
+	case choice == model.TargetDirect, choice == model.DefaultProfile && profileDirect,
+		main.ReserveDirect, main.Class == stats.TargetDirect:
+		key = "routing_rest_direct"
+	case main.Class == stats.TargetVPN:
+		key = "routing_rest_vpn"
+	case main.Class == stats.TargetBlock:
+		key = "routing_rest_blocked"
+	}
+	return fmt.Sprintf(text["overview_route_remaining"], text[key])
 }
 
 func overviewTraffic(series []stats.Point, now time.Time, lang string) trafficView {

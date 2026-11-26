@@ -339,7 +339,7 @@ New configurations are written with `schema_version: 2`.
   everything else starts from defaults. When a subscription is kept and the
   `lan.interface` has a private IPv4 address, the reset also adds the `Home`
   network for that subnet: split mode, target `subscription:<id>:auto`,
-  `default: profile`, with `provider_rules` on for the kept subscription
+  `default: direct`, with `provider_rules` on for the kept subscription
   (`Config.RouteHomeThroughSubscription`, shared with the first-run setup).
   Without such an address no network is created. Startup does not change the file. The
   first save copies it byte for byte to `config.v1.yaml` (unless it holds only

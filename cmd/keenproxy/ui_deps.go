@@ -248,6 +248,11 @@ func (d uiDeps) OverviewStatus() ui.OverviewStatus {
 	}
 	rules, settings, state := d.daemon.ProviderRules()
 	status.RulesState = string(state)
+	if settings != nil {
+		status.RulesSource = settings.Source
+		status.RulesHasProfile = rules.RouteOrder != ""
+		status.RulesGlobalProxy = rules.GlobalProxy
+	}
 	if settings != nil && (state == daemon.ProviderRulesReady || state == daemon.ProviderRulesPartial) {
 		status.RulesTotal = len(rules.Rules)
 		disabled := settings.DisabledRuleKeys()

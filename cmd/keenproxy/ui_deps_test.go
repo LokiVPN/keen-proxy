@@ -757,7 +757,8 @@ func TestRoutingRulesProjection(t *testing.T) {
 		DirectIP:    []string{"geoip:private", "192.0.2.0/24"},
 		ProxySites:  []string{"geosite:youtube"},
 	}, nil, nil, nil)
-	deps := uiDeps{daemon: routingSnapshotDaemon{rules: rules}}
+	cfg := &model.Config{Networks: []model.Network{{Target: "fixture"}}}
+	deps := uiDeps{daemon: routingSnapshotDaemon{rules: rules, cfg: cfg}}
 	got := deps.ProviderRules()
 	want := ui.RoutingRules{
 		Source: "fixture", State: "partial", HasProfile: true, GlobalProxy: true,
@@ -769,6 +770,11 @@ func TestRoutingRulesProjection(t *testing.T) {
 	}
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("routing projection = %+v, want %+v", got, want)
+	}
+	status := deps.OverviewStatus()
+	if status.RulesSource != want.Source || !status.RulesHasProfile || !status.RulesGlobalProxy {
+		t.Errorf("overview profile default = (%q, %t, %t), want fixture with GlobalProxy",
+			status.RulesSource, status.RulesHasProfile, status.RulesGlobalProxy)
 	}
 }
 
