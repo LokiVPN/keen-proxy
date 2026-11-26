@@ -6,6 +6,7 @@ package stats
 import (
 	"context"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -71,7 +72,10 @@ type conn struct {
 	out      *outbound
 	host     *hostStat
 	hostName string
+	tunnel   *byteCounters
 }
+
+type byteCounters struct{ down, up atomic.Int64 }
 
 // hostStat permits byte/request updates without holding the tracker lock.
 type hostStat struct {
@@ -101,6 +105,10 @@ type Tracker struct {
 	outs              map[string]*outbound
 	active            map[*conn]struct{}
 	subscriptionNodes map[string]struct{} // nil before the first applied catalog
+	tunnel            byteCounters        // independent of retireable outbound counters
+	lastTunnelDown    int64
+	lastTunnelUp      int64
+	tunnelSeries      []Point
 	sys               systemSampler
 }
 
@@ -123,6 +131,19 @@ func (t *Tracker) RetainSubscriptionNodes(tags []string) {
 		if outbound.active == 0 && t.retiredSubscriptionNodeLocked(outbound) {
 			delete(t.outs, tag)
 		}
+	}
+}
+
+// ForgetConnections detaches deleted profiles' history. Open flows keep
+// their original counters until they close, independently of any reused tag.
+func (t *Tracker) ForgetConnections(tags []string) {
+	if len(tags) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, tag := range tags {
+		delete(t.outs, tag)
 	}
 }
 
@@ -159,14 +180,14 @@ func HostOf(m adapter.InboundContext) string {
 	return m.Destination.Addr.Unmap().String()
 }
 
-// Resolve unwraps fallback selectors to the outbound currently selected for traffic.
+// Resolve unwraps fallback selectors to the outbound currently selected for TCP traffic.
 func Resolve(out adapter.Outbound) adapter.Outbound {
 	for i := 0; i < 4 && out != nil; i++ {
 		g, ok := out.(adapter.OutboundGroup)
 		if !ok {
 			break
 		}
-		next := g.Selected("tcp")
+		next := g.Selected(N.NetworkTCP)
 		if next == nil {
 			break
 		}
@@ -175,16 +196,32 @@ func Resolve(out adapter.Outbound) adapter.Outbound {
 	return out
 }
 
-// open resolves the active outbound, bounds retained hosts, and registers a new active connection.
+// open uses the router's recorded outbound, bounds retained hosts, and registers a new active connection.
 // It owns t.mu while updating shared host and connection maps.
-func (t *Tracker) open(m adapter.InboundContext, out adapter.Outbound) *conn {
-	tag := "direct"
-	if out = Resolve(out); out != nil {
+func (t *Tracker) open(ctx context.Context, m adapter.InboundContext, out adapter.Outbound) *conn {
+	target := out
+	if n := len(m.OutboundChain); n != 0 {
+		target = m.OutboundChain[0]
+		out = m.OutboundChain[n-1]
+	}
+	tag := model.TargetDirect
+	if out != nil {
 		tag = out.Tag()
+	}
+	// Aggregate by the routed target. A mixed raw group can send some of these
+	// bytes directly, including when it chooses a member during the dial.
+	var tunnel *byteCounters
+	if class := TargetClassOf(ctx, target); class == TargetVPN || class == TargetMixed {
+		tunnel = &t.tunnel
 	}
 	name := HostOf(m)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// A callback that was still unwinding from a retired engine cannot
+	// recreate a deleted profile's counters.
+	if ctx.Err() != nil {
+		return nil
+	}
 	o := t.outboundLocked(tag)
 	h := o.hosts[name]
 	if h == nil {
@@ -200,7 +237,7 @@ func (t *Tracker) open(m adapter.InboundContext, out adapter.Outbound) *conn {
 	}
 	h.requests.Add(1)
 	h.lastSeen.Store(time.Now().UnixMilli())
-	c := &conn{out: o, host: h, hostName: name}
+	c := &conn{out: o, host: h, hostName: name, tunnel: tunnel}
 	t.active[c] = struct{}{}
 	o.active++
 	return c
@@ -221,7 +258,7 @@ func (t *Tracker) close(c *conn) {
 	t.mu.Lock()
 	delete(t.active, c)
 	c.out.active--
-	if c.out.active == 0 && t.retiredSubscriptionNodeLocked(c.out) {
+	if c.out.active == 0 && t.outs[c.out.tag] == c.out && t.retiredSubscriptionNodeLocked(c.out) {
 		delete(t.outs, c.out.tag)
 	}
 	t.mu.Unlock()
@@ -229,31 +266,46 @@ func (t *Tracker) close(c *conn) {
 
 // counters maps inbound reads to device upload and inbound writes to download.
 func (c *conn) counters() (read, write []N.CountFunc) {
-	read = []N.CountFunc{func(n int64) { c.out.up.Add(n); c.host.up.Add(n) }}
+	read = []N.CountFunc{func(n int64) {
+		c.out.up.Add(n)
+		c.host.up.Add(n)
+		if c.tunnel != nil {
+			c.tunnel.up.Add(n)
+		}
+	}}
 	write = []N.CountFunc{func(n int64) {
 		c.out.down.Add(n)
 		c.host.down.Add(n)
 		c.host.lastSeen.Store(time.Now().UnixMilli())
+		if c.tunnel != nil {
+			c.tunnel.down.Add(n)
+		}
 	}}
 	return read, write
 }
 
 // RoutedConnection wraps a routed TCP stream with upload/download and lifetime accounting.
-func (t *Tracker) RoutedConnection(_ context.Context, nc net.Conn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) net.Conn {
+func (t *Tracker) RoutedConnection(ctx context.Context, nc net.Conn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) net.Conn {
 	if t.OnRoute != nil {
 		t.OnRoute(m, rule, out)
 	}
-	c := t.open(m, out)
+	c := t.open(ctx, m, out)
+	if c == nil {
+		return nc
+	}
 	r, w := c.counters()
 	return &trackedConn{CounterConn: bufio.NewCounterConn(nc, r, w), done: func() { t.close(c) }}
 }
 
 // RoutedPacketConnection wraps a routed packet stream with traffic and lifetime accounting.
-func (t *Tracker) RoutedPacketConnection(_ context.Context, pc N.PacketConn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) N.PacketConn {
+func (t *Tracker) RoutedPacketConnection(ctx context.Context, pc N.PacketConn, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) N.PacketConn {
 	if t.OnRoute != nil {
 		t.OnRoute(m, rule, out)
 	}
-	c := t.open(m, out)
+	c := t.open(ctx, m, out)
+	if c == nil {
+		return pc
+	}
 	r, w := c.counters()
 	return &trackedPacketConn{CounterPacketConn: bufio.NewCounterPacketConn(pc, r, w), done: func() { t.close(c) }}
 }
@@ -324,20 +376,56 @@ func (t *Tracker) sample(now time.Time) {
 		u[c.hostName] = struct{}{}
 	}
 	secs := SampleInterval.Seconds()
+	tunnelDown, tunnelUp := t.tunnel.down.Load(), t.tunnel.up.Load()
+	tunnel := Point{
+		T:    now.UnixMilli(),
+		Down: float64(tunnelDown-t.lastTunnelDown) * 8 / secs,
+		Up:   float64(tunnelUp-t.lastTunnelUp) * 8 / secs,
+	}
+	t.lastTunnelDown, t.lastTunnelUp = tunnelDown, tunnelUp
 	for _, o := range t.outs {
 		down, up := o.down.Load(), o.up.Load()
 		p := Point{
-			T:      now.UnixMilli(),
+			T:      tunnel.T,
 			Unique: len(unique[o]),
 			Down:   float64(down-o.lastDown) * 8 / secs,
 			Up:     float64(up-o.lastUp) * 8 / secs,
 		}
 		o.lastDown, o.lastUp = down, up
-		o.series = append(o.series, p)
-		if len(o.series) > seriesLen {
-			o.series = o.series[len(o.series)-seriesLen:]
-		}
+		o.series = appendSample(o.series, p)
 	}
+	t.tunnelSeries = appendSample(t.tunnelSeries, tunnel)
+}
+
+func appendSample(series []Point, p Point) []Point {
+	series = append(series, p)
+	return series[max(0, len(series)-seriesLen):]
+}
+
+// TunnelSeries snapshots aggregate VPN rates without copying per-outbound
+// history or ranking hosts. Samples survive subscription catalog rotation.
+func (t *Tracker) TunnelSeries() []Point {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.tunnelSeries)
+}
+
+// ConnectionTraffic returns one profile's active flows and a copy of its
+// history without ranking hosts or copying other outbounds' series.
+func (t *Tracker) ConnectionTraffic(tag string) (active int, series []Point) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if out := t.outs[tag]; out != nil {
+		return out.active, slices.Clone(out.series)
+	}
+	return 0, nil
+}
+
+// SystemUsage snapshots just the last resource measurement.
+func (t *Tracker) SystemUsage() System {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.sys.last
 }
 
 // Snapshot returns current panel statistics, optionally including history.

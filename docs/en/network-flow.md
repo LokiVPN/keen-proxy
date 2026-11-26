@@ -10,13 +10,13 @@ KeenProxy runs on the router. Devices keep their usual LAN gateway and can use o
 
 | Traffic entering the LAN interface | What the router does |
 | --- | --- |
-| UDP or TCP to port 53 | Redirects it to the KeenProxy DNS frontend, even when the device addresses the router itself or a public DNS server. This rule applies on the configured interface independently of device routing policy, except for configured [DNS source exclusions](routing.md#dns). |
+| UDP or TCP to port 53 from a participating source | Redirects it to the KeenProxy DNS frontend, even when the device addresses the router itself or a public DNS server. Devices outside every network and device policy, devices that are **Not included**, every device while KeenProxy is paused, and configured [DNS source exclusions](routing.md#dns) keep their usual DNS path. |
 | TCP from a participating source to a destination outside the bypass ranges | Uses REDIRECT to hand the connection to sing-box. The engine can recover the original destination and open a separate outbound connection. |
 | Other UDP from a participating source | In TPROXY mode, eligible packets are marked and policy routing delivers them locally without rewriting the destination. In REDIRECT mode, ordinary UDP is outside application interception. |
 | Forwarded UDP to port 443 from a participating source | Rejected in either mode. Browsers commonly retry over TCP, but an application that requires QUIC may fail. |
 | Traffic outside the configured scope | Follows the router's usual path. Examples include bypassed local ranges for application traffic and IPv6, which this IPv4 interception does not cover. Traffic switched directly between LAN devices may never reach these firewall rules. |
 
-A network policy matches the source subnet. A device override is configured by MAC address and matched using its current IPv4 address learned through the router's neighbor table, or a configured static address. **Not included** excludes the device from application interception. It does not exempt it from the interface-wide DNS rule. Locally originated router traffic does not arrive through the LAN interception rules.
+A network policy matches the source subnet. A device override is configured by MAC address and matched using its current IPv4 address learned through the router's neighbor table, or a configured static address. **Not included** excludes the device from both application and DNS interception, so its DNS follows the router's usual path. Locally originated router traffic does not arrive through the LAN interception rules.
 
 On startup, KeenProxy brings up the engine and DNS listeners before installing interception. On a normal shutdown it removes interception first. While running, it checks whether the router has removed its firewall rules and attempts to restore them. An intentional shutdown returns traffic to the router's usual forwarding rules, so it is distinct from a tunnel failing while KeenProxy is still running.
 
@@ -35,9 +35,9 @@ The optional callback is enabled only for a root Linux process using the managed
 
 Checks and repairs run sequentially while interception is active. Intentionally stopped interception is not reinstalled, and cancellation during shutdown is not reported as a failed recovery. Bursts of callbacks are coalesced, but a single firmware action may rebuild several tables at different times and therefore produce more than one repair. After applying its rules, KeenProxy checks the entry jumps again and increments the restoration counter only when verification passes. A present jump does not prove every rule, policy route, or application connection is healthy.
 
-In **Logs → Audit**, each repair attempt shows its trigger, affected rule, outcome and check-and-recovery time. Expand the entry for raw command errors. Older records without source metadata show **Not recorded**. Successful recovery is not duplicated in the system journal; hook errors and failed recovery remain there. The recorded duration measures the check and repair, not a network outage. Callback queues and rule application still take time, so this mechanism does not promise zero packet loss.
+The repair count appears in **Diagnostics → State → Firewall watchdog**. The local audit journal records each repair attempt with the affected rule, outcome, raw command errors, and trigger when available. The recorded duration measures the check and repair. Packet loss can still occur while callbacks run and rules are applied. Hook errors and failed recovery also appear in the system journal. [Inspect local journals](troubleshooting.md#inspect-local-journals)
 
-Try the synthetic hook, timer and failure examples in the [browser demo](browser-demo.md). See [Troubleshooting](troubleshooting.md#why-does-the-watchdog-restore-interception-rules) for diagnostic evidence and export limits.
+See [Troubleshooting](troubleshooting.md#why-does-the-watchdog-restore-interception-rules) for diagnostic evidence and export limits.
 
 ## DNS and the application connection are separate
 
@@ -55,7 +55,7 @@ The next application connection carries its own destination IP and port. It may 
 [![After global checks, full tunnel and split routing select a route, which can point to an active member of a connection chain](network-diagrams/routing.svg)](network-diagrams/routing.svg)
 
 1. The engine inspects the beginning of an intercepted flow for a usable name. It bypasses private destinations and then applies global block rules to the remaining traffic. These checks precede device and network routing.
-2. A device override takes precedence over its network policy. **Full tunnel** selects the configured connection after the global checks. **Split** evaluates explicit domain and IP groups first, then DNS-derived IP matches for unnamed flows, then country and category groups. Unmatched split traffic goes Direct.
+2. A device override takes precedence over its network policy. **Full tunnel** selects the configured connection after the global checks. **Split** evaluates explicit domain and IP groups first, then DNS-derived IP matches for unnamed flows, then [provider rules](routing.md#provider-rules) when they are on, then country and category groups. Unmatched split traffic follows the [default route](routing.md#default-route): Direct unless the network sets another.
 3. The selected route can open a direct connection or use a proxy or tunnel. A direct connection opened by the engine and a packet that bypassed interception can both exit without a VPN, but only the former passed through the engine's routing decision. For a tunnel or proxy route, the router connects to the configured remote endpoint, which carries or relays traffic toward the original destination.
 
 For example, suppose **Store → Direct** matches an explicit domain, and a broader country rule sends traffic outside a selected country through a tunnel. A connection whose TLS SNI is `store.example` matches the explicit rule first. A second connection to the same IP with no readable name can still match Store if KeenProxy has a usable DNS mapping. Without that mapping or an explicit IP rule, the country rule may win. When ECH exposes an outer SNI, that visible name can prevent DNS fallback even though the real inner name is hidden.
@@ -70,8 +70,8 @@ Switching can close existing connections, so clients may need to reconnect. The 
 
 | What you want to establish | What to inspect |
 | --- | --- |
-| Which DNS path the router used | Compare the configured path in **Diagnostics** with direct-fallback events in **Logs → Audit**. Observe traffic on the router's external interface to verify the actual resolver path. Blocking TCP/UDP port 853, if enabled, does not catch application DoH over HTTPS on port 443. |
-| Which rule and exit matched | Reproduce the request from the affected device and inspect **Logs → Routing** for the client, destination, rule, and outbound. A route decision can be logged even if the remote request fails. |
+| Which DNS path the router used | Compare `dns.route` in YAML with direct fallback events for `target=dns` in the [local audit journal](troubleshooting.md#inspect-local-journals). Observe traffic on the router's external interface to verify the actual resolver path. Application DoH over HTTPS on port 443 can still pass when TCP/UDP port 853 is blocked. |
+| Which rule and exit matched | Reproduce the request from the affected device and check the client, destination, rule, and outbound in the [local routes journal](troubleshooting.md#inspect-local-journals). Check the response from the remote service separately. |
 | Whether the connection works end to end | Run an HTTPS or transfer check and reproduce the failing application request. For DNS privacy, test from the actual device and observe the router's external traffic under both normal operation and tunnel failure. |
 
 See [Routing and DNS](routing.md) for policy configuration and [Troubleshooting](troubleshooting.md) for additional checks.

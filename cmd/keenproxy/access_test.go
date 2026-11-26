@@ -17,171 +17,47 @@ import (
 	"time"
 )
 
-func TestPrintTokenCustomPathNoMutation(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "custom.token")
-	const raw = "  panel-token \n"
-	if err := os.WriteFile(path, []byte(raw), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var out bytes.Buffer
-	if err := printToken(&out, path); err != nil {
-		t.Fatal(err)
-	}
-	if out.String() != "panel-token\n" {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != raw || info.Mode() != before.Mode() {
-		t.Fatalf("token file changed: %q mode %v", after, info.Mode())
-	}
-	if _, err := os.Stat(filepath.Join(dir, "token")); !os.IsNotExist(err) {
-		t.Fatalf("default token name appeared: %v", err)
-	}
-}
-
-func TestPrintTokenMissingDoesNotCreate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.token")
-	var out bytes.Buffer
-	err := printToken(&out, path)
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Fatalf("missing token file was created: %v", statErr)
-	}
-}
-
-func TestPrintTokenEmptyDoesNotMutate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "empty.token")
-	const raw = " \n\t"
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if err := printToken(&out, path); err == nil {
-		t.Fatal("expected an error")
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != raw {
-		t.Fatalf("empty token file changed: %q", got)
-	}
-}
-
-func TestPrintTokenUnreadableDoesNotMutate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "locked.token")
-	const raw = "secret\n"
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	if _, err := os.ReadFile(path); err == nil {
-		t.Skip("process can read mode 000 files")
-	}
-
-	var out bytes.Buffer
-	if err := printToken(&out, path); err == nil {
-		t.Fatal("expected an error")
-	}
-	if out.Len() != 0 {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != raw {
-		t.Fatalf("unreadable token file changed: %q", got)
-	}
-}
-
-func TestDiscloseKeyUsesConfiguredTokenFile(t *testing.T) {
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "not-the-default")
-	if err := os.WriteFile(tokenPath, []byte("configured-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := filepath.Join(dir, "config.yaml")
-	writeAccessConfig(t, cfg, "192.0.2.9:8086", tokenPath, "br0")
-
-	var out bytes.Buffer
-	if err := discloseAccess(&out, cfg, true); err != nil {
-		t.Fatal(err)
-	}
-	if out.String() != "configured-token\n" {
-		t.Fatalf("stdout = %q", out.String())
-	}
-}
-
+// -url reads the configured LAN interface on this machine. It needs an
+// interface with exactly one IPv4 address, a private one, so the expected
+// URL is unambiguous.
 func TestDiscloseURLUsesConfiguredLocalInterface(t *testing.T) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, iface := range interfaces {
-		if iface.Flags&net.FlagLoopback == 0 {
-			continue
-		}
 		addrs, err := iface.Addrs()
 		if err != nil {
 			t.Fatal(err)
 		}
-		var v4 []string
+		var v4 []netip.Addr
 		for _, addr := range addrs {
-			ip, _, err := net.ParseCIDR(addr.String())
-			if err == nil && ip.To4() != nil {
-				v4 = append(v4, ip.String())
+			if prefix, err := netip.ParsePrefix(addr.String()); err == nil && prefix.Addr().Is4() {
+				v4 = append(v4, prefix.Addr())
 			}
 		}
-		if len(v4) != 1 || v4[0] != "127.0.0.1" {
+		if len(v4) != 1 || !v4[0].IsPrivate() {
 			continue
 		}
 		config := filepath.Join(t.TempDir(), "config.yaml")
-		writeAccessConfig(t, config, "0.0.0.0:9090", "", iface.Name)
+		writeAccessConfig(t, config, "0.0.0.0:9090", iface.Name)
 		var out bytes.Buffer
-		if err := discloseAccess(&out, config, false); err != nil {
+		if err := discloseAccess(&out, config); err != nil {
 			t.Fatal(err)
 		}
-		if out.String() != "http://127.0.0.1:9090\n" {
-			t.Fatalf("wrong local interface URL: %q", out.String())
+		if want := "http://" + v4[0].String() + ":9090\n"; out.String() != want {
+			t.Fatalf("interface %s: URL %q, want %q", iface.Name, out.String(), want)
 		}
 		return
 	}
-	t.Skip("requires a loopback interface with only 127.0.0.1 as its IPv4 address")
+	t.Skip("requires an interface with exactly one IPv4 address, a private one")
 }
 
 func TestPanelURL(t *testing.T) {
-	v4 := netip.MustParseAddr("192.0.2.8")
 	v6 := netip.MustParseAddr("2001:db8::5")
+	public := netip.MustParseAddr("192.0.2.8")
 	link4 := netip.MustParseAddr("169.254.1.1")
-	zoned := netip.MustParseAddr("fe80::1").WithZone("br0")
+	lan := netip.MustParseAddr("192.168.1.8")
 	cases := []struct {
 		name      string
 		listen    string
@@ -199,37 +75,29 @@ func TestPanelURL(t *testing.T) {
 		{name: "explicit bad zone", listen: "[fe80::1%bad\nzone]:8086", wantErr: "URL"},
 		{name: "explicit port 0", listen: "192.0.2.1:0", wantErr: "port is 0"},
 		{
-			name: "IPv4 wildcard prefers configured IPv4", listen: "0.0.0.0:9090", iface: "lan0",
-			addrs: []netip.Addr{v6, link4, v4}, lookup: true, want: "http://192.0.2.8:9090\n",
+			name: "IPv4 wildcard uses the first private IPv4", listen: "0.0.0.0:9090", iface: "lan0",
+			addrs: []netip.Addr{v6, link4, public, lan, netip.MustParseAddr("10.0.0.1")}, lookup: true, want: "http://192.168.1.8:9090\n",
 		},
 		{
-			name: "IPv4 wildcard does not choose IPv6", listen: "0.0.0.0:8086", iface: "br0",
-			addrs: []netip.Addr{v6}, lookup: true, wantErr: "no IPv4",
+			name: "IPv6 wildcard uses the LAN IPv4 that sign-in accepts", listen: "[::]:8086", iface: "br0",
+			addrs: []netip.Addr{v6, lan}, lookup: true, want: "http://192.168.1.8:8086\n",
 		},
 		{
-			name: "IPv6 wildcard brackets", listen: "[::]:8086", iface: "br0",
-			addrs: []netip.Addr{v4, v6}, lookup: true, want: "http://[2001:db8::5]:8086\n",
+			name: "mapped address", listen: "0.0.0.0:8086", iface: "br0",
+			addrs: []netip.Addr{netip.MustParseAddr("::ffff:192.168.1.8")}, lookup: true, want: "http://192.168.1.8:8086\n",
 		},
 		{
-			name: "IPv6 wildcard does not choose IPv4", listen: "[::]:8086", iface: "br0",
-			addrs: []netip.Addr{v4}, lookup: true, wantErr: "no IPv6",
+			name: "no private IPv4", listen: "0.0.0.0:8086", iface: "br0",
+			addrs:  []netip.Addr{v6, public, link4, netip.MustParseAddr("0.0.0.0"), netip.MustParseAddr("224.0.0.1")},
+			lookup: true, wantErr: "no private IPv4",
 		},
 		{
-			name: "IPv6 wildcard escapes zone", listen: "[::]:8086", iface: "br0",
-			addrs: []netip.Addr{zoned}, lookup: true, want: "http://[fe80::1%25br0]:8086\n",
-		},
-		{
-			name: "IPv6 wildcard adds interface zone", listen: "[::]:8086", iface: "br0",
-			addrs: []netip.Addr{netip.MustParseAddr("fe80::1")}, lookup: true, want: "http://[fe80::1%25br0]:8086\n",
+			name: "IPv6 wildcard without IPv4", listen: "[::]:8086", iface: "br0",
+			addrs: []netip.Addr{v6}, lookup: true, wantErr: "no private IPv4",
 		},
 		{
 			name: "unavailable interface", listen: "0.0.0.0:8086", iface: "missing0",
 			lookupErr: errors.New("no such network interface"), lookup: true, wantErr: "missing0",
-		},
-		{
-			name: "no usable address", listen: "0.0.0.0:8086", iface: "br0",
-			addrs:  []netip.Addr{netip.MustParseAddr("0.0.0.0"), netip.MustParseAddr("224.0.0.1")},
-			lookup: true, wantErr: "no IPv4",
 		},
 		{name: "wildcard port 0", listen: "0.0.0.0:0", iface: "br0", wantErr: "port is 0"},
 	}
@@ -277,56 +145,39 @@ func TestPanelURL(t *testing.T) {
 	}
 }
 
-func TestAccessConflict(t *testing.T) {
-	cases := []struct {
-		name                string
-		key, url, dry, demo bool
-		want                string
-	}{
-		{name: "key", key: true},
-		{name: "url", url: true},
-		{name: "daemon flags alone", dry: true, demo: true},
-		{name: "key and url", key: true, url: true, want: "-key and -url"},
-		{name: "key and dry-run", key: true, dry: true, want: "-dry-run"},
-		{name: "url and ui-demo", url: true, demo: true, want: "-ui-demo"},
-		{name: "both read-only and daemon", key: true, url: true, dry: true, want: "-key and -url"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := rejectAccessConflict(tc.key, tc.url, tc.dry, tc.demo)
-			if tc.want == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				return
+// -url and the derived KeeneticOS origin name the same LAN address, so the
+// printed URL is one that sign-in accepts, or neither has an address.
+func TestURLNamesTheSignInAddress(t *testing.T) {
+	yes := func() bool { return true }
+	for _, addrs := range [][]netip.Addr{
+		{netip.MustParseAddr("192.0.2.8"), netip.MustParseAddr("192.168.1.1")},
+		{netip.MustParseAddr("fe80::1"), netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("10.1.0.1"), netip.MustParseAddr("172.16.0.1")},
+		{netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("192.0.2.8")},
+	} {
+		lookup := func(string) ([]netip.Addr, error) { return addrs, nil }
+		origin, originErr := keeneticOrigin("", "br0", yes, lookup)
+		for _, listen := range []string{"0.0.0.0:8086", "[::]:8086"} {
+			raw, urlErr := panelURL(listen, "br0", lookup)
+			if (originErr == nil) != (urlErr == nil) {
+				t.Fatalf("%v %s: origin error %v, URL error %v", addrs, listen, originErr, urlErr)
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want substring %q", err, tc.want)
+			if originErr != nil {
+				continue
 			}
-		})
+			want := strings.TrimPrefix(origin, "http://") + ":8086"
+			if parsed, err := url.Parse(raw); err != nil || parsed.Host != want {
+				t.Errorf("%v %s: URL %q, sign-in accepts %q", addrs, listen, raw, want)
+			}
+		}
 	}
 }
 
 func TestCLIAccessFlags(t *testing.T) {
 	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "token")
-	const raw = "cli-token\n"
-	if err := os.WriteFile(tokenPath, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := filepath.Join(dir, "config.yaml")
-	writeAccessConfig(t, cfg, "192.0.2.9:8086", tokenPath, "br0")
+	writeAccessConfig(t, cfg, "192.0.2.9:8086", "br0")
 	ruleSets := filepath.Join(dir, "rule-sets")
 
-	t.Run("key", func(t *testing.T) {
-		stdout, stderr, code := runKeenproxy(t, "-key", "-config", cfg, "-rule-sets", ruleSets)
-		if code != 0 || stderr != "" || stdout != "cli-token\n" {
-			t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
-		}
-		assertUntouched(t, tokenPath, raw)
-		assertAbsent(t, filepath.Join(dir, "journal"))
-		assertAbsent(t, ruleSets)
-	})
 	t.Run("url", func(t *testing.T) {
 		stdout, stderr, code := runKeenproxy(t, "-url", "-config", cfg, "-rule-sets", ruleSets)
 		if code != 0 || stderr != "" || stdout != "http://192.0.2.9:8086\n" {
@@ -334,39 +185,25 @@ func TestCLIAccessFlags(t *testing.T) {
 		}
 		assertAbsent(t, filepath.Join(dir, "journal"))
 	})
-	t.Run("missing token", func(t *testing.T) {
-		missing := filepath.Join(dir, "absent.token")
-		missingCfg := filepath.Join(dir, "missing.yaml")
-		writeAccessConfig(t, missingCfg, "192.0.2.9:8086", missing, "br0")
-		stdout, stderr, code := runKeenproxy(t, "-key", "-config", missingCfg, "-rule-sets", ruleSets)
-		if code == 0 || stdout != "" || stderr == "" {
-			t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
-		}
-		assertAbsent(t, missing)
-		assertAbsent(t, filepath.Join(dir, "journal"))
-	})
 	t.Run("port 0", func(t *testing.T) {
 		portCfg := filepath.Join(dir, "port0.yaml")
-		writeAccessConfig(t, portCfg, "192.0.2.9:0", tokenPath, "br0")
+		writeAccessConfig(t, portCfg, "192.0.2.9:0", "br0")
 		stdout, stderr, code := runKeenproxy(t, "-url", "-config", portCfg)
 		if code == 0 || stdout != "" || !strings.Contains(stderr, "port is 0") {
 			t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
 		}
 	})
 	for _, args := range [][]string{
-		{"-key", "-url", "-config", cfg},
-		{"-key", "-dry-run", "-config", cfg},
-		{"-url", "-ui-demo", "-config", cfg},
+		{"-url", "-dry-run", "-config", cfg},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			stdout, stderr, code := runKeenproxy(t, args...)
 			if code == 0 || stdout != "" || stderr == "" {
 				t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
 			}
-			if strings.Contains(stdout, "cli-token") || strings.Contains(stdout, "http://") || strings.Contains(stdout, "sing-box") {
+			if strings.Contains(stdout, "http://") || strings.Contains(stdout, "sing-box") {
 				t.Fatalf("conflict disclosed output: %q", stdout)
 			}
-			assertUntouched(t, tokenPath, raw)
 			assertAbsent(t, filepath.Join(dir, "journal"))
 		})
 	}
@@ -385,9 +222,9 @@ func TestKeenproxyMain(t *testing.T) {
 	os.Exit(0)
 }
 
-func writeAccessConfig(t *testing.T, path, listen, tokenFile, iface string) {
+func writeAccessConfig(t *testing.T, path, listen, iface string) {
 	t.Helper()
-	body := fmt.Sprintf("api:\n  listen: %q\n  token_file: %q\nlan:\n  interface: %q\n", listen, tokenFile, iface)
+	body := fmt.Sprintf("api:\n  listen: %q\nlan:\n  interface: %q\n", listen, iface)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -425,17 +262,6 @@ func argsAfterDoubleDash(args []string) []string {
 		}
 	}
 	return nil
-}
-
-func assertUntouched(t *testing.T, path, raw string) {
-	t.Helper()
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != raw {
-		t.Fatalf("file %s changed: %q", path, got)
-	}
 }
 
 func assertAbsent(t *testing.T, path string) {

@@ -44,20 +44,20 @@ func TestTProxyDiagnosticAuthenticatedAndFresh(t *testing.T) {
 	}}
 	s.D = probe
 	h := s.Handler()
-	if w := do(t, h, "GET", tproxyPath, "", "", lan); w.Code != http.StatusUnauthorized || probe.calls != 0 {
+	if w := do(t, h, "GET", tproxyPath, "", "", lan); w.Code != http.StatusForbidden || probe.calls != 0 {
 		t.Fatalf("unauthenticated diagnostic status=%d, probe calls=%d", w.Code, probe.calls)
 	}
-	w := do(t, h, "GET", tproxyPath, "", "secret", lan)
+	w := do(t, h, "GET", tproxyPath, "", "secret", local)
 	if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" || strings.TrimSpace(w.Body.String()) != `{"state":"unavailable","reason":"module_not_loaded","startup_blocked":true}` {
 		t.Fatalf("unavailable diagnostic status=%d, headers=%v, body=%s", w.Code, w.Header(), w.Body)
 	}
 	probe.result.TProxyReadiness = netfilter.TProxyReadiness{State: netfilter.TProxyReady}
-	w = do(t, h, "GET", tproxyPath, "", "secret", lan)
+	w = do(t, h, "GET", tproxyPath, "", "secret", local)
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"state":"ready","startup_blocked":true}` || probe.calls != 2 {
 		t.Fatalf("retried diagnostic status=%d, calls=%d, body=%s", w.Code, probe.calls, w.Body)
 	}
 	probe.result.StartupBlocked = false
-	w = do(t, h, "GET", tproxyPath, "", "secret", lan)
+	w = do(t, h, "GET", tproxyPath, "", "secret", local)
 	if strings.TrimSpace(w.Body.String()) != `{"state":"ready"}` {
 		t.Fatalf("active diagnostic body=%s", w.Body)
 	}
@@ -65,7 +65,7 @@ func TestTProxyDiagnosticAuthenticatedAndFresh(t *testing.T) {
 
 func TestTProxyDiagnosticWithoutProbeIsInconclusive(t *testing.T) {
 	s, _ := newServer()
-	w := do(t, s.Handler(), "GET", tproxyPath, "", "secret", lan)
+	w := do(t, s.Handler(), "GET", tproxyPath, "", "secret", local)
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"state":"unknown","reason":"probe_failed"}` {
 		t.Fatalf("diagnostic status=%d, body=%s", w.Code, w.Body)
 	}
@@ -80,16 +80,16 @@ func TestTProxyRetryUsesAuthenticatedSavedActivation(t *testing.T) {
 	}}
 	s.D = recovery
 	h := s.Handler()
-	if w := do(t, h, "POST", path, "", "", lan); w.Code != http.StatusUnauthorized || recovery.retries != 0 {
+	if w := do(t, h, "POST", path, "", "", lan); w.Code != http.StatusForbidden || recovery.retries != 0 {
 		t.Fatalf("unauthenticated retry status=%d, attempts=%d", w.Code, recovery.retries)
 	}
 	recovery.retryErr = errors.New("activation failed")
-	w := do(t, h, "POST", path, "", "secret", lan)
+	w := do(t, h, "POST", path, "", "secret", local)
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), recovery.retryErr.Error()) || recovery.calls != 0 {
 		t.Fatalf("failed retry status=%d, probes=%d, body=%s", w.Code, recovery.calls, w.Body)
 	}
 	recovery.retryErr = nil
-	w = do(t, h, "POST", path, `{"intercept":{"mode":"redirect"}}`, "secret", lan)
+	w = do(t, h, "POST", path, `{"intercept":{"mode":"redirect"}}`, "secret", local)
 	if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" || strings.TrimSpace(w.Body.String()) != `{"state":"ready"}` {
 		t.Fatalf("successful retry status=%d, headers=%v, body=%s", w.Code, w.Header(), w.Body)
 	}
@@ -97,20 +97,20 @@ func TestTProxyRetryUsesAuthenticatedSavedActivation(t *testing.T) {
 		t.Fatalf("request bypassed the saved activation path: retries=%d, applied=%+v", recovery.retries, fake.applied)
 	}
 	recovery.retryErr = daemon.ErrStartupNotBlocked
-	if w := do(t, h, "POST", path, "", "secret", lan); w.Code != http.StatusConflict {
+	if w := do(t, h, "POST", path, "", "secret", local); w.Code != http.StatusConflict {
 		t.Fatalf("retry after activation status=%d, body=%s", w.Code, w.Body)
 	}
 }
 
-func TestTProxyRetryRejectsCrossOriginFromTrustedNetwork(t *testing.T) {
+func TestTProxyRetryRejectsCrossOrigin(t *testing.T) {
 	s, fake := newServer()
-	fake.cfg.API.NoTokenFrom = []string{"192.168.7.0/24"}
 	recovery := &tproxyDiagnosticStub{fakeDaemon: fake, result: daemon.TProxyDiagnostic{StartupBlocked: true}}
 	s.D = recovery
 	h := s.Handler()
-	for i, origin := range []string{"https://other.example", "http://keenproxy.example"} {
-		r := httptest.NewRequest("POST", "http://keenproxy.example"+tproxyPath+"/retry", nil)
-		r.RemoteAddr = lan
+	for i, origin := range []string{"https://other.example", "http://127.0.0.1:8086"} {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:8086"+tproxyPath+"/retry", nil)
+		r.RemoteAddr = local
+		r.Host = "127.0.0.1:8086"
 		r.Header.Set("Origin", origin)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

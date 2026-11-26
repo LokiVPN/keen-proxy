@@ -1,32 +1,12 @@
 package api
 
 import (
-	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"github.com/ordo-systems/keen-proxy/internal/compile"
-	"github.com/ordo-systems/keen-proxy/internal/engine"
-	"github.com/ordo-systems/keen-proxy/internal/model"
 	"regexp"
-)
 
-// validateEngineProfiles checks profile fields and constructs engine options without starting it.
-// Returned errors deliberately omit raw parser details that may contain credentials.
-func validateEngineProfiles(ctx context.Context, cfg *model.Config) error {
-	if err := validateProfileFields(cfg); err != nil {
-		return err
-	}
-	raw, err := compile.ConnectionValidationConfig(cfg)
-	if err == nil {
-		err = engine.Validate(ctx, raw)
-	}
-	// Parser/constructor errors may contain passwords, UUIDs or keys.
-	if err != nil {
-		return errors.New("core rejected connection parameters: check type, required fields, and keys")
-	}
-	return nil
-}
+	"github.com/ordo-systems/keen-proxy/internal/model"
+)
 
 var profileUUID = regexp.MustCompile(`(?i)^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
 
@@ -78,14 +58,12 @@ func validateOutboundFields(out map[string]any) error {
 	}
 	return nil
 }
-func validateProfileFields(cfg *model.Config) error {
-	for _, connection := range cfg.Connections {
-		if err := validateWGKeys(connection.WireGuard); err != nil {
-			return err
-		}
-		if err := validateOutboundFields(connection.Outbound); err != nil {
-			return err
-		}
+
+// ValidateProfileFields checks required fields the engine parser may accept
+// without sufficient parameters. A profile editor checks only its own input.
+func ValidateProfileFields(connection model.Connection) error {
+	if err := validateWGKeys(connection.WireGuard); err != nil {
+		return err
 	}
-	return nil
+	return validateOutboundFields(connection.Outbound)
 }

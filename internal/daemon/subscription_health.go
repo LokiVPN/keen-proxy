@@ -20,7 +20,10 @@ const (
 	subscriptionSwitchInitial = "initial"
 	subscriptionSwitchFailure = "failure"
 	subscriptionSwitchRemoved = "removed"
-	subscriptionProbeWorkers  = 4
+	// subscriptionSwitchFallback marks the reserve; the selection has no node.
+	subscriptionSwitchFallback  = "fallback"
+	subscriptionSwitchRecovered = "recovered"
+	subscriptionProbeWorkers    = 4
 )
 
 // restoreSubscriptionSelectorsLocked replays the last valid selections after
@@ -39,8 +42,19 @@ func (d *Daemon) restoreSubscriptionSelectorsLocked(out compile.Output, restarte
 		selection := state.snapshot.Selection
 		target, reason := model.ManagedTarget(selector.SourceID, selection.Node), selection.Reason
 		if !slices.Contains(selector.Candidates, target) {
-			if selection.Node != "" || reason == subscriptionSwitchRemoved {
+			if selection.Node == "" && reason == subscriptionSwitchFallback && selector.Fallback != "" {
+				target = selector.Fallback
+			} else if selection.Node != "" || reason == subscriptionSwitchRemoved || reason == subscriptionSwitchFallback {
+				// A persisted reserve whose source no longer names one is handled like a removed node.
+				// A removed node without a replacement stays blocked: only a
+				// reserve that is gone may fall back to an unchecked node.
+				wasReserve := selection.Node == "" && reason == subscriptionSwitchFallback
 				target, reason = d.firstHealthySubscriptionNodeLocked(selector.Candidates, now), subscriptionSwitchRemoved
+				if target == model.TargetBlock && selector.Fallback != "" {
+					target, reason = selector.Fallback, subscriptionSwitchFallback
+				} else if target == model.TargetBlock && wasReserve && len(selector.Candidates) > 0 {
+					target, reason = selector.Candidates[0], subscriptionSwitchInitial
+				}
 			} else if len(selector.Candidates) > 0 {
 				target, reason = selector.Candidates[0], subscriptionSwitchInitial
 			} else {
@@ -54,7 +68,8 @@ func (d *Daemon) restoreSubscriptionSelectorsLocked(out compile.Output, restarte
 		if node != selection.Node || reason != selection.Reason {
 			state.snapshot.Selection = subscriptionSelection{Node: node, At: now, Reason: reason}
 		}
-		state.unavailable = target == model.TargetBlock || d.health[target].down(now, d.subscriptionDownAfterLocked())
+		onNode := node != ""
+		state.unavailable = target == model.TargetBlock || (onNode && d.health[target].down(now, d.subscriptionDownAfterLocked())) || (!onNode && reason == subscriptionSwitchFallback)
 		d.subscriptions.states[selector.SourceID] = state
 	}
 	return d.updateSubscriptionBalancesLocked()
@@ -96,10 +111,16 @@ func (d *Daemon) reorderSubscriptionCandidatesLocked(id string, nodes []subscrip
 
 // A previous success may be too old when a large subscription is between sweeps.
 func (d *Daemon) firstHealthySubscriptionNodeLocked(candidates []string, now time.Time) string {
+	return d.firstSubscriptionNodeUpLocked(candidates, now, 0)
+}
+
+// firstSubscriptionNodeUpLocked also requires the success streak to last upAfter,
+// so a flapping node does not pull traffic off the reserve.
+func (d *Daemon) firstSubscriptionNodeUpLocked(candidates []string, now time.Time, upAfter time.Duration) string {
 	f := d.cfg.Failover
 	cutoff := now.Add(-(2*time.Duration(f.Interval)*time.Second + subscriptionProbeTimeout(f)))
 	for _, tag := range candidates {
-		if h := d.health[tag]; h != nil && h.known && h.ok && !h.checked.Before(cutoff) {
+		if h := d.health[tag]; h != nil && h.known && h.ok && !h.checked.Before(cutoff) && now.Sub(h.since) >= upAfter {
 			return tag
 		}
 	}
@@ -111,28 +132,42 @@ func (d *Daemon) subscriptionDownAfterLocked() time.Duration {
 }
 
 // switchSubscriptionsLocked keeps a working active node, including after the
-// former primary recovers. Only a verified replacement can take over a failed node.
+// former primary recovers. Only a verified replacement can take over a failed
+// node; with none, a configured reserve takes over until a node has been up
+// for failover.up_after.
 func (d *Daemon) switchSubscriptionsLocked(now time.Time) {
 	changed := false
 	for _, selector := range d.subscriptions.selectors {
 		id := selector.SourceID
 		state := d.subscriptions.states[id]
 		selection := state.snapshot.Selection
+		onReserve := selection.Node == "" && selection.Reason == subscriptionSwitchFallback && selector.Fallback != ""
 		active := model.ManagedTarget(id, selection.Node)
 		reason := subscriptionSwitchFailure
 		failed := d.health[active].down(now, d.subscriptionDownAfterLocked())
 		if selection.Node == "" {
 			reason, failed = subscriptionSwitchRemoved, true
 		}
+		if onReserve {
+			reason = subscriptionSwitchRecovered
+		}
 		target := model.TargetBlock
-		if failed {
+		switch {
+		case onReserve:
+			target = d.firstSubscriptionNodeUpLocked(selector.Candidates, now, time.Duration(d.cfg.Failover.UpAfter)*time.Second)
+		case failed:
 			target = d.firstHealthySubscriptionNodeLocked(selector.Candidates, now)
 		}
 		unavailable := failed
-		if failed && target != model.TargetBlock && d.eng.Select(selector.Tag, target) {
+		switch {
+		case target != model.TargetBlock && d.eng.Select(selector.Tag, target):
 			_, node, _ := model.ParseManagedTarget(target)
 			state.snapshot.Selection = subscriptionSelection{At: now, Node: node, Reason: reason}
 			changed, unavailable = true, false
+			d.auditSubscriptionSelection(id, state.snapshot.Selection)
+		case failed && !onReserve && selector.Fallback != "" && d.eng.Select(selector.Tag, selector.Fallback):
+			state.snapshot.Selection = subscriptionSelection{At: now, Reason: subscriptionSwitchFallback}
+			changed = true
 			d.auditSubscriptionSelection(id, state.snapshot.Selection)
 		}
 		if unavailable && !state.unavailable {
@@ -157,6 +192,10 @@ func (d *Daemon) auditSubscriptionSelectionsLocked(previous map[string]appliedSu
 }
 
 func (d *Daemon) auditSubscriptionSelection(id string, selection subscriptionSelection) {
+	if selection.Node == "" && selection.Reason == subscriptionSwitchFallback {
+		d.audit("watchdog", "Subscription reserve in use", id, "warn", "no node responded")
+		return
+	}
 	if selection.Node == "" {
 		d.audit("watchdog", "Subscription selection blocked", id, "warn", selection.Reason)
 		return

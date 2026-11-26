@@ -2,22 +2,20 @@
 
 # KeenProxy
 
-LokiVPN publishes KeenProxy source on `master` and checksummed binaries in GitHub Releases. The original project and hosted demo are maintained by Ordo Systems. [LokiVPN releases](https://github.com/LokiVPN/keen-proxy/releases) · [Ordo Systems upstream](https://github.com/ordo-systems/keen-proxy)
+LokiVPN publishes KeenProxy source on `master` and checksummed binaries in GitHub Releases. The original project is maintained by Ordo Systems. [LokiVPN releases](https://github.com/LokiVPN/keen-proxy/releases) · [Ordo Systems upstream](https://github.com/ordo-systems/keen-proxy)
 
-Selective traffic routing for Keenetic and Netcraze routers running Entware, with an embedded [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) engine and a Vue web interface. This experimental branch pins lx.35 on the sing-box 1.14.4 base.
+Selective traffic routing for Keenetic and Netcraze routers running Entware, with an embedded [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) engine and a web interface. This experimental branch pins lx.35 on the sing-box 1.14.4 base.
 
 KeenProxy lets you choose which devices, domains, IP ranges, and countries use a tunnel, connect directly, or are blocked. The web panel shows router load and lets you install, schedule, or roll back releases on managed Entware and native OpenWrt installations. Router compatibility and protocol support depend on the firmware, kernel modules, and build tags. The project is experimental.
 
 KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze and OpenWrt. Leave memory headroom for firmware and other services; this is not a guarantee that every workload fits. Experimental OpenWrt builds target x86-64, 32-bit x86 with SSE2, ARM32, ARM64, little-endian MIPS, and big-endian MIPS. [Router requirements](docs/en/getting-started.md#experimental-openwrt-support)
 
-[![KeenProxy web panel overview with tunnel traffic, router load, and connection status (synthetic demo data)](docs/assets/screenshots/readme-overview.png)](https://ordo-systems.github.io/keen-proxy/demo/)
-
-## Documentation and live demo
+## Documentation
 
 - Install and configure the LokiVPN build. [English guide](docs/en/getting-started.md) · [Russian guide](docs/ru/getting-started.md)
-- Configure subscriptions and routing. [English user guide](docs/en/user-guide.md) · [Russian user guide](docs/ru/user-guide.md)
+- Sign in, set up a subscription, and use the management pages. [English user guide](docs/en/user-guide.md) · [Russian user guide](docs/ru/user-guide.md)
 - Run the experimental KeeneticOS integration in local fixtures. [WebUI prototype](docs/en/development.md#keeneticos-webui-prototype)
-- Try the Ordo Systems demo with synthetic traffic, router load, and update and rollback flows. [Upstream demo](https://ordo-systems.github.io/keen-proxy/demo/)
+- Use the loopback control API for configuration, status, statistics, journals, and TPROXY recovery. [English endpoint list](docs/en/development.md#control-api) · [Russian endpoint list](docs/ru/development.md#control-api)
 
 ## What works today
 
@@ -26,12 +24,12 @@ KeenProxy requires **at least 256 MiB of total router RAM** on Keenetic/Netcraze
 - Domain detection from TLS SNI or HTTP Host, with a bounded IPv4 DNS-answer cache as a fallback when the connection has no readable hostname.
 - WireGuard, AmneziaWG 2/3 single-peer `.conf` profiles, supported sing-box connection links, raw sing-box outbounds/endpoints, and embedded TrustTunnel.
 - Connection failover with recovery hysteresis and explicit direct fallback where configured.
-- Xray subscriptions with refresh, HTTPS node checks, failover, and balancing by site, by session, or round robin.
-- A UDP/TCP DNS frontend, public resolver presets, DoH/DoT, selectable DNS routing, and DNS-only blocklists.
-- Community domain presets with preview and managed updates that preserve manual additions and exclusions.
-- YAML configuration, a shared draft/Apply workflow, import/export, and a previous-configuration backup.
-- Dark/light themes, responsive navigation, connection wizards, file import, and bulk group route changes.
-- Routing, audit, and system journals; connection statistics; and separate HTTP, verified HTTPS, and bounded transfer diagnostics. The panel can export a [diagnostic ZIP](docs/en/troubleshooting.md#download-the-diagnostic-zip).
+- Xray subscriptions with optional provider routing rules, per-subscription refresh, HTTPS node checks, failover, and balancing by site, by session, or round robin.
+- A UDP/TCP DNS frontend, public resolver presets, DoH/DoT, and selectable DNS routing.
+- KeeneticOS session sign-in with management and view-only roles. An SSH tunnel provides local recovery access and opens the pages on OpenWrt. [Panel access](docs/en/user-guide.md#access-the-panel)
+- Responsive server-rendered Overview, Routing, Devices, Connections, and Diagnostics pages in English and Russian, with light and dark themes.
+- First-run subscription setup, per-page Save, bulk device switches, connection import and replacement. Advanced settings and private backups use the YAML file.
+- Connection statistics and separate HTTP, verified HTTPS, and bounded transfer diagnostics. Download a [diagnostic ZIP](docs/en/troubleshooting.md#download-the-diagnostic-zip) from the panel. The loopback control API serves routing, audit, and system journals.
 - Release notifications, manual installation and rollback, and optional scheduled updates from the web panel. [Update guide](docs/en/getting-started.md#update-from-the-panel)
 
 ## How routing works
@@ -47,7 +45,6 @@ Readable hostnames remain the primary routing signal. DNS-derived IP rules are u
 Requirements:
 
 - Go **1.27.3**, declared by the `go` directive in `go.mod`; Makefile commands select this compiler through `GOTOOLCHAIN`.
-- Node.js **22.12+** (or another Vite-compatible version) and npm.
 - Docker with privileged-container support and at least 2 engine CPUs, Python 3.12+, and repository history for the mandatory build-time memory gates and the network-namespace integration suite.
 - For a router: Entware or native OpenWrt/procd, supported Linux kernel facilities, and compatible iptables tools.
 
@@ -67,23 +64,7 @@ go mod download
 The root `go.mod` preserves upstream import paths and pins sing-box-lx `v1.14.4-lx.35` plus its matching WireGuard/AWG, sing-tun, gVisor and uTLS forks through five versioned `replace` directives. Update these pins as a reviewed release snapshot, not with `@latest`.
 
 ```sh
-make ui-demo
-```
-
-Open `http://127.0.0.1:8086/`. Demo mode uses synthetic traffic and keeps configuration changes in memory; it does not configure host routing or a firewall. The initial token is printed to the terminal and stored at the path specified in `examples/demo.yaml`.
-
-For frontend development, keep the demo API running and use a second terminal:
-
-```sh
-cd web
-npm ci
-npm run dev
-```
-
-The development server proxies `/api` to `http://127.0.0.1:8086`. Set `KEENPROXY_URL` to use a different local backend.
-
-```sh
-make build               # Host binary with the embedded UI
+make build               # Host binary
 make build-router        # Linux x86-64, x86/SSE2, ARMv5, ARM64, and both MIPS byte orders
 make build-router-lite   # Smaller protocol set for constrained routers
 ```
@@ -96,7 +77,7 @@ CI exposes independent **Memory regression**, **AWG stress (320 MiB)**, **AWG st
 
 ## Configuration and router installation
 
-The bilingual documentation source is in [docs/en/](docs/en/index.md) and [docs/ru/](docs/ru/index.md), including an illustrated user guide. A separate browser demo is built from the same Vue interface with an in-memory API adapter; see [documentation build instructions](docs/en/development.md).
+The bilingual documentation source is in [docs/en/](docs/en/index.md) and [docs/ru/](docs/ru/index.md), including the user guide. See the [documentation build instructions](docs/en/development.md).
 
 Start with [examples/config.yaml](examples/config.yaml) and [examples/connections.yaml](examples/connections.yaml). Example keys, addresses, and credentials are placeholders and must be replaced. Keep real configuration files and support exports out of Git.
 
@@ -106,7 +87,6 @@ The managed installation paths are:
 | --- | --- | --- |
 | Binary | `/opt/bin/keenproxy` | `/usr/bin/keenproxy` |
 | Configuration | `/opt/etc/keenproxy/config.yaml` | `/etc/keenproxy/config.yaml` |
-| API token on a clean install | `/opt/etc/keenproxy/token` | `/etc/keenproxy/token` |
 | Rule sets and derived state | `/opt/var/lib/keenproxy/` | `/var/lib/keenproxy/` |
 | Service | `/opt/etc/init.d/S99keenproxy` | `/etc/init.d/keenproxy` (procd) |
 | Release record and updater settings | `/opt/share/keenproxy/` and `/opt/var/lib/keenproxy/updates/` | `/usr/share/keenproxy/` |
@@ -120,11 +100,11 @@ opkg update && opkg install curl ca-bundle ca-certificates
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
-The bootstrap reads `BUILD_INFO.txt` from the latest published LokiVPN release, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. The first start enables LAN DNS interception even with an empty routing policy. Stop any competing interceptor first.
+The bootstrap reads `BUILD_INFO.txt` from the latest published LokiVPN release, selects the matching full or lite LokiVPN asset for the router architecture, and verifies the release files against `SHA256SUMS`. On Entware it installs missing `iptables` tools and registers and starts `/opt/etc/init.d/S99keenproxy`. TrustTunnel runs inside the embedded engine; no separate client is downloaded or supervised. KeenProxy intercepts DNS only for devices that a network or device policy includes, so the starter configuration, which has none, intercepts nothing. Stop any competing interceptor before you include devices.
 
-After successful installation or command-line update, the bootstrap prints the panel URL when available. Run `keenproxy --url` to display it again and `keenproxy --key` to print the current login token from the configured token file. These commands do not start the service or generate a token; use `--config /path/to/config.yaml` for a non-default configuration. Keep token output private. See [panel access](docs/en/user-guide.md#access-the-panel).
+After successful installation or command-line update, the bootstrap prints the panel URL when available. Run `keenproxy --url` to display it again; it does not start the service. Use `--config /path/to/config.yaml` for a non-default configuration. See [panel access](docs/en/user-guide.md#access-the-panel).
 
-Run the same command again to update. Existing configuration and tokens are preserved. Select a specific published release with `--version` or choose the smaller build with `--lite`:
+Run the same command again to update. Existing configuration is preserved. Select a specific published release with `--version` or choose the smaller build with `--lite`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --version vX.Y.Z --lite
@@ -138,7 +118,7 @@ For **native OpenWrt without Entware**, prepare the system dependencies and run 
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | KEENPROXY_PLATFORM=openwrt /bin/sh
 ```
 
-Use `keenproxy --key -config /etc/keenproxy/config.yaml` and `keenproxy --url -config /etc/keenproxy/config.yaml` for native configuration; the standalone CLI's default configuration path remains the Entware path. Service commands are `/etc/init.d/keenproxy status`, `start`, `stop`, and `restart`. To uninstall, rerun the native command with `/bin/sh -s -- --uninstall`; settings, tokens, and updater preferences are retained. Existing managed Entware installations on OpenWrt are not automatically migrated.
+Use `keenproxy --url -config /etc/keenproxy/config.yaml` for native configuration; the standalone CLI's default configuration path remains the Entware path. Service commands are `/etc/init.d/keenproxy status`, `start`, `stop`, and `restart`. To uninstall, rerun the native command with `/bin/sh -s -- --uninstall`; settings and updater preferences are retained. Existing managed Entware installations on OpenWrt are not automatically migrated.
 
 To remove an installation managed by the bootstrap:
 
@@ -146,7 +126,7 @@ To remove an installation managed by the bootstrap:
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh -s -- --uninstall
 ```
 
-This stops KeenProxy and removes its binary and Entware init script. It keeps the configuration, API token, logs, rule sets, and any previously installed external clients. Reinstall with the regular install command to reuse the saved settings.
+This stops KeenProxy and removes its binary and Entware init script. It keeps the configuration, logs, rule sets, and any previously installed external clients. Reinstall with the regular install command to reuse the saved settings.
 
 For offline or manual setup, `tools/install.sh` copies a supplied executable. It preserves configuration and leaves service setup to the operator. After copying the binary and installer to the router, run:
 
@@ -157,7 +137,7 @@ For offline or manual setup, `tools/install.sh` copies a supplied executable. It
 
 Review the installer before using it. Existing external TrustTunnel executables are left untouched, but KeenProxy no longer uses them. `--without-trusttunnel` remains accepted at the installer boundary for existing updater binaries; new commands do not need it. The obsolete `--trusttunnel-only` mode has been removed.
 
-Enabling interception changes live LAN traffic. Back up the router configuration, retain SSH access and a tested recovery path, and avoid running competing DNS/interception tools simultaneously. Even with no selected clients, the DNS frontend intercepts LAN port 53 when enabled. Inspect a candidate configuration before starting:
+Enabling interception changes live LAN traffic. Back up the router configuration, retain SSH access and a tested recovery path, and avoid running competing DNS/interception tools simultaneously. The DNS frontend intercepts port 53 only for devices that take part in a network or device policy; devices that are off, and every device while KeenProxy is paused, keep their usual DNS path. Inspect a candidate configuration before starting:
 
 ```sh
 ./bin/keenproxy -dry-run -config /path/to/config.yaml
@@ -170,7 +150,6 @@ The dry-run output contains generated connection settings and may include secret
 ```sh
 CGO_ENABLED=0 make test
 CGO_ENABLED=0 make vet
-cd web && npm test && npm run build
 ```
 
 Run `make integration` separately for real DNS/firewall/tunnel tests in disposable Docker network namespaces. It uses a privileged container to create those namespaces; it does not target your router. Auxiliary Go tools under `tools/bench` and `tools/nlprobe` are separate modules.

@@ -12,11 +12,11 @@ For failures on the router, use **Diagnostics → Diagnostics archive → Downlo
 
 Never attach real private keys, passwords, tokens, connection URLs, complete production YAML, unreviewed support exports, or browsing histories. A hostname or process being reachable does not prove that a tunnel transfers application data successfully.
 
-For a router-specific report, explain how you retained access and restored the previous state. Do not ask maintainers to run unknown scripts against a live router. Use the local demo and disposable integration suite whenever possible.
+For a router-specific report, explain how you retained access and restored the previous state. Do not ask maintainers to run unknown scripts against a live router. Use the disposable integration suite whenever possible.
 
 ## Development setup
 
-See the root [README](README.md) for toolchain requirements and build commands. Go build tags are significant: an untagged test run does not exercise the normal protocol registry. Frontend dependencies are locked with npm; use `npm ci`.
+See the root [README](README.md) for toolchain requirements and build commands. Go build tags are significant: an untagged test run does not exercise the normal protocol registry.
 
 Download dependencies with `go mod download` before Go commands; no Git submodules are required. The root `go.mod` pins sing-box-lx `v1.14.4-lx.35` and the four corresponding dependency forks through versioned `replace` directives. To upgrade, select an exact release, verify its four dependency revisions, update all five pins together, and review `go.sum`. Makefile and CI select Go 1.27.3 from the root `go` directive, which also declares the language floor.
 
@@ -28,18 +28,17 @@ The main code boundaries are:
 | `internal/compile` | Deterministic sing-box/rule-set/firewall-plan generation |
 | `internal/daemon` | Runtime lifecycle, applying changes, recovery, and health |
 | `internal/netfilter` | Owned iptables chains and policy-routing lifecycle |
-| `internal/dnsfront`, `domaincache`, `filterlist` | DNS transport, bounded observations, and DNS-only filtering |
+| `internal/dnsfront`, `domaincache` | DNS transport and bounded observations |
 | `internal/engine`, `links`, `trusttunnel` | Embedded engine and protocol/client adaptation |
-| `internal/api`, `journal`, `stats` | Authenticated management, journals, and telemetry |
-| `web/src` | Typed API client, shared draft state, and Vue interface |
+| `internal/api`, `journal`, `stats` | Loopback-only control API, KeeneticOS sign-in for pages, journals, and telemetry |
 
 ## Make the smallest verifiable change
 
-- Follow Go formatting and the existing TypeScript/Vue style.
+- Follow Go formatting and the existing style of the surrounding code. The interface is Go with server-rendered pages (being rebuilt).
 - Write short English comments explaining contracts, ownership, units, and non-obvious ordering. Keep comments close to the code they describe.
 - Keep runtime diagnostics and generated comments in English. Put Russian text in `docs/ru/` or Russian localization resources; preserve essential Unicode test values using escapes. `make check-language` enforces this boundary and runs as part of `make test`.
-- Preserve configuration compatibility, the shared draft/Apply workflow, and rollback behavior.
-- Update the Go model, compiler, API, frontend types, examples, and tests together when changing the schema.
+- Preserve configuration compatibility, revision-checked Apply for page-scoped saves and immediate Overview controls, and rollback behavior.
+- Update the Go model, compiler, API, UI, examples, and tests together when changing the schema.
 - Add a failing behavioral test before fixing a bug when practical. Use controlled clocks and injected network boundaries instead of real services.
 - Keep compiler directives, generated-file markers, and third-party notices intact.
 - Preserve meaningful Unicode and localized fixtures. Translate UI messages through the locale dictionaries.
@@ -52,7 +51,6 @@ Run the relevant tests while developing, then verify the final change:
 CGO_ENABLED=0 make test
 CGO_ENABLED=0 make vet
 make check-secrets
-cd web && npm test && npm run build
 ```
 
 CI scans for leaked credentials with gitleaks. A pull request scans only the commits on that branch, including commits whose change was removed later. A run on `main` scans every commit reachable from `main`. Both include changes that exist only in a merge commit, and a range whose endpoints are not commits fails instead of passing. `make check-secrets` runs that main-style scan locally. The scans catch accidental leaks; they are not a security gate. A pull request runs the workflow, `tools/scan-secrets.sh`, and the gitleaks policy from its own checkout, so it can change what is scanned. Code-owner review of those files is the control against a deliberate bypass. A clean scan does not replace a manual review of configuration and Git history. Do not commit a detectable fixture: deleting it in a later commit does not remove it from the scan.

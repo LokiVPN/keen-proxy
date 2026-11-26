@@ -1,0 +1,157 @@
+{{define "connections"}}{{template "page-start" .}}
+      <div class="title-row"><h1>KeenProxy</h1>{{template "page-help" .}}</div>
+      {{template "tabs" .}}
+      {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
+      {{if .Message}}
+      <div class="note detail-error" role="alert">
+        <p>{{.Message}}</p>
+        {{with .Connections}}{{template "connection-references" .References}}{{end}}
+      </div>
+      {{end}}
+      {{if .Connections}}
+        {{if .Connections.Subscriptions}}
+        <div class="row-btns">
+          {{if .ViewOnly}}<button class="btn" type="button" disabled>{{.Text.setup_add}}</button>
+          {{else}}<a class="btn" href="{{.Connections.AddPath}}">{{.Text.setup_add}}</a>{{end}}
+        </div>
+        {{end}}
+        {{range .Connections.Subscriptions}}
+        <form id="subscription-remove-{{.Nodes.ID}}" method="post" action="{{.Path}}/remove">
+          <input type="hidden" name="rev" value="{{$.Connections.Revision}}">
+        </form>
+        {{end}}
+        <form id="connections-settings" method="post" action="/connections" data-guard{{if .Connections.Draft}} data-dirty{{end}}>
+          <input type="hidden" name="rev" value="{{.Connections.Revision}}">
+          {{range .Connections.Subscriptions}}
+          {{$id := .Nodes.ID}}
+          <section class="connections-section" aria-labelledby="subscription-label-{{$id}}">
+            <div data-fragment="/fragments/connections/{{$id}}">
+              {{template "connections-nodes" .Nodes}}
+            </div>
+            <div class="fld connections-select">
+              <label for="subscription-fallback-{{$id}}">{{$.Text.connections_reserve_label}}</label>
+              <select id="subscription-fallback-{{$id}}" name="fallback.{{$id}}" aria-describedby="subscription-label-{{$id}}"{{if $.ViewOnly}} disabled{{end}}>
+                {{$current := .Fallback}}
+                {{if .AllowUnset}}<option value=""{{if not .Fallback}} selected{{end}}>{{$.Text.connections_reserve_unset}}</option>{{end}}
+                {{range $.Connections.Reserve}}<option value="{{.Target}}"{{if eq .Target $current}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+            </div>
+            <div class="row-btns">
+              {{if $.ViewOnly}}<button class="btn soft" aria-describedby="subscription-label-{{$id}}" type="button" disabled>{{$.Text.setup_replace}}</button>
+              {{else}}<a class="btn soft" href="{{.Path}}/replace" aria-describedby="subscription-label-{{$id}}">{{$.Text.setup_replace}}</a>{{end}}
+              <button class="btn detail-delete" aria-describedby="subscription-label-{{$id}}" type="submit" form="subscription-remove-{{$id}}"{{if $.ViewOnly}} disabled{{end}}>{{$.Text.connections_remove_subscription}}</button>
+            </div>
+          </section>
+          {{else}}
+          <section class="connections-section" aria-labelledby="subscription-empty">
+            <div class="connections-head">
+              <h2 id="subscription-empty">{{.Text.overview_subscription}}</h2>
+              {{if .ViewOnly}}<button class="btn soft" type="button" disabled>{{.Text.overview_add_subscription}}</button>
+              {{else}}<a href="/setup">{{.Text.overview_add_subscription}}</a>{{end}}
+            </div>
+            <p class="muted">{{.Text.overview_no_subscription}}</p>
+          </section>
+          {{end}}
+
+          <section class="connections-section" aria-labelledby="manual-connections-heading">
+            <div class="connections-head">
+              <h2 id="manual-connections-heading">{{.Text.connections_manual}}</h2>
+              {{if .ViewOnly}}
+              <button class="btn" type="button" disabled>{{.Text.connections_add}}</button>
+              {{else}}
+              <a class="btn" href="/connections/new">{{.Text.connections_add}}</a>
+              {{end}}
+            </div>
+            {{if .Connections.Rows}}
+            {{template "connections-manual" .}}
+            <p class="hint">{{.Text.connections_manual_hint}}</p>
+            {{else}}
+            <p class="muted">{{.Text.connections_no_manual}}</p>
+            {{end}}
+          </section>
+          {{if or .Connections.Subscriptions .Connections.Rows}}
+          <div class="actions">
+            <button class="btn" type="submit"{{if .ViewOnly}} disabled{{end}}>{{.Text.overview_save}}</button>
+            {{if not .ViewOnly}}<a class="btn soft" href="/connections">{{.Text.setup_cancel}}</a>{{end}}
+          </div>
+          {{end}}
+        </form>
+      {{else}}
+      <p class="note">{{.Text.setup_unavailable}}</p>
+      {{end}}
+{{template "page-end" .}}{{end}}
+
+{{define "connections-nodes-fragment"}}{{template "connections-nodes" .SubscriptionNodes}}{{end}}
+
+{{define "connections-nodes"}}
+  <div class="connections-head">
+    <div class="connections-heading" id="subscription-label-{{.ID}}">
+      <h2 class="clip" id="subscription-title-{{.ID}}" title="{{.Title}}">{{.Title}}</h2>
+      {{if .DuplicateTitle}}<span class="muted small subscription-id">{{printf .Text.subscription_id .ID}}</span>{{end}}
+    </div>
+    <div class="connections-actions">
+      <button class="linkbtn connections-check" aria-describedby="subscription-label-{{.ID}}" type="submit" name="refresh" value="{{.ID}}"{{if .ViewOnly}} disabled{{end}}>{{.Text.overview_refresh}}</button>
+      <button class="linkbtn connections-check" aria-describedby="subscription-label-{{.ID}}" type="submit" name="check" value="{{.ID}}:"{{if or .ViewOnly .CheckingAll (not .Rows)}} disabled{{end}}>{{.Text.connections_check_all}}</button>
+    </div>
+  </div>
+  <div class="prov">
+    <span class="chip {{.Status.Class}}">{{.Status.Label}}</span>
+    {{if .RulesNotice}}<span class="muted">{{.RulesNotice}}</span>{{end}}
+    <span class="muted">{{.Summary}}</span>
+  </div>
+  {{if .Rows}}
+  <table class="tbl connections-nodes">
+    <thead><tr><th scope="col">{{.Text.connections_node}}</th><th scope="col" class="connections-probe">HTTPS</th><th scope="col" class="c-tg"><span class="sr">{{.Text.connections_action}}</span></th></tr></thead>
+    <tbody>
+      {{range .Rows}}
+      <tr>
+        <td>
+          <div class="connections-node">
+            <span class="clip" title="{{.Name}}">{{.Name}}</span>
+            {{if .Current}}<span class="chip ok">{{$.Text.connections_current_node}}</span>{{end}}
+            {{if .Unavailable}}<span class="chip warn">{{$.Text.connections_node_unavailable}}</span>{{end}}
+          </div>
+        </td>
+        <td class="connections-probe">{{.Probe}}</td>
+        <td class="c-tg"><button class="linkbtn connections-check" type="submit" name="check" value="{{$.ID}}:{{.ID}}" aria-label="{{printf $.Text.connections_check_node .Name}}" aria-describedby="subscription-label-{{$.ID}}"{{if or $.ViewOnly .Checking}} disabled{{end}}>{{$.Text.setup_check}}</button></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="hint">{{.Text.connections_no_nodes}}</p>
+  {{end}}
+{{end}}
+
+{{define "connections-manual"}}
+  <table class="tbl connections-manual">
+    <thead><tr>
+      <th scope="col">{{.Text.overview_connection}}</th>
+      <th scope="col" class="connections-probe">{{.Text.connections_probe}}</th>
+      <th scope="col" class="c-res">{{.Text.connections_reserve}}</th>
+      <th scope="col" class="c-tg">{{.Text.connections_on}}</th>
+    </tr></thead>
+    <tbody>
+      {{range .Connections.Rows}}
+      <tr>
+        <td>
+          <a class="clip" href="{{.URL}}" title="{{.Name}}">{{.Name}}</a>
+          <span class="clip muted small">{{.Type}}</span>
+          {{if .Reserve}}<span class="res-inline muted small"><span class="clip" title="{{.Reserve}}">{{printf $.Text.connections_reserve_summary .Reserve}}</span></span>{{end}}
+        </td>
+        <td class="connections-probe">
+          {{if .Failed}}<span class="chip warn">{{.Probe}}</span>{{else}}<span{{if .Disabled}} class="muted"{{end}}>{{.Probe}}</span>{{end}}
+        </td>
+        <td class="c-res muted">{{if .Reserve}}<span class="clip" title="{{.Reserve}}">{{.Reserve}}</span>{{else}}—{{end}}</td>
+        <td class="c-tg">
+          <input type="hidden" name="{{.SwitchField}}" value="0"{{if $.ViewOnly}} disabled{{end}}>
+          <label class="tg">
+            <input type="checkbox" role="switch" name="{{.SwitchField}}" value="1" aria-label="{{.Name}}"{{if .Enabled}} checked{{end}}{{if $.ViewOnly}} disabled{{end}}>
+            <span class="tg-track" aria-hidden="true"></span>
+          </label>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+{{end}}

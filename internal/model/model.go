@@ -3,6 +3,7 @@
 package model
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -47,9 +48,10 @@ const (
 
 // Config is the persisted schema shared by the compiler, daemon, and API.
 type Config struct {
-	SchemaVersion int                   `yaml:"schema_version" json:"schema_version"`
+	SchemaVersion int `yaml:"schema_version" json:"schema_version"`
+	// Paused turns every policy off: no routing, blocking or DNS interception.
+	Paused        bool                  `yaml:"paused,omitempty" json:"paused,omitempty"`
 	System        System                `yaml:"system,omitempty" json:"system,omitempty"`
-	Filters       Filters               `yaml:"filters,omitempty" json:"filters"`
 	API           API                   `yaml:"api" json:"api"`
 	LAN           LAN                   `yaml:"lan" json:"lan"`
 	DNS           DNS                   `yaml:"dns" json:"dns"`
@@ -58,11 +60,77 @@ type Config struct {
 	Failover      Failover              `yaml:"failover" json:"failover"`
 	Connections   []Connection          `yaml:"connections" json:"connections"`
 	Subscriptions []subscription.Source `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
-	Groups        []Group               `yaml:"groups" json:"groups"`
-	Networks      []Network             `yaml:"networks" json:"networks"`
-	Clients       []Client              `yaml:"clients" json:"clients"`
+	// ProviderRules holds the selected source and switches, including while off.
+	ProviderRules *ProviderRulesSettings `yaml:"provider_rules,omitempty" json:"provider_rules,omitempty"`
+	Groups        []Group                `yaml:"groups" json:"groups"`
+	Networks      []Network              `yaml:"networks" json:"networks"`
+	Clients       []Client               `yaml:"clients" json:"clients"`
+}
 
-	LocalPresets []LocalPreset `yaml:"local_presets,omitempty" json:"local_presets,omitempty"`
+// ProviderRulesSettings selects the subscription whose provider rules apply
+// and the rules the user switched off. The rules themselves are provider data
+// kept in the private subscription snapshot, not in the configuration.
+type ProviderRulesSettings struct {
+	Source string `yaml:"source" json:"source"` // a configured subscription ID
+	Off    bool   `yaml:"off,omitempty" json:"off,omitempty"`
+	// Disabled holds rule keys. Keys the provider no longer sends stay valid,
+	// so a rule returning to the provider's lists stays off.
+	Disabled []string `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+}
+
+// ActiveProviderRules returns the settings that participate in routing.
+func (c *Config) ActiveProviderRules() *ProviderRulesSettings {
+	if c == nil || c.ProviderRules == nil || c.ProviderRules.Off {
+		return nil
+	}
+	return c.ProviderRules
+}
+
+// RedactedProviderRuleKey gives a protected category a stable switch key
+// outside the provider's action:entry key space.
+func RedactedProviderRuleKey(key string) string {
+	return fmt.Sprintf("redacted:%x", sha256.Sum256([]byte(key)))
+}
+
+// DisabledRuleKeys includes equivalents of keys saved before provider
+// categories were redacted. Old settings continue to disable the same rule.
+func (s *ProviderRulesSettings) DisabledRuleKeys() map[string]bool {
+	if s == nil || len(s.Disabled) == 0 {
+		return nil
+	}
+	keys := make(map[string]bool, 2*len(s.Disabled))
+	for _, key := range s.Disabled {
+		keys[key] = true
+		keys[RedactedProviderRuleKey(key)] = true
+	}
+	return keys
+}
+
+// Bounds for provider_rules.disabled. Compile keeps provider rule keys
+// within MaxProviderRuleKey bytes, so every rule can be switched off.
+const (
+	maxDisabledProviderRules = 1024
+	MaxProviderRuleKey       = 256
+)
+
+func (c *Config) validateProviderRules(add func(string, ...any)) {
+	// Stored settings must be valid when the user turns the rules back on.
+	r := c.ProviderRules
+	if r == nil {
+		return
+	}
+	if !slices.ContainsFunc(c.Subscriptions, func(source subscription.Source) bool { return source.ID == r.Source }) {
+		add("provider_rules.source: unknown subscription %q", r.Source)
+	}
+	if len(r.Disabled) > maxDisabledProviderRules {
+		add("provider_rules.disabled: at most %d keys", maxDisabledProviderRules)
+		return
+	}
+	for i, key := range r.Disabled {
+		if key == "" || len(key) > MaxProviderRuleKey {
+			add("provider_rules.disabled[%d]: a key must have 1 to %d bytes", i, MaxProviderRuleKey)
+		}
+	}
 }
 
 // maxMemoryLimitMiB is the largest MiB count whose byte size fits in int64.
@@ -105,23 +173,17 @@ func MemoryLimitBytes(cfg *Config, baseline int64) (int64, bool) {
 	return mib * 1024 * 1024, true
 }
 
-// API configures the web interface and HTTP API.
+// API configures the HTTP API listener.
 type API struct {
-	Listen    string `yaml:"listen" json:"listen"`         // 0.0.0.0:8086
-	TokenFile string `yaml:"token_file" json:"token_file"` // login token created on first startup
-	// NoTokenFrom permits dashboard access without a token from these CIDR ranges.
+	Listen string `yaml:"listen" json:"listen"` // 0.0.0.0:8086
+	// TokenFile is accepted and ignored.
+	//
+	// Deprecated: the panel token no longer exists.
+	TokenFile string `yaml:"token_file,omitempty" json:"token_file,omitempty"`
+	// NoTokenFrom is accepted and ignored.
+	//
+	// Deprecated: the HTTP API trusts only loopback peers.
 	NoTokenFrom []string `yaml:"no_token_from,omitempty" json:"no_token_from,omitempty"`
-}
-
-// NoTokenPrefixes parses API.NoTokenFrom, skipping invalid ranges that Validate rejects.
-func (a API) NoTokenPrefixes() []netip.Prefix {
-	var out []netip.Prefix
-	for _, s := range a.NoTokenFrom {
-		if p, err := netip.ParsePrefix(strings.TrimSpace(s)); err == nil {
-			out = append(out, p.Masked())
-		}
-	}
-	return out
 }
 
 // LAN identifies the client-facing and provider network interfaces.
@@ -279,7 +341,6 @@ type WGPeer struct {
 // databases (labels such as RU-BLOCKED); Except negates their union.
 type Group struct {
 	Disabled   bool     `yaml:"disabled,omitempty" json:"disabled,omitempty"`
-	Preset     *Preset  `yaml:"preset,omitempty" json:"preset,omitempty"`
 	Name       string   `yaml:"name" json:"name"`
 	Target     string   `yaml:"target" json:"target"` // connection ID, direct, or block
 	Entries    []string `yaml:"entries,omitempty" json:"entries"`
@@ -287,7 +348,7 @@ type Group struct {
 	Categories []string `yaml:"categories,omitempty" json:"categories,omitempty"` // uppercase category labels
 	Except     bool     `yaml:"except,omitempty" json:"except,omitempty"`
 
-	// Disabled selectors retain their configured values and preset membership.
+	// Disabled selectors retain their configured values.
 	// Sets are value-based, so reordering rules cannot change activation state.
 	DisabledEntries    []string `yaml:"disabled_entries,omitempty" json:"disabled_entries,omitempty"`
 	DisabledCountries  []string `yaml:"disabled_countries,omitempty" json:"disabled_countries,omitempty"`
@@ -297,12 +358,54 @@ type Group struct {
 // IsGeo reports whether the group matches IP-database selectors rather than entries.
 func (g Group) IsGeo() bool { return len(g.Countries) > 0 || len(g.Categories) > 0 }
 
+// DefaultProfile is the Network.Default value that defers to the provider profile.
+const DefaultProfile = "profile"
+
 // Network applies a routing policy to a CIDR unless a client overrides it.
 type Network struct {
-	Name   string `yaml:"name" json:"name"`
-	CIDR   string `yaml:"cidr" json:"cidr"`
-	Mode   Mode   `yaml:"mode" json:"mode"`
-	Target string `yaml:"target,omitempty" json:"target,omitempty"` // connection for full mode and inherited client targets
+	Name string `yaml:"name" json:"name"`
+	CIDR string `yaml:"cidr" json:"cidr"`
+	Mode Mode   `yaml:"mode" json:"mode"`
+	// Target tunnels full mode; in split mode it receives provider proxy rules
+	// and the profile default, so it is required for them. Clients without
+	// their own target inherit it.
+	Target string `yaml:"target,omitempty" json:"target,omitempty"`
+	// Default routes split traffic that matches no rule: empty or direct goes
+	// direct, a connection or managed target tunnels it, and profile follows
+	// the provider profile: the policy target unless the applied provider
+	// rules say GlobalProxy false.
+	Default string `yaml:"default,omitempty" json:"default,omitempty"`
+}
+
+// HomeNetwork finds the LAN policy created by setup. A single custom network
+// has the same role. With several custom networks, the overview cannot pick one.
+func (cfg *Config) HomeNetwork() *Network {
+	for i := range cfg.Networks {
+		if cfg.Networks[i].Name == "Home" {
+			return &cfg.Networks[i]
+		}
+	}
+	if len(cfg.Networks) == 1 {
+		return &cfg.Networks[0]
+	}
+	return nil
+}
+
+// RouteHomeThroughSubscription replaces the networks with one split network,
+// Home, covering the LAN prefix. Provider proxy rules use the subscription's
+// auto target and unmatched traffic goes direct. This turns on provider rules
+// for that subscription, dropping any earlier settings. The reset after
+// an upgrade and the first-run setup share it. The caller supplies a configured
+// subscription ID and a LAN prefix; Validate checks the result.
+func (c *Config) RouteHomeThroughSubscription(id string, lan netip.Prefix) {
+	c.Networks = []Network{{
+		Name:    "Home",
+		CIDR:    lan.Masked().String(),
+		Mode:    ModeSplit,
+		Target:  ManagedTarget(id, "auto"),
+		Default: TargetDirect,
+	}}
+	c.ProviderRules = &ProviderRulesSettings{Source: id}
 }
 
 // Client identifies a device by MAC and optionally overrides its network policy.
@@ -317,7 +420,7 @@ type Client struct {
 // Defaults fills unset fields and normalizes country codes before validation.
 func (c *Config) Defaults() {
 	if c.SchemaVersion == 0 {
-		c.SchemaVersion = 1
+		c.SchemaVersion = SchemaVersion
 	}
 	c.GeoIP.defaults()
 	for i := range c.Groups {
@@ -330,9 +433,6 @@ func (c *Config) Defaults() {
 	}
 	if c.API.Listen == "" {
 		c.API.Listen = "0.0.0.0:8086"
-	}
-	if c.API.TokenFile == "" {
-		c.API.TokenFile = "/opt/etc/keenproxy/token"
 	}
 	if c.LAN.Interface == "" {
 		c.LAN.Interface = "br0"
@@ -434,7 +534,6 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.normalizeConnections()...)
 	c.validateFeatures(add)
 	c.GeoIP.validate(add)
-	c.validateLocalPresets(add)
 	if mib := c.System.MemoryLimitMiB; mib != nil && (*mib < 1 || *mib > maxMemoryLimitMiB) {
 		add("system.memory_limit_mib: must be a positive integer no greater than %d", maxMemoryLimitMiB)
 	}
@@ -454,11 +553,6 @@ func (c *Config) Validate() error {
 	if _, err := netip.ParseAddrPort(c.API.Listen); err != nil {
 		add("api.listen: %v", err)
 	}
-	for i, s := range c.API.NoTokenFrom {
-		if _, err := netip.ParsePrefix(strings.TrimSpace(s)); err != nil {
-			add("api.no_token_from[%d]: %q requires a network such as 192.168.1.0/24", i, s)
-		}
-	}
 	for i, u := range c.DNS.Upstreams {
 		if _, err := ParseUpstream(u); err != nil {
 			add("dns.upstreams[%d]: %v", i, err)
@@ -467,6 +561,7 @@ func (c *Config) Validate() error {
 
 	conns := map[string]bool{}
 	c.validateSubscriptions(add)
+	c.validateProviderRules(add)
 	for i, cn := range c.Connections {
 		switch {
 		case cn.ID == "":
@@ -481,6 +576,7 @@ func (c *Config) Validate() error {
 		conns[cn.ID] = true
 		validateConnection(cn, add)
 	}
+	c.validateSubscriptionFallbacks(add)
 	for i, cn := range c.Connections {
 		where := fmt.Sprintf("connections[%d] %q", i, cn.ID)
 		switch {
@@ -547,15 +643,35 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	// Provider proxy rules and the profile default go to the policy target;
+	// without one they would go direct without saying so.
+	const splitNeedsTarget = "split mode needs a target while provider_rules is set"
+	providerRulesActive := c.ActiveProviderRules() != nil
+	var prefixes []netip.Prefix // of c.Networks, invalid ones as the zero prefix
 	for i, n := range c.Networks {
 		where := fmt.Sprintf("networks[%d] %q", i, n.Name)
-		if _, err := netip.ParsePrefix(n.CIDR); err != nil {
+		prefix, err := netip.ParsePrefix(n.CIDR)
+		if err != nil {
 			add("%s: cidr: %v", where, err)
 		}
+		prefixes = append(prefixes, prefix.Masked())
 		validateMode(where, n.Mode, false, add)
 		target(where, n.Target, n.Mode != ModeFull)
 		if n.Target == TargetBlock {
 			add("%s: a whole network cannot target block; disable it with mode: off", where)
+		}
+		if n.Default != DefaultProfile {
+			target(where+" default", n.Default, true)
+		}
+		if n.Default == TargetBlock {
+			add("%s: default cannot be block; add a block group instead", where)
+		}
+		if n.Default == DefaultProfile && n.Target == "" {
+			add("%s: default profile needs a target", where)
+		}
+		// Provider proxy rules need a target independently of the default route.
+		if n.Mode == ModeSplit && n.Target == "" && providerRulesActive {
+			add("%s: %s", where, splitNeedsTarget)
 		}
 	}
 	macs := map[string]bool{}
@@ -578,6 +694,15 @@ func (c *Config) Validate() error {
 		target(where, cl.Target, true)
 		if cl.Target == TargetBlock {
 			add("%s: target block is not supported for devices", where)
+		}
+		// A split device without a target takes the target of the first
+		// network holding its address, as routing does. A device known only
+		// by its MAC address gets that address at run time, so it cannot be
+		// checked here; the documentation asks for its own target.
+		if ip, err := netip.ParseAddr(cl.IP); err == nil && cl.Mode == ModeSplit && cl.Target == "" && providerRulesActive {
+			if i := slices.IndexFunc(prefixes, func(p netip.Prefix) bool { return p.Contains(ip) }); i < 0 || c.Networks[i].Target == "" {
+				add("%s: %s; its address is in no network with one", where, splitNeedsTarget)
+			}
 		}
 	}
 
@@ -708,6 +833,41 @@ func Parse(raw []byte) (*Config, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// FileSchemaVersion reads schema_version from saved YAML without validating
+// the rest. It returns 0 when the field is absent or the YAML is unreadable,
+// as in files that older releases read as version 1.
+func FileSchemaVersion(raw []byte) int {
+	var head struct {
+		SchemaVersion int `yaml:"schema_version"`
+	}
+	if yaml.Unmarshal(raw, &head) != nil {
+		return 0
+	}
+	return head.SchemaVersion
+}
+
+// placeholderKeys are the top-level keys of the starter files installers
+// write: schema_version, lan and, in older OpenWrt installers, api.
+var placeholderKeys = map[string]bool{"schema_version": true, "lan": true, "api": true}
+
+// FileIsPlaceholder reports whether saved YAML is an installer starter file: a
+// mapping, possibly empty, whose top-level keys are only schema_version, lan
+// and api. Older releases need nothing from such a file. Any other key, a
+// document that is not a mapping and unreadable YAML are not placeholders, so
+// callers keep them.
+func FileIsPlaceholder(raw []byte) bool {
+	var top map[string]yaml.Node
+	if yaml.Unmarshal(raw, &top) != nil {
+		return false
+	}
+	for key := range top {
+		if !placeholderKeys[key] {
+			return false
+		}
+	}
+	return true
 }
 
 // Marshal serializes configuration as YAML for persistence.

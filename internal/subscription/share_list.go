@@ -16,7 +16,12 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/net/idna"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/ordo-systems/keen-proxy/internal/links"
+	"github.com/ordo-systems/keen-proxy/internal/profiledisplay"
 )
 
 const maxNodes = 256
@@ -29,6 +34,7 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 	seen := make(map[string]bool)
 	var result Result
 	var hasContent bool
+	var routingLine string
 	for line := range strings.Lines(body) {
 		if ctx.Err() != nil {
 			return withHeaders(headers, sensitive, failure(StateNetworkError, canceledDownload))
@@ -41,11 +47,17 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 			collectMetadata(comments, comment)
 			continue
 		}
+		if isRoutingLine(line) {
+			if routingLine == "" {
+				routingLine = line
+			}
+			continue
+		}
 		hasContent = true
 		if !shareLinkPattern.MatchString(line) {
 			continue
 		}
-		node, ok := parseNode(line, sensitive)
+		node, ok := parseNode(line, sensitive, len(result.Nodes)+1)
 		if !ok {
 			result.Skipped++
 			continue
@@ -70,15 +82,24 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 		result.Error = "Subscription response contains no profiles"
 	}
 	result.Metadata = parseMetadata(headers, comments, sensitive)
+	result.Routing, result.RoutingError = resolveRouting(headers, comments, routingLine, sensitive)
+	if result.State == StateReady && result.Routing != nil {
+		result.RoutingSummary = summarizeRouting(result.Routing, sensitive)
+	}
 	return result
 }
 
-func parseNode(link string, sensitive displayRedactor) (Node, bool) {
-	id := nodeID(link)
+func parseNode(link string, sensitive displayRedactor, position int) (Node, bool) {
+	profile, err := links.Parse(link)
+	if err != nil {
+		return Node{}, false
+	}
+	id := nodeID(profile)
 	if id == "" {
 		return Node{}, false
 	}
-	name := displayText(links.Name(link), 128, sensitive)
+	original := links.Name(link)
+	name := displayNodeName(profile, original, original, sensitive, position)
 	if name == "" {
 		protocol, _, _ := strings.Cut(link, "://")
 		name = strings.ToUpper(protocol) + " " + id[:8]
@@ -86,11 +107,7 @@ func parseNode(link string, sensitive displayRedactor) (Node, bool) {
 	return Node{ID: id, Name: name, Link: strings.Clone(link)}, true
 }
 
-func nodeID(link string) string {
-	outbound, err := links.Parse(link)
-	if err != nil {
-		return ""
-	}
+func nodeID(outbound links.Outbound) string {
 	canonical, err := json.Marshal(outbound)
 	if err != nil {
 		return ""
@@ -101,6 +118,18 @@ func nodeID(link string) string {
 	hash.Write([]byte("keenproxy-subscription-node-v1\x00"))
 	hash.Write(canonical)
 	return hex.EncodeToString(hash.Sum(nil)[:16])
+}
+
+// displayNodeName checks the original label, any restored spelling, and the
+// bounded display form. Checking before truncation also protects partial keys.
+func displayNodeName(profile links.Outbound, original, supplied string, sensitive displayRedactor, position int) string {
+	name := displayText(supplied, nodeNameLimit, sensitive)
+	credentials := profiledisplay.Credentials(profile)
+	if ContainsDisplaySecret(original, credentials) || ContainsDisplaySecret(supplied, credentials) || ContainsDisplaySecret(name, credentials) ||
+		profiledisplay.RepeatsCredential(credentials, decodeDisplayEscapes(original), decodeDisplayEscapes(supplied), name) {
+		return fmt.Sprintf("Node %d", position)
+	}
+	return name
 }
 
 func decodeShareListBody(body string) string {
@@ -144,12 +173,18 @@ func collectMetadata(comments http.Header, line string) {
 		return
 	}
 	switch field = strings.ToLower(strings.TrimSpace(field)); field {
-	case "profile-title", "announce", "support-url", "profile-web-page-url", "profile-update-interval", "subscription-userinfo":
+	case "profile-title", "announce", "support-url", "profile-web-page-url", "profile-update-interval", "subscription-userinfo", "routing-enable":
 		if len(comments.Values(field)) == 0 {
 			comments.Set(field, value)
 		}
 	}
 }
+
+const (
+	nodeNameLimit = 128
+	titleLimit    = 256
+	announceLimit = 2048
+)
 
 func parseMetadata(headers, comments http.Header, sensitive displayRedactor) Metadata {
 	value := func(name string) string {
@@ -159,8 +194,8 @@ func parseMetadata(headers, comments http.Header, sensitive displayRedactor) Met
 		return strings.TrimSpace(comments.Get(name))
 	}
 	metadata := Metadata{
-		Title:      providerText(value("profile-title"), 256, sensitive),
-		Announce:   providerText(value("announce"), 2048, sensitive),
+		Title:      providerText(value("profile-title"), titleLimit, sensitive),
+		Announce:   providerText(value("announce"), announceLimit, sensitive),
 		SupportURL: metadataURL(value("support-url"), sensitive),
 		ProfileURL: metadataURL(value("profile-web-page-url"), sensitive),
 		Usage:      parseUsage(value("subscription-userinfo")),
@@ -188,6 +223,9 @@ func displayText(value string, limit int, sensitive displayRedactor) string {
 	}
 	value = strings.Map(func(char rune) rune {
 		if unicode.IsControl(char) && char != '\n' && char != '\t' {
+			if unicode.IsSpace(char) {
+				return ' '
+			}
 			return -1
 		}
 		return char
@@ -205,43 +243,213 @@ func displayText(value string, limit int, sensitive displayRedactor) string {
 	return strings.Clone(strings.TrimSpace(value))
 }
 
+// ContainsDisplaySecret detects literal and encoded copies of credentials
+// before a value is returned for display.
+func ContainsDisplaySecret(value string, secrets []string) bool {
+	if value == "" || len(secrets) == 0 {
+		return false
+	}
+	comparison := displayURLComparison(decodeDisplayEscapes(value))
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		if strings.Contains(value, secret) {
+			return true
+		}
+		normalized := displayURLComparison(decodeDisplayEscapes(secret))
+		if normalized != "" && strings.Contains(comparison, normalized) {
+			return true
+		}
+	}
+	return false
+}
+
 func metadataURL(value string, sensitive displayRedactor) string {
-	if len(value) > 2048 || sensitive.contains(value) {
+	if len(value) > 2048 {
 		return ""
 	}
 	u, err := url.Parse(value)
-	if err != nil || httpsOrigin(u) == "" {
+	if err != nil || httpsOrigin(u) == "" || sensitive.blocksLink(u, value) {
 		return ""
 	}
-	normalized := u.String()
-	if sensitive.contains(normalized) {
-		return ""
-	}
-	if decoded, err := url.PathUnescape(normalized); err == nil && sensitive.contains(decoded) {
-		return ""
-	}
-	return normalized
+	return u.String()
 }
 
-// displayRedactor recognizes the request values a provider could echo in panel
-// text without altering its private share links.
-type displayRedactor []string
+// displayRedactor protects the request URI, hosts reached by the fetch, and
+// HWID sent with it before provider data enters the display projection.
+type displayRedactor struct {
+	hosts      map[string]struct{}
+	paths      map[string][]string
+	requestURI string
+	hwid       string
+	// A legacy snapshot has no record of the final same-origin request path.
+	blockSameHostLinks bool
+}
 
-func (r *displayRedactor) add(value string) {
-	if value != "" && !slices.Contains(*r, value) {
-		*r = append(*r, value)
+const redactedDisplay = "[redacted]"
+
+// Runs may contain a bare path or an encoded scheme.
+var displayRun = regexp.MustCompile(`[^[:space:]\p{Z}\x{85}<>"]+`)
+var displayPercentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+
+func sourceDisplayRedactor(u *url.URL) displayRedactor {
+	var sensitive displayRedactor
+	sensitive.addURL(u)
+	// A bare root carries no request-specific text.
+	if target := u.RequestURI(); target != "/" {
+		sensitive.requestURI = displayURLComparison(decodeDisplayEscapes(target))
 	}
+	return sensitive
+}
+
+func (r *displayRedactor) addURL(u *url.URL) {
+	host := displayHost(u.Hostname())
+	if r.paths == nil {
+		r.hosts = make(map[string]struct{})
+		r.paths = make(map[string][]string)
+	}
+	r.hosts[displayHostKey(host)] = struct{}{}
+	r.paths[host] = append(r.paths[host], requestPath(u))
+}
+
+func requestPath(u *url.URL) string {
+	if u.Path == "" {
+		return "/"
+	}
+	return decodeDisplayEscapes(u.EscapedPath())
 }
 
 func (r displayRedactor) replace(value string) string {
-	for _, secret := range r {
-		value = strings.ReplaceAll(value, secret, "[redacted]")
+	if len(r.hosts) > 0 {
+		value = displayRun.ReplaceAllStringFunc(value, func(run string) string {
+			comparison := displayURLComparison(decodeDisplayEscapes(run))
+			if r.containsHost(comparison) || (r.requestURI != "" && strings.Contains(comparison, r.requestURI)) {
+				return redactedDisplay
+			}
+			return run
+		})
+	}
+	if r.hwid != "" {
+		value = strings.ReplaceAll(value, r.hwid, redactedDisplay)
+		if strings.Contains(decodeDisplayEscapes(value), r.hwid) {
+			return redactedDisplay
+		}
 	}
 	return value
 }
 
-func (r displayRedactor) contains(value string) bool {
-	return slices.ContainsFunc(r, func(secret string) bool { return strings.Contains(value, secret) })
+func displayHost(host string) string {
+	return strings.TrimSuffix(normalizedHost(host, strings.ContainsRune(host, ':')), ".")
+}
+
+// Fold the Unicode form of IDNs for matching. The account-link exception
+// still uses the canonical IDNA host and its fetched paths.
+func displayHostKey(canonical string) string {
+	if strings.Contains(canonical, "xn--") {
+		if host, err := idna.Lookup.ToUnicode(canonical); err == nil {
+			return foldDisplayComparison(host)
+		}
+	}
+	return canonical
+}
+
+// containsHost scans the whole comparison string, including embedded URLs.
+func (r displayRedactor) containsHost(comparison string) bool {
+	for token := range strings.FieldsFuncSeq(comparison, func(char rune) bool {
+		return !unicode.In(char, unicode.L, unicode.M, unicode.N) && !strings.ContainsRune("._-:\u3002\uff0e\uff61", char)
+	}) {
+		// Keep IPv6 addresses intact before treating colons as separators.
+		if host := displayHost(token); host != "" {
+			if _, protected := r.hosts[displayHostKey(host)]; protected {
+				return true
+			}
+			continue
+		}
+		for part := range strings.SplitSeq(token, ":") {
+			if _, protected := r.hosts[displayHostKey(displayHost(part))]; protected {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// blocksLink allows a link on a protected host only at a different path
+// without a query or fragment. Scan the raw link so malformed form queries
+// cannot hide an embedded subscription URL.
+func (r displayRedactor) blocksLink(u *url.URL, raw string) bool {
+	decoded := decodeDisplayEscapes(raw)
+	if r.hwid != "" && strings.Contains(decoded, r.hwid) {
+		return true
+	}
+	if paths, protected := r.paths[displayHost(u.Hostname())]; protected {
+		path := requestPath(u)
+		if r.blockSameHostLinks || slices.Contains(paths, path) || u.ForceQuery || u.RawQuery != "" || strings.Contains(raw, "#") {
+			return true
+		}
+		// The account-page exception covers the link's host. Its path can
+		// still carry an embedded subscription URL.
+		decoded = path
+	}
+	return r.containsHost(displayURLComparison(decoded))
+}
+
+func displayURLComparison(decoded string) string {
+	return strings.ReplaceAll(foldDisplayComparison(decoded), "+", " ")
+}
+
+var displayCaseFold = cases.Fold()
+
+// Default_Ignorable_Code_Point from Unicode 17 DerivedCoreProperties.
+var displayIgnorables = &unicode.RangeTable{
+	R16: []unicode.Range16{
+		{Lo: 0x00ad, Hi: 0x00ad, Stride: 1},
+		{Lo: 0x034f, Hi: 0x034f, Stride: 1},
+		{Lo: 0x061c, Hi: 0x061c, Stride: 1},
+		{Lo: 0x115f, Hi: 0x1160, Stride: 1},
+		{Lo: 0x17b4, Hi: 0x17b5, Stride: 1},
+		{Lo: 0x180b, Hi: 0x180f, Stride: 1},
+		{Lo: 0x200b, Hi: 0x200f, Stride: 1},
+		{Lo: 0x202a, Hi: 0x202e, Stride: 1},
+		{Lo: 0x2060, Hi: 0x206f, Stride: 1},
+		{Lo: 0x3164, Hi: 0x3164, Stride: 1},
+		{Lo: 0xfe00, Hi: 0xfe0f, Stride: 1},
+		{Lo: 0xfeff, Hi: 0xfeff, Stride: 1},
+		{Lo: 0xffa0, Hi: 0xffa0, Stride: 1},
+		{Lo: 0xfff0, Hi: 0xfff8, Stride: 1},
+	},
+	R32: []unicode.Range32{
+		{Lo: 0x1bca0, Hi: 0x1bca3, Stride: 1},
+		{Lo: 0x1d173, Hi: 0x1d17a, Stride: 1},
+		{Lo: 0xe0000, Hi: 0xe0fff, Stride: 1},
+	},
+}
+
+func foldDisplayComparison(value string) string {
+	value = strings.Map(func(char rune) rune {
+		if unicode.Is(displayIgnorables, char) {
+			return -1
+		}
+		return char
+	}, value)
+	return norm.NFKC.String(displayCaseFold.String(norm.NFKC.String(value)))
+}
+
+// Decode valid escapes even when the same value includes stray percent signs.
+func decodeDisplayEscapes(value string) string {
+	const maxPasses = 4
+	for pass := 0; pass < maxPasses && strings.Contains(value, "%"); pass++ {
+		decoded := displayPercentEscape.ReplaceAllStringFunc(value, func(escape string) string {
+			unescaped, _ := url.PathUnescape(escape)
+			return unescaped
+		})
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	return value
 }
 
 func parseUsage(value string) *Usage {

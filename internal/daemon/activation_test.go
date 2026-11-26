@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -33,10 +32,7 @@ func TestDisabledHealthAndSelectionAfterRecompile(t *testing.T) {
 		t.Fatal("disabled probe state retained")
 	}
 	d.switchLocked(time.Now())
-	if _, err := d.DiagnosticChecks(context.Background(), "primary"); !errors.Is(err, ErrDiagnosticConnection) {
-		t.Fatalf("disabled diagnostic = %v", err)
-	}
-	if _, err := d.probe(context.Background(), "primary", "http://invalid.invalid/"); err == nil {
+	if result := d.probe(context.Background(), "primary", "http://invalid.invalid/"); result.err == nil {
 		t.Fatal("disabled probe accepted")
 	}
 
@@ -65,7 +61,7 @@ func TestDisabledDomainsLeaveCacheRefreshAndConflicts(t *testing.T) {
 	}
 	d := New(Options{})
 	d.live.Store(cfg)
-	if _, err := d.RefreshDomains(context.Background(), []string{"off.example"}, false); err == nil {
+	if err := d.RefreshDomains(context.Background(), []string{"off.example"}); err == nil {
 		t.Fatal("inactive domain accepted for live refresh")
 	}
 	if got := domainConflicts(cfg, records); len(got) != 0 {

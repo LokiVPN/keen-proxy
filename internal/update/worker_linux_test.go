@@ -344,7 +344,7 @@ func TestNativeUpdaterLifecyclePersistsJobAndPlatform(t *testing.T) {
 	if err := os.WriteFile(m.metadata, []byte("current v0.3.0\nvariant lite\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetPreferences(Preferences{Enabled: true, Time: "04:15"}); err != nil {
+	if err := m.SetPreferencesIfCurrent(Preferences{Enabled: true, Time: "04:15"}, m.Status().Preferences.Revision()); err != nil {
 		t.Fatal(err)
 	}
 	prefs, err := os.ReadFile(filepath.Join(m.dir, "preferences.json"))

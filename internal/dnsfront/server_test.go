@@ -7,7 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -129,6 +132,47 @@ func TestBlockedAndAAAA(t *testing.T) {
 	}
 	if m := query(t, s.Addr(), "udp", "example.com", dns.TypeAAAA); m.Rcode != dns.RcodeSuccess || len(m.Answer) != 0 {
 		t.Errorf("AAAA must be an empty NOERROR, got %v", m)
+	}
+}
+
+// BlockReason learns which device asked: the source of a network query, or
+// the address WithClient attaches for Resolve. KeenProxy's own queries have
+// none. A block is journaled for that device.
+func TestBlockReasonSeesTheClient(t *testing.T) {
+	var mu sync.Mutex
+	var asked []netip.Addr
+	var journaled []string
+	s := startServer(t, Config{
+		Upstreams: []model.Upstream{fakeUpstream(t, "1.2.3.4")},
+		BlockReason: func(name string, client netip.Addr) string {
+			mu.Lock()
+			defer mu.Unlock()
+			asked = append(asked, client)
+			if client == netip.MustParseAddr("127.0.0.1") {
+				return "provider"
+			}
+			return ""
+		},
+		OnBlock: func(name, client, source string) {
+			mu.Lock()
+			defer mu.Unlock()
+			journaled = append(journaled, source+" "+strings.Split(client, ":")[0])
+		},
+	})
+	if got := firstA(query(t, s.Addr(), "udp", "ads.example", dns.TypeA)); got != "0.0.0.0" {
+		t.Errorf("query from 127.0.0.1: %q, want a local block", got)
+	}
+	req := new(dns.Msg)
+	req.SetQuestion("ads.example.", dns.TypeA)
+	if got := firstA(s.Resolve(WithClient(context.Background(), "192.0.2.7:5353"), req)); got != "1.2.3.4" {
+		t.Errorf("query from 192.0.2.7: %q, want the upstream answer", got)
+	}
+	s.Resolve(context.Background(), req)
+	mu.Lock()
+	defer mu.Unlock()
+	want := []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("192.0.2.7"), {}}
+	if !slices.Equal(asked, want) || !slices.Equal(journaled, []string{"provider 127.0.0.1"}) {
+		t.Errorf("BlockReason saw %v, journal %v", asked, journaled)
 	}
 }
 

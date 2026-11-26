@@ -8,60 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/dnsfront"
-	"github.com/ordo-systems/keen-proxy/internal/filterlist"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
 	M "github.com/sagernet/sing/common/metadata"
 )
-
-// DNSInfo summarizes the latest DNS route and cumulative fallback and block counts.
-type DNSInfo struct {
-	Route     string    `json:"route"`
-	Checked   time.Time `json:"checked"`
-	Fallbacks uint64    `json:"fallbacks"`
-	Blocked   uint64    `json:"blocked"`
-}
-
-// PreviousConfig loads the validated snapshot saved before the latest persisted change.
-func (d *Daemon) PreviousConfig() (*model.Config, error) {
-	return model.Load(d.opt.ConfigPath + ".previous")
-}
-
-// DNSCheck reports a single resolver probe with latency in milliseconds.
-type DNSCheck struct {
-	RCode   int    `json:"rcode"`
-	Latency int64  `json:"latency_ms"`
-	Route   string `json:"route"`
-	Error   string `json:"error,omitempty"`
-	Demo    bool   `json:"demo,omitempty"`
-}
-
-// DNSInfo returns the last resolver check under the feature-state lock.
-func (d *Daemon) DNSInfo() DNSInfo { d.featureMu.Lock(); defer d.featureMu.Unlock(); return d.dnsInfo }
-
-// FilterStatus reports the state of each configured DNS filter snapshot.
-func (d *Daemon) FilterStatus() []filterlist.State { return d.filters.Status() }
-
-// RefreshFilters manually refreshes enabled lists without requiring automatic updates.
-func (d *Daemon) RefreshFilters(ctx context.Context) error { return d.filters.Refresh(ctx, false) }
-
-// runFilterUpdates checks for due filter refreshes hourly until cancellation.
-func (d *Daemon) runFilterUpdates(ctx context.Context) {
-	for {
-		if err := d.filters.Refresh(ctx, true); err != nil {
-			d.log.Warn("filter update", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Hour):
-		}
-	}
-}
 
 // managedConn releases dial-context resources exactly once when closed.
 type managedConn struct {
@@ -135,37 +88,12 @@ func (d *Daemon) dnsConfig(cfg model.DNS) dnsfront.Config {
 	return c
 }
 
-// CheckDNS probes a validated draft through its DNS policy without applying it.
-func (d *Daemon) CheckDNS(ctx context.Context, cfg *model.Config) (DNSCheck, error) {
-	if err := cfg.Validate(); err != nil {
-		return DNSCheck{}, err
-	}
-	route := ""
-	c := d.dnsConfig(cfg.DNS)
-	c.OnRoute = func(r string) { route = r }
-	s := dnsfront.New(c)
-	defer s.CloseIdle()
-	q := new(dns.Msg)
-	q.SetQuestion("example.com.", dns.TypeA)
-	start := time.Now()
-	r := s.ResolveRaw(ctx, q)
-	check := DNSCheck{RCode: r.Rcode, Latency: time.Since(start).Milliseconds(), Route: route}
-	if r.Rcode != dns.RcodeSuccess {
-		check.Error = dns.RcodeToString[r.Rcode]
-	}
-	return check, nil
-}
-
-// recordDNSRoute updates counters and journals transitions into or out of direct fallback.
+// recordDNSRoute journals transitions into or out of direct fallback.
 func (d *Daemon) recordDNSRoute(route string) {
-	d.featureMu.Lock()
-	prev := d.dnsInfo.Route
-	d.dnsInfo.Route = route
-	d.dnsInfo.Checked = time.Now()
-	if route == "direct-fallback" {
-		d.dnsInfo.Fallbacks++
-	}
-	d.featureMu.Unlock()
+	d.dnsRouteMu.Lock()
+	prev := d.dnsRoute
+	d.dnsRoute = route
+	d.dnsRouteMu.Unlock()
 	if prev != route && route == "direct-fallback" {
 		d.audit("dns", "Direct DNS fallback", "dns", "warn", "DNS tunnel did not respond: requests went directly to the encrypted resolver")
 	}
@@ -174,10 +102,7 @@ func (d *Daemon) recordDNSRoute(route string) {
 	}
 }
 
-// recordDNSBlock counts and journals a blocked client DNS request.
+// recordDNSBlock journals a blocked client DNS request.
 func (d *Daemon) recordDNSBlock(name, client, source string) {
-	d.featureMu.Lock()
-	d.dnsInfo.Blocked++
-	d.featureMu.Unlock()
 	d.journals[journal.Routes].Add(journal.Entry{Host: name, Client: client, Network: "dns", Outbound: "block", Source: source, Rule: "DNS: " + source})
 }

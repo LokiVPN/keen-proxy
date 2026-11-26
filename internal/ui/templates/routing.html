@@ -1,0 +1,128 @@
+{{define "routing"}}{{template "page-start" .}}
+      <div class="title-row"><h1>KeenProxy</h1>{{template "page-help" .}}</div>
+      {{template "tabs" .}}
+      {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
+      {{if .Message}}<p class="note" role="alert">{{.Message}}</p>{{end}}
+      {{if .Routing.Unavailable}}
+      <p class="note">{{.Routing.Unavailable}}</p>
+      {{else}}
+      <p class="lead routing-intro">{{.Text.routing_intro}}</p>
+      {{if .Routing.CustomMode}}<p class="note">{{.Routing.CustomMode}}</p>{{end}}
+      <form class="routing-form" method="post" action="/routing" data-guard{{if .Routing.Draft}} data-dirty{{end}}>
+        <input type="hidden" name="rev" value="{{.Routing.Revision}}">
+        <fieldset class="routing-fields"{{if .ViewOnly}} disabled{{end}}>
+          {{if .Routing.Sources}}
+          <div class="routing-source">
+            <div class="fld">
+              <label for="routing-source">{{.Text.routing_source}}</label>
+              <select id="routing-source" name="source"{{if gt (len .Routing.Sources) 1}} aria-describedby="routing-source-hint"{{end}}>
+                {{range .Routing.Sources}}<option value="{{.Target}}"{{if eq $.Routing.Source .Target}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+            </div>
+            {{if gt (len .Routing.Sources) 1}}<button class="btn soft" type="submit" name="review_source" value="1" formnovalidate>{{.Text.routing_source_review}}</button>{{end}}
+          </div>
+          {{if gt (len .Routing.Sources) 1}}<p class="hint" id="routing-source-hint">{{.Text.routing_source_hint}}</p>{{end}}
+          {{end}}
+          <fieldset class="routing-modes">
+            <legend class="sr">{{.Text.routing_mode}}</legend>
+            <label class="routing-radio">
+              <input type="radio" name="mode" value="provider" id="routing-mode-provider" required{{if eq .Routing.Mode "provider"}} checked{{end}}{{if not .Routing.CanProvider}} disabled{{end}}>
+              <span>
+                <span class="clip routing-radio-title" title="{{.Routing.ProviderMode}}">{{.Routing.ProviderMode}}</span>
+                <span class="muted small">{{.Routing.ProviderHint}}</span>
+              </span>
+            </label>
+            <label class="routing-radio">
+              <input type="radio" name="mode" value="all" id="routing-mode-all" required{{if eq .Routing.Mode "all"}} checked{{end}}{{if not .Routing.CanAll}} disabled{{end}}>
+              <span>
+                <span class="routing-radio-title">{{.Routing.AllMode}}</span>
+                <span class="muted small">{{.Routing.AllHint}}</span>
+              </span>
+            </label>
+            <label class="routing-radio">
+              <input type="radio" name="mode" value="own" id="routing-mode-own" required{{if eq .Routing.Mode "own"}} checked{{end}}>
+              <span>
+                <span class="routing-radio-title">{{.Text.overview_route_own}}</span>
+                <span class="muted small">{{.Routing.OwnHint}}</span>
+              </span>
+            </label>
+          </fieldset>
+
+          <section class="routing-section routing-provider" aria-labelledby="routing-rules-title">
+            <div class="routing-section-head">
+              <h2 id="routing-rules-title" class="clip" title="{{.Routing.ProviderHeading}}">{{.Routing.ProviderHeading}}</h2>
+              {{if .Routing.SubscriptionUpdated}}<span class="muted small">{{.Routing.SubscriptionUpdated}}</span>{{end}}
+            </div>
+            {{if .Routing.RuleState}}<p class="note">{{.Routing.RuleState}}</p>{{end}}
+            <table class="tbl routing-rules" aria-labelledby="routing-rules-title">
+              <colgroup><col><col class="routing-rule-control"></colgroup>
+              {{range .Routing.RuleGroups}}
+              <tbody>
+                <tr class="grp"><th colspan="2" scope="rowgroup">{{.Label}}</th></tr>
+                {{range .Rules}}
+                <tr>
+                  <td><span class="clip" title="{{.Label}}">{{.Label}}</span></td>
+                  <td class="routing-rule-setting">
+                    {{if .Reason}}<span class="muted small">{{.Reason}}</span>{{else}}
+                    <input type="hidden" name="rule" value="{{.Key}}">
+                    <label class="tg">
+                      <input type="checkbox" role="switch" name="enabled" value="{{.Key}}"{{if .Checked}} checked{{end}} aria-label="{{.Label}}">
+                      <span class="tg-track" aria-hidden="true"></span>
+                    </label>
+                    {{end}}
+                  </td>
+                </tr>
+                {{end}}
+              </tbody>
+              {{end}}
+              <tfoot><tr><td colspan="2">
+                <div class="fld routing-remaining">
+                  <label for="routing-remaining">{{.Text.routing_rest}}</label>
+                  <select id="routing-remaining" name="remaining"{{if .Routing.RemainingVPNProblem}} aria-describedby="routing-remaining-problem"{{end}}>
+                    <option value="direct"{{if eq .Routing.Remaining "direct"}} selected{{end}}>{{.Text.routing_rest_option_direct}}</option>
+                    <option value="vpn"{{if eq .Routing.Remaining "vpn"}} selected{{end}}{{if not .Routing.CanAll}} disabled{{end}}>{{.Text.routing_rest_option_vpn}}</option>
+                    <option value="profile"{{if eq .Routing.Remaining "profile"}} selected{{end}}>{{.Routing.ProfileRemaining}}</option>
+                  </select>
+                  {{if .Routing.RemainingVPNProblem}}<p id="routing-remaining-problem" class="hint">{{.Routing.RemainingVPNProblem}}</p>{{end}}
+                </div>
+              </td></tr></tfoot>
+            </table>
+            {{if .Routing.HasSwitches}}<p class="hint">{{.Text.routing_switch_hint}}</p>{{end}}
+          </section>
+
+          <section class="routing-section" aria-labelledby="routing-own-title">
+            <h2 id="routing-own-title">{{.Text.routing_own_title}}</h2>
+            <p class="hint">{{.Text.routing_list_hint}}</p>
+            {{if .Routing.OtherGroups}}<p class="hint">{{.Text.routing_other_groups}}</p>{{end}}
+            <div class="routing-lists">
+              <div class="fld routing-vpn-list">
+                <label for="routing-own-vpn">{{.Routing.VPNTitle}}</label>
+                <textarea id="routing-own-vpn" name="own-vpn" rows="4" spellcheck="false"{{if .Routing.VPN.ReadOnlyNote}} disabled{{end}}{{if or .Routing.VPN.InvalidLines .Routing.Overlap}} aria-invalid="true" aria-describedby="routing-vpn-errors{{if .Routing.VPN.ReadOnlyNote}} routing-vpn-note{{end}}"{{else if .Routing.VPN.ReadOnlyNote}} aria-describedby="routing-vpn-note"{{end}}>
+{{.Routing.VPN.Value}}</textarea>
+                {{if .Routing.VPN.ReadOnlyNote}}<p class="hint" id="routing-vpn-note">{{.Routing.VPN.ReadOnlyNote}}</p>{{end}}
+                {{if or .Routing.VPN.InvalidLines .Routing.Overlap}}<ul id="routing-vpn-errors" class="routing-errors" role="alert">
+                  {{range .Routing.VPN.InvalidLines}}<li>{{printf $.Text.routing_invalid_entry .}}</li>{{end}}
+                  {{if .Routing.Overlap}}<li>{{.Text.routing_overlap}}</li>{{end}}
+                </ul>{{end}}
+              </div>
+              <div class="fld routing-direct-list">
+                <label for="routing-own-direct">{{.Text.routing_own_direct}}</label>
+                <textarea id="routing-own-direct" name="own-direct" rows="4" spellcheck="false"{{if .Routing.Direct.ReadOnlyNote}} disabled{{end}}{{if or .Routing.Direct.InvalidLines .Routing.Overlap}} aria-invalid="true" aria-describedby="routing-direct-errors{{if .Routing.Direct.ReadOnlyNote}} routing-direct-note{{end}}"{{else if .Routing.Direct.ReadOnlyNote}} aria-describedby="routing-direct-note"{{end}}>
+{{.Routing.Direct.Value}}</textarea>
+                {{if .Routing.Direct.ReadOnlyNote}}<p class="hint" id="routing-direct-note">{{.Routing.Direct.ReadOnlyNote}}</p>{{end}}
+                {{if or .Routing.Direct.InvalidLines .Routing.Overlap}}<ul id="routing-direct-errors" class="routing-errors" role="alert">
+                  {{range .Routing.Direct.InvalidLines}}<li>{{printf $.Text.routing_invalid_entry .}}</li>{{end}}
+                  {{if .Routing.Overlap}}<li>{{.Text.routing_overlap}}</li>{{end}}
+                </ul>{{end}}
+              </div>
+            </div>
+          </section>
+
+          <div class="actions">
+            <button class="btn" type="submit">{{.Text.overview_save}}</button>
+            {{if not .ViewOnly}}<a class="btn soft" href="/routing">{{.Text.setup_cancel}}</a>{{end}}
+          </div>
+        </fieldset>
+      </form>
+      {{end}}
+{{template "page-end" .}}{{end}}

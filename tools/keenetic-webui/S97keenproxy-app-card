@@ -1,0 +1,123 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Entware can source init scripts. Keep state and traps local to this service.
+(
+set -eu
+umask 077
+export PATH="/opt/bin:/opt/sbin:$PATH"
+webroot=/usr/share/htdocs_
+index="$webroot/index.html"
+assets=/opt/share/keenproxy-app-card
+state=/var/run/keenproxy-app-card
+page="$state/index.html"
+
+fail() {
+    printf 'KeenProxy application card: %s\n' "$1" >&2
+    exit 1
+}
+
+# Entware's BusyBox exposes terse stat output and omits custom formats.
+stat_fields() {
+    record=$(stat -t "$1") || return 1
+    printf '%s\n' "$record" | awk -v first="$2" -v second="$3" 'NF >= 8 { print $first ":" $second }'
+}
+
+# Own exactly one bind mount of the file generated in the private state directory.
+owns_mount() {
+    [ "$mounts" -eq 1 ] &&
+        [ -f "$page" ] && [ ! -L "$page" ] || return 1
+    mounted_inode=$(stat_fields "$index" 7 8) || return 1
+    rendered_inode=$(stat_fields "$page" 7 8) || return 1
+    [ -n "$mounted_inode" ] && [ "$mounted_inode" = "$rendered_inode" ]
+}
+
+check_firmware() {
+    # KN-3812 stable 5.1.10 (5.01.C.10.0-0). The card depends on this UI layout.
+    if ! (
+        [ -f "$index" ] && [ ! -L "$index" ] &&
+            [ ! -e "$index.gz" ] && [ ! -e "$index.br" ] &&
+            cd "$webroot" &&
+            sha256sum -c - >/dev/null <<'DIGESTS'
+7cc239aa54bd19bc2f09b6f82da1fb6fbe44df9cb83f027410d98c2a011b007d  index.html
+67eff6ec79ddea853a7ed383fc7cc37d41e1b93d90ea9eb0260973d1ba5e224f  main-545548A.js
+f95d839e4e55e4b8bad209dca22eed26fa83ff129bb56e15a6018d243394c7f9  styles-545548A.css
+DIGESTS
+    ); then
+        fail 'the stock WebUI fingerprint differs from the supported firmware'
+    fi
+}
+
+# Add only the assets this package owns to the stock bootstrap document.
+render_page() {
+    [ -s "$assets/applications-card.css" ] && [ -s "$assets/applications-card.js" ] ||
+        fail 'the card assets are missing'
+    awk -v css="$assets/applications-card.css" -v js="$assets/applications-card.js" '
+        function insert_asset(line, closing, tag, file, position, content, result) {
+            position = index(line, closing)
+            if (!position) return line
+            printf "%s<%s data-keenproxy-webui-card>\n", substr(line, 1, position - 1), tag
+            while ((result = (getline content < file)) > 0) {
+                if (index(tolower(content), "</" tag)) invalid = 1
+                print content
+            }
+            close(file)
+            if (result < 0) invalid = 1
+            printf "</%s>", tag
+            inserted[tag]++
+            return substr(line, position)
+        }
+        {
+            line = insert_asset($0, "</head>", "style", css)
+            print insert_asset(line, "</body>", "script", js)
+        }
+        END { if (invalid || inserted["style"] != 1 || inserted["script"] != 1) exit 1 }
+    ' "$index" >"$pending" || fail 'could not render the WebUI document'
+}
+
+case "${1:-}" in
+    start|stop|restart|reconfigure|check|status|kill) ;;
+    *) fail 'unsupported Entware service action' ;;
+esac
+
+[ ! -L "$state" ] || fail 'the runtime directory is a symlink'
+mkdir -p "$state"
+# The mode includes the directory type. 0x41c0 is a directory with mode 0700.
+[ "$(stat_fields "$state" 4 5)" = '41c0:0' ] ||
+    fail 'the runtime directory is not private'
+mkdir "$state/lock" || fail 'another card operation is in progress'
+pending=
+trap 'if [ -n "$pending" ]; then rm -f "$pending"; fi; rmdir "$state/lock"' EXIT
+trap 'exit 1' HUP INT TERM
+
+mounts=$(awk -v target="$index" '$5 == target { n++ } END { print n + 0 }' /proc/self/mountinfo)
+if [ "$mounts" -ne 0 ]; then
+    owns_mount || fail 'a different mount covers the stock WebUI document'
+fi
+
+case "$1" in
+    start|restart|reconfigure)
+        if [ "$mounts" -eq 1 ]; then
+            if [ "$1" = start ]; then exit 0; fi
+            umount "$index"
+        fi
+        check_firmware
+        pending=$(mktemp "$state/index.XXXXXX")
+        render_page
+        chmod 0644 "$pending"
+        mv -f "$pending" "$page"
+        pending=
+        if ! mount -o bind "$page" "$index"; then
+            rm -f "$page"
+            fail 'could not attach the WebUI document'
+        fi
+        ;;
+    stop|kill)
+        if [ "$mounts" -eq 1 ]; then umount "$index"; fi
+        rm -f "$page"
+        ;;
+    check|status)
+        [ "$mounts" -eq 1 ] || fail 'inactive'
+        printf '%s\n' 'KeenProxy application card is active'
+        ;;
+esac
+)

@@ -1,0 +1,434 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/netip"
+	"slices"
+
+	"github.com/ordo-systems/keen-proxy/internal/api"
+	"github.com/ordo-systems/keen-proxy/internal/compile"
+	"github.com/ordo-systems/keen-proxy/internal/daemon"
+	"github.com/ordo-systems/keen-proxy/internal/engine"
+	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
+	"github.com/ordo-systems/keen-proxy/internal/ui"
+	"github.com/ordo-systems/keen-proxy/internal/update"
+)
+
+type managementDaemon interface {
+	api.Daemon
+	Devices() []daemon.Device
+	PreviewSubscriptionDetails(context.Context, subscription.Source) daemon.SubscriptionPreviewDetails
+	ApplyIfCurrent(context.Context, *model.Config, string) error
+	ApplyUnlessRulesWithheld(context.Context, *model.Config, string, string) error
+	CompileConnectionDraft(*model.Config) (compile.Output, error)
+	CompileConnectionSettings(*model.Config) ([]byte, error)
+	ApplySubscriptionPreview(context.Context, *model.Config, string, subscription.PreviewRef) error
+	RoutingStatus() daemon.RoutingStatus
+	ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, daemon.ProviderRulesState)
+	Subscriptions() []daemon.SubscriptionStatus
+	TrafficSeries() []stats.Point
+	RefreshSubscriptionIfCurrent(id, revision string) error
+	CheckSubscriptionIfCurrent(source, node, revision string) error
+	ConnectionHealth(id string) (daemon.ConnectionObservation, bool)
+	ConnectionTraffic(id string) (int, []stats.Point)
+	CheckConnectionIfCurrent(ctx context.Context, id, revision string) error
+	SystemStats() stats.System
+	DiagnosticNode(tag string) daemon.DiagnosticNode
+	DiagnosticTargetIfCurrent(ctx context.Context, target, revision string) (daemon.DiagnosticReport, error)
+}
+
+// uiDeps gives pages display snapshots and revision-checked management operations.
+type uiDeps struct {
+	daemon  managementDaemon
+	updates *update.Manager
+	bundle  http.HandlerFunc
+}
+
+func (d uiDeps) Config() *model.Config {
+	return d.daemon.Config()
+}
+
+func (d uiDeps) PreviewSubscription(ctx context.Context, source subscription.Source) ui.SetupPreview {
+	details := d.daemon.PreviewSubscriptionDetails(ctx, source)
+	status := details.Status
+	result := ui.SetupPreview{
+		State: status.State, Metadata: status.Metadata, NodeCount: len(status.Nodes),
+		Routing: details.Routing, RulesState: string(status.RulesState), PreviewID: details.PreviewID,
+	}
+	const maxNames = 6
+	for _, node := range status.Nodes[:min(len(status.Nodes), maxNames)] {
+		result.NodeNames = append(result.NodeNames, node.Name)
+	}
+	return result
+}
+
+func (uiDeps) LANPrefix(iface string) (netip.Prefix, error) {
+	return lanPrefix(iface, lanPrefixes)
+}
+
+func (d uiDeps) Apply(ctx context.Context, cfg *model.Config, revision string) error {
+	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
+	return d.daemon.ApplyIfCurrent(ctx, cfg, revision)
+}
+
+func (d uiDeps) ApplyUnlessRulesWithheld(ctx context.Context, cfg *model.Config, revision, source string) error {
+	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
+	return d.daemon.ApplyUnlessRulesWithheld(ctx, cfg, revision, source)
+}
+
+func (d uiDeps) ConnectionRuntimeTags(cfg *model.Config) ([]string, error) {
+	compiled, err := d.daemon.CompileConnectionDraft(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return engine.RuntimeOutboundTags(compiled.SingBox)
+}
+
+func (d uiDeps) ValidateConnection(ctx context.Context, cfg *model.Config, id string) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	i := slices.IndexFunc(cfg.Connections, func(c model.Connection) bool { return c.ID == id })
+	if i < 0 {
+		return errors.New("missing connection to validate")
+	}
+	changed := cfg.Connections[i]
+	if err := validateWizardRouting(ctx, changed); err != nil {
+		return err
+	}
+	if err := api.ValidateProfileFields(changed); err != nil {
+		return err
+	}
+	if err := d.validateConnectionGraph(ctx, cfg); err != nil || !changed.Disabled {
+		return err
+	}
+	// Also validate the edited payload with its switch on. The real
+	// candidate above keeps the disabled relay and other dormant profiles.
+	validation := *cfg
+	validation.Connections = slices.Clone(cfg.Connections)
+	validation.Connections[i].Disabled = false
+	return d.validateConnectionGraph(ctx, &validation)
+}
+
+// ConnectionReserveTargets uses the union of the two switch positions. The
+// picker stays stable while the operator edits either control.
+func (d uiDeps) ConnectionReserveTargets(ctx context.Context, cfg *model.Config, id string) []string {
+	i := slices.IndexFunc(cfg.Connections, func(c model.Connection) bool { return c.ID == id })
+	if i < 0 {
+		return nil
+	}
+	draft := *cfg
+	draft.Connections = slices.Clone(cfg.Connections)
+	current := &draft.Connections[i]
+	targets := cfg.ConnectionFallbackTargets(id)
+	allowed := make(map[string]bool, len(targets))
+	var affected []string
+	for _, conn := range cfg.Connections {
+		if slices.Contains(cfg.Chain(conn.ID), id) {
+			affected = append(affected, compile.FailoverTagPrefix+conn.ID)
+		}
+	}
+	for _, disabled := range []bool{current.Disabled, !current.Disabled} {
+		if ctx.Err() != nil || len(allowed) == len(targets) {
+			break
+		}
+		current.Disabled = disabled
+		// No reserve can remove the generated selector or introduce a block
+		// stub. Evaluate that shape separately from nonempty reserves.
+		if !allowed[""] {
+			current.Fallback = ""
+			raw, err := d.daemon.CompileConnectionSettings(&draft)
+			if err == nil && engine.ValidateStaticOutboundGraph(ctx, raw) == nil {
+				allowed[""] = true
+			}
+		}
+		if len(targets) > 1 {
+			current.Fallback = model.TargetDirect
+			raw, err := d.daemon.CompileConnectionSettings(&draft)
+			if err == nil {
+				for _, target := range engine.StaticReserveChoices(ctx, raw, affected, targets[1:], cfg.ActiveChain) {
+					allowed[target] = true
+				}
+			}
+		}
+	}
+	return slices.DeleteFunc(targets, func(target string) bool { return !allowed[target] })
+}
+
+func (d uiDeps) CheckConnectionSettings(ctx context.Context, cfg *model.Config) error {
+	_, err := d.connectionSettingsGraph(ctx, cfg)
+	return safeWizardCoreError(err)
+}
+
+func (d uiDeps) ValidateConnectionSettings(ctx context.Context, cfg *model.Config) error {
+	raw, err := d.connectionSettingsGraph(ctx, cfg)
+	if err == nil {
+		err = engine.ValidateRuntimeProfiles(ctx, raw)
+	}
+	return safeWizardCoreError(err)
+}
+
+func (d uiDeps) connectionSettingsGraph(ctx context.Context, cfg *model.Config) ([]byte, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, errors.New("invalid connection settings")
+	}
+	raw, err := d.daemon.CompileConnectionSettings(cfg)
+	if err == nil {
+		err = engine.ValidateStaticOutboundGraph(ctx, raw)
+	}
+	return raw, err
+}
+
+// Check the edited raw profile in isolation before constructing a core that
+// can also resolve tags from the applied and generated configuration.
+func validateWizardRouting(ctx context.Context, profile model.Connection) error {
+	if profile.Type != model.ConnSingBox {
+		return nil
+	}
+	profile.Disabled = false
+	raw, err := compile.ConnectionValidationConfig(&model.Config{Connections: []model.Connection{profile}})
+	if err == nil {
+		err = engine.ValidateImportedProfileRouting(ctx, raw)
+	}
+	return safeWizardCoreError(err)
+}
+
+func (d uiDeps) validateConnectionGraph(ctx context.Context, cfg *model.Config) error {
+	compiled, err := d.daemon.CompileConnectionDraft(cfg)
+	if err == nil {
+		var raw []byte
+		raw, err = compile.RuntimeValidationConfig(compiled)
+		if err == nil {
+			err = engine.ValidateRuntimeProfiles(ctx, raw)
+		}
+	}
+	return safeWizardCoreError(err)
+}
+
+func safeWizardCoreError(err error) error {
+	if err != nil && !errors.Is(err, model.ErrConnectionTagConflict) && !errors.Is(err, model.ErrConnectionRoutingOverride) {
+		return errors.New("core rejected the connection configuration")
+	}
+	return err
+}
+
+func (d uiDeps) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error {
+	ctx = daemon.WithActor(ctx, daemon.Actor{Who: "user"})
+	return d.daemon.ApplySubscriptionPreview(ctx, cfg, revision, checked)
+}
+
+func (d uiDeps) OverviewStatus() ui.OverviewStatus {
+	routing := d.daemon.RoutingStatus()
+	status := ui.OverviewStatus{
+		Ready: routing.Ready, Devices: routing.Devices, ManagedDevices: routing.ManagedDevices,
+		HomeTargets: routing.HomeTargets,
+		Connections: make(map[string]ui.ConnectionStatus, len(routing.Health)),
+	}
+	for id, health := range routing.Health {
+		status.Connections[id] = ui.ConnectionStatus{
+			Checked: !health.Checked.IsZero(), Available: health.OK, LatencyMS: health.Latency,
+		}
+	}
+	for id, failover := range routing.Failover {
+		connection := status.Connections[id]
+		connection.Active = failover.Active
+		connection.ActiveClass = routing.ActiveTargetClasses[id]
+		status.Connections[id] = connection
+	}
+	for id, class := range routing.TargetClasses {
+		connection := status.Connections[id]
+		connection.Class = class
+		status.Connections[id] = connection
+	}
+	rules, settings, state := d.daemon.ProviderRules()
+	status.RulesState = string(state)
+	if settings != nil {
+		status.RulesSource = settings.Source
+		status.RulesHasProfile = rules.RouteOrder != ""
+		status.RulesGlobalProxy = rules.GlobalProxy
+	}
+	if settings != nil && (state == daemon.ProviderRulesReady || state == daemon.ProviderRulesPartial) {
+		status.RulesTotal = len(rules.Rules)
+		disabled := settings.DisabledRuleKeys()
+		for _, rule := range rules.Rules {
+			if rule.Unavailable == "" && !disabled[rule.Key] {
+				status.RulesActive++
+			}
+		}
+	}
+	return status
+}
+
+func (d uiDeps) Devices() []ui.DiscoveredDevice {
+	observed := d.daemon.Devices()
+	list := make([]ui.DiscoveredDevice, 0, len(observed))
+	for _, dev := range observed {
+		list = append(list, ui.DiscoveredDevice{MAC: dev.MAC, IP: dev.IP, Name: dev.Hostname})
+	}
+	return list
+}
+
+func (d uiDeps) ProviderRules() ui.RoutingRules {
+	rules, settings, state := d.daemon.ProviderRules()
+	view := ui.RoutingRules{
+		State: string(state), HasProfile: rules.RouteOrder != "", GlobalProxy: rules.GlobalProxy,
+	}
+	if settings == nil {
+		return view
+	}
+	view.Source = settings.Source
+	view.Rules = make([]ui.RoutingRule, 0, len(rules.Rules))
+	for _, rule := range rules.Rules {
+		item := ui.RoutingRule{Key: rule.Key, Action: rule.Action, Kind: rule.Kind, Source: rule.Source, Unavailable: rule.Unavailable}
+		if rule.Source == "literals" {
+			item.LiteralCount = len(rule.Suffix) + len(rule.Full) + len(rule.Keyword) + len(rule.Regex) + len(rule.CIDR)
+		}
+		view.Rules = append(view.Rules, item)
+	}
+	return view
+}
+
+func (d uiDeps) Subscriptions() []ui.AppliedSubscription {
+	sources := d.daemon.Subscriptions()
+	list := make([]ui.AppliedSubscription, 0, len(sources))
+	for _, status := range sources {
+		view := ui.AppliedSubscription{
+			ID: status.ID, State: status.State, Metadata: status.Metadata, ActiveNode: status.ActiveNode,
+			Unavailable: status.Unavailable, SwitchReason: status.SwitchReason,
+			RulesState: string(status.RulesState), RulesWithheld: status.RulesWithheld,
+			BalanceEligible: status.BalanceEligible, Refreshing: status.Refreshing,
+			Skipped: status.Skipped, CheckingAll: status.CheckProgress != nil,
+			Nodes: make([]ui.SubscriptionNode, 0, len(status.Nodes)),
+		}
+		if status.LastSuccess != nil {
+			view.LastSuccess = *status.LastSuccess
+		}
+		if status.NextRefresh != nil {
+			view.NextRefresh = *status.NextRefresh
+		}
+		for _, node := range status.Nodes {
+			view.Nodes = append(view.Nodes, ui.SubscriptionNode{
+				ID: node.ID, Name: node.Name, Health: node.Health, LatencyMS: node.LatencyMS, Checking: node.Checking,
+			})
+		}
+		list = append(list, view)
+	}
+	return list
+}
+
+func (d uiDeps) TrafficSeries() []stats.Point {
+	return d.daemon.TrafficSeries()
+}
+
+func (d uiDeps) RefreshSubscription(id, revision string) error {
+	return d.daemon.RefreshSubscriptionIfCurrent(id, revision)
+}
+
+func (d uiDeps) CheckSubscription(source, node, revision string) error {
+	return d.daemon.CheckSubscriptionIfCurrent(source, node, revision)
+}
+
+func (d uiDeps) ConnectionHealth(id string) (ui.ConnectionHealth, bool) {
+	health, found := d.daemon.ConnectionHealth(id)
+	return ui.ConnectionHealth(health), found
+}
+
+func (uiDeps) ConnectionGroupMembers(ctx context.Context, conn model.Connection) []string {
+	return daemon.ConnectionGroupMembers(ctx, conn)
+}
+
+func (d uiDeps) ConnectionTraffic(id string) (int, []stats.Point) {
+	return d.daemon.ConnectionTraffic(id)
+}
+
+func (d uiDeps) ConnectionHosts(id string, limit int) ([]stats.Host, int) {
+	return d.daemon.Hosts(id, "", limit)
+}
+
+func (d uiDeps) CheckConnection(ctx context.Context, id, revision string) error {
+	return d.daemon.CheckConnectionIfCurrent(ctx, id, revision)
+}
+
+// ConnectionProfileReferences guards legacy raw profiles that intentionally
+// depend on another saved outbound. New wizard imports have no such references.
+func (uiDeps) ConnectionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error) {
+	tags := []string{id}
+	for _, conn := range cfg.Connections {
+		if conn.ID == id && (conn.Disabled || conn.Fallback != "") {
+			tags = append(tags, compile.FailoverTagPrefix+id)
+			break
+		}
+	}
+	encoded := make([][]byte, len(tags))
+	for i, tag := range tags {
+		encoded[i], _ = json.Marshal(tag)
+	}
+	return savedProfileReferences(ctx, cfg, id, func(raw []byte) bool {
+		return slices.ContainsFunc(encoded, func(tag []byte) bool { return bytes.Contains(raw, tag) })
+	}, func(tag string) bool { return slices.Contains(tags, tag) })
+}
+
+// SubscriptionProfileReferences recognizes selectors and pinned targets even
+// in saved profiles whose connections are currently disabled.
+func (uiDeps) SubscriptionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error) {
+	prefix := []byte(`"` + model.ManagedTarget(id, ""))
+	return savedProfileReferences(ctx, cfg, "", func(raw []byte) bool {
+		return bytes.Contains(raw, prefix)
+	}, func(tag string) bool {
+		source, _, ok := model.ParseManagedTarget(tag)
+		return ok && source == id
+	})
+}
+
+func savedProfileReferences(ctx context.Context, cfg *model.Config, skipID string, mayReference func([]byte) bool, matches func(string) bool) ([]string, error) {
+	var refs []string
+	var inspectionErr error
+	for _, conn := range cfg.Connections {
+		if err := ctx.Err(); err != nil {
+			return refs, err
+		}
+		if conn.Type != model.ConnSingBox || conn.ID == skipID {
+			continue
+		}
+		conn.Disabled = false
+		raw, err := compile.ConnectionValidationConfig(&model.Config{Connections: []model.Connection{conn}})
+		if err != nil {
+			// Projection precedes the target filter. Failure applies to every target.
+			inspectionErr = errors.New("could not inspect a saved raw profile")
+			continue
+		}
+		// An unrelated dormant profile can require a different build.
+		// Decode only profiles that contain a possible reference.
+		if !mayReference(raw) {
+			continue
+		}
+		found, err := engine.ProfileReferencesOutbound(ctx, raw, matches)
+		if err != nil {
+			if inspectionErr == nil {
+				inspectionErr = ui.ErrProfileReferenceUncertain
+			}
+			continue
+		}
+		if found {
+			refs = append(refs, conn.ID)
+		}
+	}
+	return refs, inspectionErr
+}
+
+func pageRole(r *http.Request) ui.Role {
+	switch api.RoleFrom(r.Context()) {
+	case api.RoleView:
+		return ui.RoleView
+	case api.RoleManage:
+		return ui.RoleManage
+	default:
+		return ui.RoleDeny
+	}
+}

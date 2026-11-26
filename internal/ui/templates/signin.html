@@ -1,0 +1,16 @@
+{{define "signin"}}{{template "page-start" .}}
+      <section class="center">
+        <h1>{{.Title}}</h1>
+        {{if eq .Status 401}}
+        <p class="lead">{{.Text.signin_intro}}</p>
+        <p class="lead">{{.Text.signin_instructions}}</p>
+        {{if .Origin}}<div class="row-btns"><a class="btn" href="{{.Origin}}">{{.Text.signin_button}}</a></div>{{end}}
+        {{if .DirectURL}}<p class="lead muted">{{.Text.signin_direct}} <a href="{{.DirectURL}}">{{.DirectURL}}</a></p>{{end}}
+        {{else if eq .Status 503}}
+        <p class="lead">{{.Text.unavailable_intro}}</p>
+        {{else}}
+        <p class="lead">{{if .User}}{{printf .Text.denied_account .User}}{{else}}{{.Text.denied_intro}}{{end}}</p>
+        {{if .Origin}}<div class="row-btns"><a class="btn out" href="{{.Origin}}">{{.Text.denied_button}}</a></div>{{end}}
+        {{end}}
+      </section>
+{{template "page-end" .}}{{end}}

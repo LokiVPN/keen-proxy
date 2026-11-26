@@ -1,0 +1,52 @@
+{{define "page-start"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}{{if ne .Title "KeenProxy"}} · KeenProxy{{end}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {{if .SignedIn}}<script src="/static/app.js" defer></script>{{end}}
+</head>
+<body class="kp">
+  {{template "header" .}}
+  <main class="kp-main">
+    <div class="kp-page">
+      {{if .ViewOnly}}{{template "view-note" .}}{{end}}
+{{end}}
+
+{{define "page-end"}}    </div>
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "page"}}{{template "page-start" .}}
+      <h1>{{.Title}}</h1>
+      {{template "tabs" .}}
+      {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
+      <p class="lead">{{.Message}}</p>
+{{template "page-end" .}}{{end}}
+
+{{define "header"}}{{if or .Origin (and .SignedIn .User)}}
+  <header class="kp-head">
+    {{if .Origin}}
+    <a class="kp-back" href="{{.Origin}}">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6 8.5 12l6 6"/></svg>KeeneticOS
+    </a>
+    {{end}}
+    {{if and .SignedIn .User}}
+    <div class="kp-session">
+      <span class="kp-user">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1.2-3.3 3.8-5 7-5s5.8 1.7 7 5"/></svg>
+        <span class="uname">{{.User}}</span>
+      </span>
+      <form method="post" action="/api/logout">
+        <button class="linkbtn kp-logout" type="submit" aria-label="{{.Text.logout}}">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4.5H6.5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1H14M10.5 12h9M16.5 8.5 20 12l-3.5 3.5"/></svg>
+          <span class="ltxt">{{.Text.logout}}</span>
+        </button>
+      </form>
+    </div>
+    {{end}}
+  </header>
+{{end}}{{end}}

@@ -1,23 +1,527 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ordo-systems/keen-proxy/internal/compile"
+	"github.com/ordo-systems/keen-proxy/internal/engine"
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/netfilter"
+	"github.com/ordo-systems/keen-proxy/internal/subscription"
+	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
 type diagnosticTransport func(*http.Request) (*http.Response, error)
 
 func (f diagnosticTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func useLocalDiagnostic(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	hits := new(atomic.Int64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	tests := diagnosticTests
+	diagnosticTests = []diagnosticTest{{kind: "http", url: server.URL}}
+	t.Cleanup(func() { diagnosticTests = tests })
+	return hits
+}
+
+func startDiagnosticCore(t *testing.T, cfg *model.Config) *Daemon {
+	t.Helper()
+	cfg.Defaults()
+	raw, err := compile.ConnectionSettingsConfig(compile.Input{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{cfg: cfg}
+	if _, err := d.eng.Apply(raw); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.eng.Close() })
+	return d
+}
+
+func useLocalDiagnosticSOCKS(t *testing.T) (int, *atomic.Int64) {
+	t.Helper()
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proxyHits atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := proxy.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		var greeting [2]byte
+		if _, err := io.ReadFull(conn, greeting[:]); err != nil || greeting[0] != 5 {
+			return
+		}
+		if _, err := io.CopyN(io.Discard, conn, int64(greeting[1])); err != nil {
+			return
+		}
+		if _, err := conn.Write([]byte{5, 0}); err != nil {
+			return
+		}
+		var request [10]byte // SOCKS5 CONNECT to the local IPv4 fixture
+		if _, err := io.ReadFull(conn, request[:]); err != nil {
+			return
+		}
+		proxyHits.Add(1)
+		if _, err := conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 0}); err != nil {
+			return
+		}
+		if r, err := http.ReadRequest(bufio.NewReader(conn)); err == nil {
+			_ = r.Body.Close()
+			_, _ = io.WriteString(conn, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+		}
+	}()
+	t.Cleanup(func() { _ = proxy.Close(); <-done })
+	return proxy.Addr().(*net.TCPAddr).Port, &proxyHits
+}
+
+func TestDiagnosticTargetRefusesDetourThroughReachableReserve(t *testing.T) {
+	hits := useLocalDiagnostic(t)
+	port, proxyHits := useLocalDiagnosticSOCKS(t)
+	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
+		{ID: "disabled", Type: model.ConnLink, Link: "socks5://192.0.2.1:1080", Disabled: true, Fallback: "reserve"},
+		{ID: "disabled-vpn", Type: model.ConnLink, Link: "socks5://192.0.2.1:1080", Disabled: true, Fallback: "reserve-vpn"},
+		{ID: "dependent", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "version": "5", "server": "127.0.0.1", "server_port": port, "detour": "disabled",
+		}},
+		{ID: "group", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"disabled"}}},
+		{ID: "alias", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"failover-disabled"}}},
+		{ID: "group-with-vpn-reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"failover-disabled-vpn"}}},
+		{ID: "reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+		{ID: "reserve-vpn", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "version": "5", "server": "127.0.0.1", "server_port": port,
+		}},
+	}})
+	d.chains = []compile.FailoverChain{
+		{ID: "disabled", Tag: "failover-disabled"},
+		{ID: "disabled-vpn", Tag: "failover-disabled-vpn"},
+	}
+	rev := model.ConfigRevision(d.Config())
+	control, err := d.DiagnosticTargetIfCurrent(t.Context(), "reserve", rev)
+	if err != nil || len(control.Results) != 1 || !control.Results[0].OK || hits.Load() != 1 {
+		t.Fatal("the local reserve control could not reach the diagnostic endpoint")
+	}
+	dependent, err := d.DiagnosticTargetIfCurrent(t.Context(), "dependent", rev)
+	if !errors.Is(err, engine.ErrDiagnosticPath) || len(dependent.Results) != 0 || proxyHits.Load() != 0 {
+		t.Fatal("the raw detour reached its proxy through the disabled hop")
+	}
+	for target, leaf := range map[string]string{"group": "reserve", "alias": "reserve", "group-with-vpn-reserve": "reserve-vpn"} {
+		result, err := d.DiagnosticTargetIfCurrent(t.Context(), target, rev)
+		if err != nil || !result.SkippedVPN || result.Group != target || result.Connection != leaf ||
+			len(result.Results) != 0 || proxyHits.Load() != 0 || hits.Load() != 1 {
+			t.Errorf("%s diagnostic did not report and skip the selected reserve, proxy hits %d", target, proxyHits.Load())
+		}
+	}
+}
+
+func TestDiagnosticTargetUsesSelectedConcreteLeaf(t *testing.T) {
+	hits := useLocalDiagnostic(t)
+	port, proxyHits := useLocalDiagnosticSOCKS(t)
+	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
+		{ID: "main", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"nested"}}},
+		{ID: "nested", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "selector", "outbounds": []string{"first", "selected", "reject"}, "default": "selected",
+		}},
+		{ID: "first", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+		{ID: "direct-alias", Type: model.ConnSingBox, Outbound: map[string]any{"type": "selector", "outbounds": []string{"first"}}},
+		{ID: "selected", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "socks", "version": "5", "server": "127.0.0.1", "server_port": port,
+		}},
+		{ID: "reject", Type: model.ConnSingBox, Outbound: map[string]any{"type": "block"}},
+	}})
+	rev := model.ConfigRevision(d.Config())
+	report, err := d.DiagnosticTargetIfCurrent(t.Context(), "main", rev)
+	if err != nil || report.Group != "main" || report.Connection != "selected" || report.SkippedVPN ||
+		len(report.Results) != 1 || !report.Results[0].OK || proxyHits.Load() != 1 || hits.Load() != 0 {
+		t.Fatalf("expected the selected leaf to run the check, got %q, %d proxy hits, error %v", report.Connection, proxyHits.Load(), err)
+	}
+	if !d.eng.Select("nested", "reject") {
+		t.Fatal("could not select the block leaf")
+	}
+	blocked, err := d.DiagnosticTargetIfCurrent(t.Context(), "main", rev)
+	if err != nil || !blocked.SkippedVPN || blocked.Group != "main" || blocked.Connection != "reject" ||
+		len(blocked.Results) != 0 || hits.Load() != 0 {
+		t.Fatal("the selected block leaf was not reported as skipped")
+	}
+	direct, err := d.DiagnosticTargetIfCurrent(t.Context(), "direct-alias", rev)
+	if err != nil || direct.SkippedVPN || direct.Group != "direct-alias" || direct.Connection != "first" ||
+		len(direct.Results) != 1 || !direct.Results[0].OK || hits.Load() != 1 {
+		t.Fatal("the single direct target did not preserve its connectivity check")
+	}
+}
+
+func TestDiagnosticRawFailoverOnDirectSkipsTheVPNCheck(t *testing.T) {
+	hits := useLocalDiagnostic(t)
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(health.Close)
+	failed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			conn, err := failed.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = failed.Close(); <-stopped })
+	// The simulated tunnel's SOCKS handshake always fails. The direct
+	// member can reach the distinct URL-test health endpoint.
+	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
+		{ID: "main", Type: model.ConnSingBox, Outbound: map[string]any{
+			"type": "urltest", "mode": "failover", "url": health.URL, "outbounds": []string{"vpn", "reserve"},
+		}},
+		{ID: "vpn", Type: model.ConnLink, Link: "socks5://" + failed.Addr().String()},
+		{ID: "reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+	}})
+	out, _, ok := d.eng.Outbound("main")
+	group, isGroup := out.(adapter.URLTestGroup)
+	if !ok || !isGroup {
+		t.Fatal("raw failover group did not start")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		if selected := group.Selected("tcp"); selected != nil && selected.Tag() == "reserve" {
+			break
+		}
+		if _, err := group.URLTest(ctx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("raw failover group did not select its healthy direct member")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	report, err := d.DiagnosticTargetIfCurrent(ctx, "main", model.ConfigRevision(d.Config()))
+	if err != nil || report.Group != "main" || report.Connection != "reserve" || !report.SkippedVPN ||
+		!report.CheckedAt.IsZero() || len(report.Results) != 0 || hits.Load() != 0 {
+		t.Fatalf("direct reserve returned VPN readings, outbound %q, %d checks, %d requests, error %v",
+			report.Connection, len(report.Results), hits.Load(), err)
+	}
+}
+
+func TestDiagnosticNodeLabelsProtectProviderTextAndProfileCredentials(t *testing.T) {
+	source := subscription.Source{ID: "main", URL: "https://feed.example.test/private-source"}
+	socks := func(password string) string {
+		return "socks5://" + url.UserPassword("fixture-operator", password).String() + "@proxy.example.test:1080"
+	}
+	const uuid = "a7e68fbacd3640799c4afa7b5c8d93a2"
+	long := strings.Repeat("fixture-secret-", 20)
+	cases := []struct{ link, label, want string }{
+		{"vless://" + uuid + "@proxy.example.test:443", "Region A7E68FBA-CD36-4079-9C4A-FA7B5C8D93A2", ""},
+		{"vless://a7e68fba-cd36-4079-9c4a-fa7b5c8d93a2@proxy.example.test:443", "Region a7E68fbaCd3640799C4aFa7b5c8D93a2", ""},
+		{socks(base64.StdEncoding.EncodeToString([]byte("fixture-private"))), "Region FIXTURE-PRIVATE", ""},
+		{socks(long), long, ""},
+		{socks("other-secret"), "Region " + source.URL, "Region [redacted]"},
+		{socks("other-secret"), "Safe region", "Safe region"},
+	}
+	d := New(Options{})
+	snapshot := subscriptionSnapshot{}
+	for i, tc := range cases {
+		snapshot.Nodes = append(snapshot.Nodes, subscription.Node{
+			ID: strings.Repeat(string(rune('a'+i)), 32), Link: tc.link + "#" + url.PathEscape(tc.label), Name: tc.label,
+		})
+	}
+	d.restoreSnapshotDisplay(source, &snapshot)
+	d.subscriptions.states = map[string]appliedSubscription{source.ID: {snapshot: snapshot, source: source}}
+	for i, node := range snapshot.Nodes {
+		tag := model.ManagedTarget(source.ID, node.ID)
+		label := d.DiagnosticNode(tag)
+		if label.Name != cases[i].want || label.Position != i+1 {
+			t.Errorf("node %d did not keep its safe display name and position", i+1)
+		}
+	}
+}
+
+func TestDiagnosticAutomaticTargetFollowsSubscriptionSelection(t *testing.T) {
+	directHits := useLocalDiagnostic(t)
+	firstPort, firstHits := useLocalDiagnosticSOCKS(t)
+	secondPort, secondHits := useLocalDiagnosticSOCKS(t)
+	first, second := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	secondTag := model.ManagedTarget("main", second)
+	auto := model.ManagedTarget("main", "auto")
+	nodes := []subscription.Node{
+		{ID: first, Name: "First region", Link: "socks5://127.0.0.1:" + strconv.Itoa(firstPort) + "#First%20region"},
+		{ID: second, Name: "Second region", Link: "socks5://127.0.0.1:" + strconv.Itoa(secondPort) + "#Second%20region"},
+	}
+	cfg := &model.Config{
+		Networks:      []model.Network{{Name: "Home", Target: auto}},
+		Subscriptions: []subscription.Source{{ID: "main", Fallback: model.TargetDirect}},
+	}
+	cfg.Defaults()
+	compiled, err := compile.Compile(compile.Input{Config: cfg, Subscriptions: map[string][]subscription.Node{"main": nodes}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := compile.RuntimeValidationConfig(compiled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{cfg: cfg}
+	t.Cleanup(func() { _ = d.eng.Close() })
+	if _, err := d.eng.Apply(raw); err != nil {
+		t.Fatal(err)
+	}
+	state := appliedSubscription{snapshot: subscriptionSnapshot{
+		Nodes: nodes, Selection: subscriptionSelection{Reason: subscriptionSwitchFallback},
+		Metadata: subscription.Metadata{Title: "Office subscription"},
+	}}
+	d.subscriptions.states = map[string]appliedSubscription{"main": state}
+	if err := d.restoreSubscriptionSelectorsLocked(compiled, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	out, _, _ := d.eng.Outbound(auto)
+	group, ok := out.(adapter.OutboundGroup)
+	if !ok {
+		t.Fatal("automatic selector was not installed")
+	}
+	if selected := group.Selected("tcp"); selected == nil || selected.Tag() != model.TargetDirect {
+		t.Fatal("automatic selector did not activate its direct reserve")
+	}
+	const notRouting = "KeenProxy is not routing traffic right now"
+	for _, tc := range []struct {
+		name    string
+		prepare func(*testing.T) *Daemon
+		want    DiagnosticReport
+		wantErr string
+		probe   bool
+	}{
+		{
+			name: "running on reserve", prepare: func(*testing.T) *Daemon { return d },
+			want: DiagnosticReport{Group: auto, GroupName: "Office subscription",
+				Connection: model.TargetDirect, Reserve: model.TargetDirect, SkippedVPN: true},
+		},
+		{
+			name: "running on node",
+			prepare: func(t *testing.T) *Daemon {
+				if !d.eng.Select(auto, secondTag) {
+					t.Fatal("automatic selector could not activate the second node")
+				}
+				state.snapshot.Selection = subscriptionSelection{Node: second, Reason: subscriptionSwitchRecovered}
+				d.subscriptions.states["main"] = state
+				return d
+			},
+			want: DiagnosticReport{Group: auto, GroupName: "Office subscription", Connection: secondTag,
+				Node: DiagnosticNode{Name: "Second region", Position: 2, SubscriptionTitle: "Office subscription"}},
+			probe: true,
+		},
+		{
+			name: "stopped after failed activation", wantErr: notRouting,
+			prepare: func(t *testing.T) *Daemon { return startCatalogFreeDiagnostic(t, auto, true, false) },
+		},
+		{
+			name: "paused", wantErr: notRouting,
+			prepare: func(t *testing.T) *Daemon { return startCatalogFreeDiagnostic(t, auto, false, true) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tc.prepare(t)
+			firstBefore, secondBefore, directBefore := firstHits.Load(), secondHits.Load(), directHits.Load()
+			report, err := d.DiagnosticTargetIfCurrent(t.Context(), auto, model.ConfigRevision(d.Config()))
+			var message string
+			if err != nil {
+				message = err.Error()
+			}
+			if message != tc.wantErr || report.Connection != tc.want.Connection || report.Group != tc.want.Group ||
+				report.GroupName != tc.want.GroupName || report.Reserve != tc.want.Reserve ||
+				report.Node != tc.want.Node || report.SkippedVPN != tc.want.SkippedVPN {
+				t.Errorf("diagnostics reported %+v, error %q, want route %+v, error %q", report, message, tc.want, tc.wantErr)
+			}
+			if tc.probe {
+				if report.CheckedAt.IsZero() || len(report.Results) != 1 || !report.Results[0].OK || secondHits.Load()-secondBefore != 1 {
+					t.Error("diagnostics did not complete a probe through the active node")
+				}
+			} else if !report.CheckedAt.IsZero() || len(report.Results) != 0 || secondHits.Load() != secondBefore {
+				t.Error("diagnostics ran a probe with no active node")
+			}
+			if firstHits.Load() != firstBefore || directHits.Load() != directBefore {
+				t.Error("diagnostics used the other candidate or the direct reserve")
+			}
+		})
+	}
+}
+
+func TestDiagnosticManagedTargetsFollowTheAppliedReserve(t *testing.T) {
+	directHits := useLocalDiagnostic(t)
+	port, nodeHits := useLocalDiagnosticSOCKS(t)
+	id := strings.Repeat("a", 32)
+	node := subscription.Node{ID: id, Link: "socks5://127.0.0.1:" + strconv.Itoa(port) + "#Available"}
+	const source = "main"
+	for _, tc := range []struct {
+		name, selection, reserve string
+		nodes                    []subscription.Node
+	}{
+		{"nonempty round robin without an eligible TCP member", model.SubscriptionRoundRobin, model.TargetDirect, []subscription.Node{node}},
+		{"empty by site without a reserve", model.SubscriptionConsistentHash, "", nil},
+		{"empty by session with a manual reserve", model.SubscriptionStickySession, "reserve", nil},
+		{"pinned member removed from a nonempty catalog", strings.Repeat("b", 32), model.TargetDirect, []subscription.Node{node}},
+		{"pinned member removed from an empty catalog", strings.Repeat("b", 32), "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := model.ManagedTarget(source, tc.selection)
+			cfg := &model.Config{
+				Networks:      []model.Network{{Name: "Home", Target: target}},
+				Subscriptions: []subscription.Source{{ID: source, Fallback: tc.reserve}},
+				Connections:   []model.Connection{{ID: "reserve", Type: model.ConnLink, Link: node.Link}},
+			}
+			cfg.Defaults()
+			compiled, err := compile.Compile(compile.Input{Config: cfg, Subscriptions: map[string][]subscription.Node{source: tc.nodes}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := compile.RuntimeValidationConfig(compiled)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := New(Options{})
+			d.cfg, d.targetAliases = cfg, compiled.TargetAliases
+			d.subscriptions.states = map[string]appliedSubscription{source: {source: cfg.Subscriptions[0], snapshot: subscriptionSnapshot{
+				Nodes: tc.nodes, Metadata: subscription.Metadata{Title: "Office subscription"},
+			}}}
+			t.Cleanup(func() { _ = d.eng.Close() })
+			if _, err := d.eng.Apply(raw); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.restoreSubscriptionSelectorsLocked(compiled, false, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			// An observation alone cannot make the immutable TCP pool eligible.
+			d.health[model.ManagedTarget(source, id)] = &health{known: true, ok: true}
+			report, err := d.DiagnosticTargetIfCurrent(t.Context(), target, model.ConfigRevision(d.Config()))
+			want := tc.reserve
+			if want == "" {
+				want = model.TargetBlock
+			}
+			if err != nil || !report.SkippedVPN || report.Group != target || report.GroupName != "Office subscription" ||
+				report.Connection != want || report.Reserve != tc.reserve || !report.CheckedAt.IsZero() || len(report.Results) != 0 {
+				t.Errorf("expected path via %s with no probes, got %+v, error %v", want, report, err)
+			}
+		})
+	}
+	if directHits.Load() != 0 || nodeHits.Load() != 0 {
+		t.Error("diagnostics dialed through a reserve or an unused candidate")
+	}
+}
+
+// startCatalogFreeDiagnostic exercises startup and Apply with a saved managed
+// target whose catalog has never been fetched.
+func startCatalogFreeDiagnostic(t *testing.T, target string, failActivation, paused bool) *Daemon {
+	t.Helper()
+	holdMemoryLimit(t)
+	cfg := quietConfig(t)
+	cfg.Intercept.Mode, cfg.Paused = model.InterceptRedirect, paused
+	cfg.Networks = []model.Network{{Name: "Home", CIDR: "192.0.2.0/24", Mode: model.ModeSplit, Target: target}}
+	cfg.Subscriptions = []subscription.Source{{ID: "main", URL: "https://provider.example.test/subscription", Fallback: model.TargetBlock}}
+	if failActivation {
+		cfg.Intercept.Mode = model.InterceptTProxy
+	}
+	runner := &recoveryFirewall{fail: failActivation, jumps: make(map[[3]string]bool), chains: make(map[[2]string]bool)}
+	d := newMemoryDaemon(t, writeSavedConfig(t, cfg), runner)
+	t.Cleanup(d.shutdown)
+	d.tproxyProbe = func(context.Context) netfilter.TProxyReadiness {
+		return netfilter.TProxyReadiness{State: netfilter.TProxyUnavailable, Reason: "target_not_registered"}
+	}
+	blocked, err := d.startLocked(t.Context())
+	if err != nil || (blocked != nil) != failActivation {
+		t.Fatalf("startup blocked = %t, error %v", blocked != nil, err)
+	}
+	if failActivation {
+		redirect := d.Config()
+		redirect.Intercept.Mode = model.InterceptRedirect
+		if err := d.Apply(t.Context(), redirect); err == nil || !strings.Contains(err.Error(), "jump insertion failed") {
+			t.Fatalf("first activation did not fail during firewall installation: %v", err)
+		}
+	}
+	status := d.Status(t.Context())
+	if status.CoreRunning == failActivation || status.Paused != paused {
+		t.Fatalf("fixture core running = %t, paused = %t", status.CoreRunning, status.Paused)
+	}
+	return d
+}
+
+func TestDiagnosticTargetKeepsReserveOutOfTheCheck(t *testing.T) {
+	tag := model.ManagedTarget("main", strings.Repeat("a", 32))
+	secondNode := strings.Repeat("c", 32)
+	second := model.ManagedTarget("main", secondNode)
+	auto := model.ManagedTarget("main", "auto")
+	balance := model.ManagedTarget("main", model.SubscriptionRoundRobin)
+	missing := model.ManagedTarget("main", strings.Repeat("b", 32))
+	d := startDiagnosticCore(t, &model.Config{Connections: []model.Connection{
+		{ID: "primary", Type: model.ConnSingBox, Outbound: map[string]any{"type": "block"}, Fallback: "reserve"},
+		{ID: "disabled", Type: model.ConnSingBox, Outbound: map[string]any{"type": "block"}, Disabled: true, Fallback: "reserve"},
+		{ID: "reserve", Type: model.ConnSingBox, Outbound: map[string]any{"type": "direct"}},
+	}})
+	d.targetAliases = map[string]string{"primary": "failover-primary", missing: "reserve"}
+	d.subscriptions.members = []string{tag, second}
+	d.subscriptions.selectors = []compile.SubscriptionSelector{{SourceID: "main", Tag: auto, Candidates: []string{tag, second}, Fallback: "reserve"}}
+	d.subscriptions.balances = []compile.SubscriptionBalance{{Tag: balance, Candidates: []string{tag, second}, Fallback: "reserve"}}
+	rev := model.ConfigRevision(d.Config())
+	// The running core lacks the synthetic subscription candidates. The report
+	// still identifies the chosen candidate when its outbound is unavailable.
+	assertTarget := func(target, want string) {
+		t.Helper()
+		report, err := d.DiagnosticTargetIfCurrent(t.Context(), target, rev)
+		if !errors.Is(err, ErrDiagnosticConnection) || report.Connection != want {
+			t.Errorf("target %s resolved to %q, error %v, want %q", target, report.Connection, err, want)
+		}
+	}
+	for target, want := range map[string]string{"primary": "primary", tag: tag, balance: ""} {
+		assertTarget(target, want)
+	}
+	state := appliedSubscription{}
+	state.snapshot.Selection.Node = secondNode
+	d.subscriptions.states = map[string]appliedSubscription{"main": state}
+	d.health = map[string]*health{second: {known: true, ok: true}}
+	assertTarget(auto, second)
+	assertTarget(balance, "")
+	report, err := d.DiagnosticTargetIfCurrent(t.Context(), missing, rev)
+	if err != nil || report.Connection != "reserve" || !report.SkippedVPN || len(report.Results) != 0 {
+		t.Errorf("missing pin did not report the applied alias without probing, got %+v, error %v", report, err)
+	}
+	for _, target := range []string{"disabled", "unknown", model.TargetBlock} {
+		assertTarget(target, "")
+	}
+	if _, err := d.DiagnosticTargetIfCurrent(t.Context(), "primary", "stale"); !errors.Is(err, model.ErrConfigChanged) {
+		t.Errorf("outdated configuration returned %v", err)
+	}
+}
+
 func TestDiagnosticBoundsAndFailures(t *testing.T) {
 	client := &http.Client{Transport: diagnosticTransport(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Scheme == "http" {
@@ -67,14 +571,6 @@ func TestDiagnosticCancellation(t *testing.T) {
 	}
 }
 
-func TestDiagnosticsRejectUnknownAndStoppedProfiles(t *testing.T) {
-	d := &Daemon{cfg: &model.Config{Connections: []model.Connection{{ID: "one", Name: "One", Type: model.ConnLink}}}}
-	for _, id := range []string{"missing", "one"} {
-		if _, err := d.DiagnosticChecks(context.Background(), id); !errors.Is(err, ErrDiagnosticConnection) {
-			t.Fatalf("%s: %v", id, err)
-		}
-	}
-}
 func TestDiagnosticProfileDialerAndCancellation(t *testing.T) {
 	var profileContext context.Context
 	client, peer := net.Pipe()

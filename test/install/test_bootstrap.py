@@ -4,10 +4,19 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ACCESS_URL = 'http://192.0.2.10:8086'
+# A release from before schema 2: its dry run rejects files this release writes.
+SCHEMA_1_DRY_RUN = 'if grep -qx "schema_version: 2" "$3"; then exit 1; fi\nexit 0'
+FIXTURE_CONFIG = '"$KEENPROXY_PREFIX/etc/keenproxy/config.yaml"'
+# Start hooks: a release from before schema 2 cannot start on a schema 2 file,
+# and RESET_ON_START stands in for a start that leaves a schema 2 file behind,
+# which the config snapshot must undo on a failed update.
+SCHEMA_1_START = f'! grep -qx "schema_version: 2" {FIXTURE_CONFIG} || exit 1; '
+RESET_ON_START = f'printf "schema_version: 2\\n" > {FIXTURE_CONFIG}; '
 
 class BootstrapFixture(unittest.TestCase):
     prefix_name = 'opt'
@@ -74,7 +83,7 @@ cp "$FIXTURES/$path" "$out"
         )
 
     def release(self, tag, arch='arm64', lite=False, start=True, dry_run='exit 0',
-                stop='rm -f "$state"', url=None):
+                stop='rm -f "$state"', url=None, on_start=''):
         if url is None:
             url = self.url_boundary(f"echo '{ACCESS_URL}'\nexit 0\n")
         folder = self.mirror / tag
@@ -83,8 +92,7 @@ cp "$FIXTURES/$path" "$out"
         script = (
             '#!/bin/sh\n'
             f'# {tag}\n'
-            'if [ "$1" = --key ]; then echo leaked-panel-token; exit 0; fi\n'
-            f'if [ "$1" = --fixture-start ]; then exit {0 if start else 1}; fi\n'
+            f'if [ "$1" = --fixture-start ]; then {on_start}exit {0 if start else 1}; fi\n'
             'if [ "$1" = --url ]; then\n'
             + url +
             'fi\n'
@@ -130,17 +138,12 @@ esac''')
     def service(self):
         return self.prefix / 'etc/init.d/S99keenproxy'
 
-    def token_command(self):
-        return f"'{self.binary}' --key -config '{self.config}'"
-
     def assert_panel_access(self, result, url=ACCESS_URL):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            f'Access URL: {url}\n'
-            f'Retrieve existing panel token: {self.token_command()}\n',
-            result.stdout)
+            f'Access URL: {url}\n', result.stdout)
+        self.assertNotIn('panel token', result.stdout + result.stderr)
         self.assertNotIn('0.0.0.0', result.stdout)
-        self.assertNotIn('leaked-panel-token', result.stdout + result.stderr)
         self.assertNotIn('rejected-url-args', result.stdout + result.stderr)
 
     def assert_url_queries(self, count):
@@ -163,6 +166,8 @@ class BootstrapTest(BootstrapFixture):
         self.assertEqual(self.install().returncode, 0)
         token = self.config.with_name('token')
         token.write_text('test token\n')
+        service_env = self.config.with_name('keenproxy.env')
+        service_env.write_text('KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
         self.config.write_text('schema_version: 1\n# local settings\n')
         client = self.prefix / 'bin/trusttunnel_client'
         self.executable(client, 'exit 0')
@@ -176,6 +181,7 @@ class BootstrapTest(BootstrapFixture):
             self.assertFalse(self.service.exists())
             self.assertFalse(self.release_record.exists())
             self.assertEqual(token.read_text(), 'test token\n')
+            self.assertEqual(service_env.read_text(), 'KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
             self.assertNotIn('test token', result.stdout + result.stderr)
             self.assertNotIn('Access URL:', result.stdout)
             self.assertIn('# local settings', self.config.read_text())
@@ -308,6 +314,8 @@ done
         self.config.write_text('schema_version: 1\n# user setting\n')
         token = self.config.with_name('token')
         token.write_text('test fixture\n')
+        service_env = self.config.with_name('keenproxy.env')
+        service_env.write_text('KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
         next_release = self.release('v1.2.4')
         self.publish_latest('v1.2.4')
         for _ in range(2):
@@ -318,6 +326,7 @@ done
         self.assertEqual(self.binary.read_bytes(), next_release.read_bytes())
         self.assertIn('# user setting', self.config.read_text())
         self.assertEqual(token.read_text(), 'test fixture\n')
+        self.assertEqual(service_env.read_text(), 'KEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
         self.assert_url_queries(3)
 
     def test_url_query_problems_keep_installation_and_hide_command_output(self):
@@ -327,8 +336,7 @@ done
         self.assertIn('could not determine the panel access URL', result.stderr)
         self.assertNotIn('Access URL:', result.stdout)
         self.assertNotIn('synthetic-secret', result.stdout + result.stderr)
-        self.assertNotIn('leaked-panel-token', result.stdout + result.stderr)
-        self.assertIn(f'Retrieve existing panel token: {self.token_command()}\n', result.stdout)
+        self.assertNotIn('panel token', result.stdout)
         self.assertTrue((self.prefix / 'running').exists())
         self.assert_release('v1.2.3')
         self.assert_url_queries(1)
@@ -339,7 +347,7 @@ done
         self.assertIn('could not determine the panel access URL', result.stderr)
         self.assertNotIn('Access URL:', result.stdout)
         self.assertNotIn('synthetic-secret', result.stdout + result.stderr)
-        self.assertIn(f'Retrieve existing panel token: {self.token_command()}\n', result.stdout)
+        self.assertNotIn('panel token', result.stdout)
         self.assert_release('v1.2.4', 'v1.2.3')
         self.assertTrue((self.prefix / 'running').exists())
         self.assertEqual(self.binary.read_bytes(), (self.mirror / 'v1.2.4/keenproxy-linux-arm64').read_bytes())
@@ -402,10 +410,127 @@ done
         result = self.install('--version', 'v1.2.4')
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('Access URL:', result.stdout)
-        self.assertNotIn('Retrieve existing panel token:', result.stdout)
         self.assertEqual((self.prefix / 'url-invocations').read_text(), before)
         self.assertEqual(self.binary.read_bytes(), first.read_bytes())
         self.assert_release('v1.2.3')
+        self.assertTrue((self.prefix / 'running').exists())
+
+    def newer_configuration(self):
+        """Install a schema 2 release whose daemon kept the older file as config.v1.yaml."""
+        self.release('v1.2.4')
+        self.publish_latest('v1.2.4')
+        self.assertEqual(self.install().returncode, 0)
+        newer = 'schema_version: 2\n# newer settings\n'
+        kept = 'schema_version: 1\n# kept for older releases\n'
+        self.config.write_text(newer)
+        self.config.with_name('config.v1.yaml').write_text(kept)
+        return newer, kept
+
+    def test_rollback_restores_the_configuration_kept_for_older_releases(self):
+        newer, kept = self.newer_configuration()
+        older = self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN)
+        result = self.install('--version', 'v1.2.3')
+        self.assert_panel_access(result)
+        self.assertEqual(self.binary.read_bytes(), older.read_bytes())
+        self.assertEqual(self.config.read_text(), kept)
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertEqual(self.config.with_name('config.v2.yaml').read_text(), newer)
+
+        # A second rollback keeps the earlier newer copy and adds a timestamped one.
+        self.assertEqual(self.install('--version', 'v1.2.4').returncode, 0)
+        changed = 'schema_version: 2\n# changed after the upgrade\n'
+        self.config.write_text(changed)
+        result = self.install('--version', 'v1.2.3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config.read_text(), kept)
+        self.assertEqual(self.config.with_name('config.v2.yaml').read_text(), newer)
+        later = list(self.config.parent.glob('config.v2.*.yaml'))
+        self.assertEqual(len(later), 1, later)
+        self.assertRegex(later[0].name, r'^config\.v2\.\d+\.yaml$')
+        self.assertEqual(later[0].read_text(), changed)
+
+    def test_rollback_uses_the_newest_kept_configuration(self):
+        newer, kept = self.newer_configuration()
+        latest = 'schema_version: 1\n# kept by the latest upgrade\n'
+        backups = {'config.v1.yaml': (kept, 100),
+                   'config.v1.1700000000.yaml': (latest, 10),
+                   'config.v1.1800000000.yaml': ('schema_version: 1\n# oldest\n', 200)}
+        now = time.time()
+        for name, (text, age) in backups.items():
+            self.config.with_name(name).write_text(text)
+            os.utime(self.config.with_name(name), (now - age, now - age))
+        self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN)
+        result = self.install('--version', 'v1.2.3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config.read_text(), latest)
+        self.assertEqual(self.config.with_name('config.v2.yaml').read_text(), newer)
+        for name, (text, _) in backups.items():
+            self.assertEqual(self.config.with_name(name).read_text(), text)
+
+    def test_release_that_reads_schema_2_never_gets_the_kept_configuration(self):
+        _, kept = self.newer_configuration()
+        current = self.binary.read_bytes()
+        rejected = 'schema_version: 2\n# rejected by the next release\n'
+        self.config.write_text(rejected)
+        # The candidate reads schema 2 but rejects this file; it would accept the kept one.
+        self.release('v1.2.5', dry_run='if grep -q rejected "$3"; then exit 1; fi\nexit 0')
+        result = self.install('--version', 'v1.2.5')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('failed validation', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), current)
+        self.assertEqual(self.config.read_text(), rejected)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertEqual(sorted(p.name for p in self.config.parent.iterdir()),
+                         ['config.v1.yaml', 'config.yaml'])
+        self.assertTrue((self.prefix / 'running').exists())
+
+    def test_failed_switch_leaves_the_newer_configuration_in_place(self):
+        newer, kept = self.newer_configuration()
+        current = self.binary.read_bytes()
+        self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN)
+        # Copying the newer file fails after writing part of it.
+        self.command('cp', '''
+for last in "$@"; do :; done
+case "$last" in */config.v2.yaml) printf partial > "$last"; exit 1 ;; esac
+exec /bin/cp "$@"
+''')
+        result = self.install('--version', 'v1.2.3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not switch', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), current)
+        self.assertEqual(self.config.read_text(), newer)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertEqual(sorted(p.name for p in self.config.parent.iterdir()),
+                         ['config.v1.yaml', 'config.yaml'])
+        self.assertTrue((self.prefix / 'running').exists())
+
+    def test_failed_upgrade_restores_the_configuration_the_new_daemon_rewrote(self):
+        first = self.release('v1.2.3', on_start=SCHEMA_1_START)
+        self.assertEqual(self.install().returncode, 0)
+        original = 'schema_version: 1\nfilters: []\n# settings from v0.10\n'
+        self.config.write_text(original)
+        mode = self.config.stat().st_mode & 0o777
+        self.release('v1.2.4', start=False, on_start=RESET_ON_START)
+        result = self.install('--version', 'v1.2.4')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('restoring the previous installation', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), first.read_bytes())
+        self.assertEqual(self.config.read_text(), original)
+        self.assertEqual(self.config.stat().st_mode & 0o777, mode)
+        self.assertTrue((self.prefix / 'running').exists())
+
+    def test_failed_rollback_restores_the_newer_configuration(self):
+        newer, kept = self.newer_configuration()
+        current = self.binary.read_bytes()
+        self.release('v1.2.3', dry_run=SCHEMA_1_DRY_RUN, start=False)
+        result = self.install('--version', 'v1.2.3')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('restoring the previous installation', result.stderr)
+        self.assertEqual(self.binary.read_bytes(), current)
+        self.assertEqual(self.config.read_text(), newer)
+        self.assertEqual(self.config.with_name('config.v1.yaml').read_text(), kept)
+        self.assertFalse(self.config.with_name('config.v2.yaml').exists())
         self.assertTrue((self.prefix / 'running').exists())
 
     def test_expected_release_guards_updates_and_downgrades(self):
@@ -477,11 +602,9 @@ done
 class SpacedPrefixBootstrapTest(BootstrapFixture):
     prefix_name = 'opt dir'
 
-    def test_access_command_quotes_paths_with_spaces(self):
+    def test_access_url_is_reported_for_paths_with_spaces(self):
         self.release('v1.2.3')
         result = self.install()
         self.assert_panel_access(result)
         self.assertIn(' ', str(self.prefix))
-        self.assertIn(f"'{self.prefix}/bin/keenproxy'", result.stdout)
-        self.assertIn(f"'{self.config}'", result.stdout)
         self.assert_url_queries(1)

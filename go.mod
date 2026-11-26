@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/miekg/dns v1.1.73
 	github.com/oschwald/maxminddb-golang/v2 v2.9.0
@@ -17,6 +18,8 @@ require (
 	golang.org/x/crypto/x509roots/fallback v0.0.0-20261105095718-a1058eb15227
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
+	golang.org/x/text v0.43.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -56,7 +59,6 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/certificate-transparency-go v1.3.2 // indirect
@@ -176,13 +178,11 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/grpc v1.83.2 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gvisor.dev/gvisor v0.0.0-20231202080848-1f7806d17489 // indirect
 	lukechampine.com/blake3 v1.3.0 // indirect
 	zombiezen.com/go/capnproto2 v2.18.2+incompatible // indirect

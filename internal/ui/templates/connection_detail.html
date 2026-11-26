@@ -1,0 +1,137 @@
+{{define "connection-detail"}}{{template "page-start" .}}
+      {{$detail := .ConnectionDetail}}
+      <a class="wizard-crumb" href="/connections"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6l-6 6 6 6"/></svg>{{.Text.nav_connections}}</a>
+      <form id="connection-settings" method="post" action="{{$detail.Path}}" data-guard{{if $detail.Dirty}} data-dirty{{end}}>
+        <input type="hidden" name="rev" value="{{$detail.Rev}}">
+      <div class="title-row detail-title">
+        <h1 class="clip" title="{{$detail.Name}}">{{$detail.Name}}</h1>
+        <input type="hidden" name="enabled" value="0"{{if .ViewOnly}} disabled{{end}}>
+        <label class="tg">
+          <input type="checkbox" role="switch" aria-label="{{.Text.detail_enable}}" name="enabled" value="1"{{if $detail.Enabled}} checked{{end}}{{if .ViewOnly}} disabled{{end}}>
+          <span class="tg-track" aria-hidden="true"></span>
+          <span class="tg-label" aria-hidden="true"><span class="when-on">{{.Text.detail_enabled}}</span><span class="when-off">{{.Text.detail_disabled}}</span></span>
+        </label>
+      </div>
+      {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
+      {{if .Message}}
+      <div class="note detail-error" role="alert">
+        <p>{{.Message}}</p>
+        {{template "connection-references" $detail.References}}
+      </div>
+      {{end}}
+      <div class="prov detail-status">
+        <div class="prov" data-fragment="{{$detail.Fragment}}/health">{{template "connection-health" .}}</div>
+        <button class="btn soft detail-small-button" type="submit" formaction="{{$detail.Path}}/probe"{{if .ViewOnly}} disabled{{end}}>{{.Text.detail_probe}}</button>
+      </div>
+      <dl class="facts detail-facts">
+        {{range $detail.Facts}}
+        <dt>{{.Label}}</dt><dd class="clip" title="{{.Value}}">{{.Value}}</dd>
+        {{end}}
+      </dl>
+
+      <section class="connections-section" aria-labelledby="connection-reserve-title">
+        <div class="connections-head"><h2 id="connection-reserve-title">{{.Text.connections_reserve}}</h2></div>
+        <p class="hint detail-hint">{{$detail.ReserveHint}}</p>
+        <div class="fld connections-select">
+          <label for="connection-reserve">{{.Text.connections_reserve}}</label>
+          <select id="connection-reserve" name="fallback"{{if .ViewOnly}} disabled{{end}}{{if $detail.ReserveError}} aria-invalid="true" aria-describedby="connection-reserve-error"{{end}}>
+            {{if $detail.UnavailableReserve}}<option value="{{$detail.Reserve}}" selected hidden>{{$detail.UnavailableReserve}}</option>{{end}}
+            {{range $detail.Options}}<option value="{{.Target}}"{{if eq .Target $detail.Reserve}} selected{{end}}>{{.Label}}</option>{{end}}
+          </select>
+        </div>
+        {{if $detail.ReserveError}}<p id="connection-reserve-error" class="detail-field-error" role="alert">{{$detail.ReserveError}}</p>{{end}}
+        <ol class="detail-chain" aria-label="{{.Text.detail_reserve_chain}}">
+          {{range $i, $member := $detail.Chain}}
+          <li>
+            {{if $i}}<svg class="icon detail-chain-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6"/></svg>{{end}}
+            <span class="detail-chain-member">
+              {{if .URL}}<a class="clip" title="{{.Name}}" href="{{.URL}}">{{.Name}}</a>{{else}}<strong class="clip" title="{{.Name}}">{{.Name}}</strong>{{end}}
+              {{if not $i}}<span class="muted small">{{$.Text.detail_primary}}</span>{{end}}
+              {{if .Disabled}}<span class="muted small">{{$.Text.overview_connection_disabled}}</span>{{end}}
+            </span>
+          </li>
+          {{end}}
+        </ol>
+        {{if gt (len $detail.Chain) 1}}<p class="hint detail-timing">{{$detail.ReserveTiming}}</p>{{end}}
+      </section>
+      </form>
+
+      {{if $detail.TrafficGroup}}
+      <section class="connections-section" aria-labelledby="connection-member-traffic-title">
+        <div class="connections-head"><h2 id="connection-member-traffic-title">{{.Text.detail_member_traffic}}</h2></div>
+        {{template "connection-traffic-members" .}}
+      </section>
+      {{else}}
+      <section class="connections-section" aria-labelledby="connection-speed-title">
+        <div class="connections-head">
+          <h2 id="connection-speed-title">{{.Text.detail_speed}}</h2>
+          <span class="muted small">{{.Text.overview_traffic_window}}</span>
+        </div>
+        <div data-fragment="{{$detail.Fragment}}/speed">{{template "overview-traffic" .}}</div>
+      </section>
+
+      <section id="connection-hosts" class="connections-section" aria-labelledby="connection-hosts-title" data-fragment="{{.ConnectionHosts.Path}}">
+        {{template "connection-hosts" .}}
+      </section>
+      {{end}}
+
+      <section id="connection-parameters" class="connections-section" aria-labelledby="connection-parameters-title">
+        <div class="connections-head">
+          <h2 id="connection-parameters-title">{{.Text.detail_parameters}}</h2>
+          {{if not .ViewOnly}}<a href="{{$detail.RevealURL}}">{{if $detail.Reveal}}{{.Text.detail_hide}}{{else}}{{.Text.detail_reveal}}{{end}}</a>{{end}}
+        </div>
+        <dl class="facts detail-parameters">
+          {{range $detail.Parameters}}
+          <dt>{{.Label}}</dt>
+          <dd>
+            {{if .Masked}}<span aria-hidden="true">{{$.Text.detail_mask}}</span><span class="sr">{{$.Text.wizard_summary_hidden}}</span>
+            {{else if .Raw}}<pre class="detail-profile" tabindex="0">{{.Value}}</pre>
+            {{else}}{{.Value}}{{end}}
+          </dd>
+          {{end}}
+        </dl>
+        <div class="row-btns">
+          {{if .ViewOnly}}<button type="button" class="btn soft detail-small-button" disabled>{{.Text.detail_replace}}</button>
+          {{else}}<a class="btn soft detail-small-button" href="{{$detail.Path}}/replace">{{.Text.detail_replace}}</a>{{end}}
+        </div>
+      </section>
+
+      <form id="connection-delete" method="post" action="{{$detail.Path}}/delete">
+        <input type="hidden" name="rev" value="{{$detail.Rev}}">
+      </form>
+      <div class="actions detail-actions">
+        <button class="btn" type="submit" form="connection-settings"{{if .ViewOnly}} disabled{{end}}>{{.Text.overview_save}}</button>
+        {{if not .ViewOnly}}<a class="btn soft" href="/connections">{{.Text.setup_cancel}}</a>{{end}}
+        <button class="btn detail-delete" type="submit" form="connection-delete"{{if .ViewOnly}} disabled{{end}}>{{.Text.detail_delete}}</button>
+      </div>
+{{template "page-end" .}}{{end}}
+
+{{define "connection-health"}}
+  <span class="chip {{.ConnectionHealth.Status.Class}}">{{.ConnectionHealth.Status.Label}}</span>
+  {{if .ConnectionHealth.Detail}}<span>{{.ConnectionHealth.Detail}}</span>{{end}}
+{{end}}
+
+{{define "connection-traffic-members"}}
+  <p class="muted">{{.Text.detail_member_traffic_hint}}</p>
+  {{if .ConnectionTraffic.Members}}
+  <ul>
+    {{range .ConnectionTraffic.Members}}<li>{{if .URL}}<a class="clip" title="{{.Label}}" href="{{.URL}}">{{.Label}}</a>{{else}}{{.Label}}{{end}}</li>{{end}}
+  </ul>
+  {{end}}
+  {{if .ConnectionTraffic.BuiltIn}}<p class="muted">{{.Text.detail_builtin_traffic}}</p>{{end}}
+{{end}}
+
+{{define "connection-hosts"}}
+  <div class="connections-head">
+    <h2 id="connection-hosts-title">{{.Text.detail_hosts}}</h2>
+    {{if .ConnectionHosts.ToggleURL}}<a href="{{.ConnectionHosts.ToggleURL}}">{{.ConnectionHosts.ToggleLabel}}</a>{{end}}
+  </div>
+  {{if .ConnectionHosts.Rows}}
+  <table class="tbl detail-hosts" aria-labelledby="connection-hosts-title">
+    <thead><tr><th scope="col">{{.Text.detail_host}}</th><th scope="col">{{.Text.detail_received}}</th><th class="c-res" scope="col">{{.Text.detail_sent}}</th></tr></thead>
+    <tbody>
+      {{range .ConnectionHosts.Rows}}<tr><td><span class="clip" title="{{.Name}}">{{.Name}}</span></td><td>{{.Received}}</td><td class="c-res">{{.Sent}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">{{.Text.detail_no_hosts}}</p>{{end}}
+{{end}}

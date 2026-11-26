@@ -1,3 +1,4 @@
+# paused: true  # leave every device untouched (no routing, blocking or DNS interception)
 lan: {interface: br0, wan: eth3}
 dns: {upstreams: ["https://1.1.1.1/dns-query"]}
 intercept: {mode: tproxy}
@@ -26,12 +27,24 @@ connections:
 #   - {id: provider, url: "https://provider.example/links/example-token", send_hwid: true}
 # Set a group or full-tunnel policy target to "subscription:provider:round-robin"
 # to cycle through eligible nodes for new connections.
+# Add fallback: fi (a connection ID, direct or block) as the reserve used while no
+# node answers; traffic returns to a node after failover.up_after of success.
+# Apply the routing rules the provider sends with that subscription; keys in
+# disabled switch single rules off. Every split network then needs a target.
+# Add off: true inside provider_rules to turn all provider rules off and
+# keep the source and disabled keys.
+# provider_rules: {source: provider, disabled: ["block:geosite:category-ads"]}
 groups:
   - {name: International, target: fi, entries: ["youtube.com", "149.154.160.0/20"]}
   - {name: Advertising, target: block, entries: ["ads.example.com"]}
   - {name: Bank, target: direct, entries: ["bank.ru"]}
   - {name: Blocked in Russia, target: fi, categories: [RU-BLOCKED, RU-BLOCKED-COMMUNITY, RE-FILTER]}
 networks:
+  # default routes split traffic that matches no rule. It can be direct (the
+  # default), a connection or subscription target, or profile to follow the
+  # provider rules. Enable the subscription and provider_rules above, then
+  # replace the Home entry with the complete list item below.
+  # - {name: Home, cidr: 192.168.7.0/24, mode: split, target: "subscription:provider:auto", default: direct}
   - {name: Home, cidr: 192.168.7.0/24, mode: split, target: fi}
 clients:
   - {name: Phone, mac: "02:00:00:00:00:10", mode: full, target: fi}

@@ -62,31 +62,6 @@ func compileWith(t *testing.T, phone string) Output {
 
 func compileTest(t *testing.T) Output { return compileWith(t, "192.168.7.104") }
 
-func TestLocalPresetIsNotARoutingRule(t *testing.T) {
-	cfg, err := model.Parse([]byte(testYAML))
-	if err != nil {
-		t.Fatal(err)
-	}
-	const name = "local-preset-only.example"
-	cfg.LocalPresets = []model.LocalPreset{{ID: "local-list", Name: "Local", Entries: []string{name}}}
-	in := Input{Config: cfg, RuleSetDir: "/var/keenproxy"}
-	local, err := Compile(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(local.SingBox), name) {
-		t.Fatal("an uninstalled local preset changed routing")
-	}
-	cfg.Groups = append(cfg.Groups, model.Group{Name: "Local", Target: model.TargetBlock, Entries: cfg.LocalPresets[0].Entries})
-	applied, err := Compile(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(applied.SingBox), name) {
-		t.Fatal("copying the preset into a group did not produce a routing rule")
-	}
-}
-
 // sing-box must accept the schema, tag references, and WireGuard keys.
 func TestSingBoxAcceptsConfig(t *testing.T) {
 	out := compileTest(t)
@@ -160,6 +135,29 @@ func TestRuleOrder(t *testing.T) {
 	}
 }
 
+func TestPausedConfigHasNoSources(t *testing.T) {
+	cfg, err := model.Parse([]byte(testYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Paused = true
+	out, err := Compile(Input{Config: cfg, RuleSetDir: "/var/keenproxy", Neighbors: map[string]netip.Addr{
+		"02:00:00:00:00:10": netip.MustParseAddr("192.168.7.104"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Plan.Sources) != 0 || len(out.Plan.Excluded) != 0 {
+		t.Errorf("paused plan must not intercept: %+v", out.Plan)
+	}
+	if strings.Contains(out.Plan.Render(), "REDIRECT --to-ports 5354") {
+		t.Error("paused plan must not redirect DNS")
+	}
+	if len(cfg.Networks) != 1 || cfg.Networks[0].Mode != model.ModeSplit {
+		t.Error("Compile must not modify the caller's configuration")
+	}
+}
+
 func TestPlanFromModel(t *testing.T) {
 	p := compileTest(t).Plan
 	src := []string{}
@@ -172,7 +170,7 @@ func TestPlanFromModel(t *testing.T) {
 	if len(p.Excluded) != 1 || p.Excluded[0].String() != "192.168.7.88" {
 		t.Errorf("Excluded = %v", p.Excluded)
 	}
-	if p.DNSPort != 5354 || p.LAN != "br0" {
+	if p.DNSListen.String() != "0.0.0.0:5354" || p.LAN != "br0" {
 		t.Errorf("plan: %+v", p)
 	}
 	found := false

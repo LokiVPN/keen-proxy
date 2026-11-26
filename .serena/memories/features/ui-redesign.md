@@ -1,7 +1,7 @@
-# Panel implementation contracts
-- Shell.vue owns horizontal navigation and the mobile menu. Shared light/dark theme tokens live in theme.ts and style.css. Keep responsive actions reachable when tabs overflow.
-- Groups.vue and groups.ts use stable session identities and preview bulk target changes for domain/country groups. Filtering preserves selected items. All group changes go through the shared draft.
-- Journal.vue and journal.ts group matching events within a fixed window. Preserve client, domain, protocol, destination port, outbound, rule, and source distinctions. Keep ambiguous legacy rows separate.
-- ConnectionWizard.vue supports WireGuard, VLESS, Shadowsocks, Trojan, Hysteria2, and SOCKS forms plus link/file/raw JSON import. Reject unsupported WireGuard options and multiple peers. A full sing-box JSON import selects one profile. Validate before saving to the draft.
-- ConnectionDialog.vue conceals private parameters until reveal. Preserve fallback and DNS references when renaming a profile. FallbackPanel.vue edits only the immediate link and previews the inherited chain.
-- Diagnostics.vue checks an unchanged applied profile and discards stale results. The backend bounds endpoints, time, response size, and concurrency. Test the actual profile independently of its fallback selector. Separate HTTP, certificate-verified HTTPS, and transfer results. Diagnostic exports use an allowlist and omit raw errors and secrets.
+# Server-rendered management workflow
+
+- `/setup` checks the subscription before enabling it. A fresh setup creates the Home policy from the router's LAN prefix. Replacement keeps the existing subscription ID, reserves, and routing references.
+- The five main pages are Overview (`/`), Routing, Devices, Connections, and Diagnostics. The connection import wizard and details live under `/connections/new` and `/connections/id/{id}`. Replacement reuses the existing connection ID.
+- Overview's master switch and main connection apply immediately. Routing, Devices, and connection settings apply on Save. Subscription checks and refreshes on Connections preserve in-progress edits. A stale revision is refused before any Apply.
+- Setup previews, checked connection imports, and diagnostic results use bounded server-side drafts or tickets. Render provider and user text through `html/template`. Keep credentials out of summaries, view sessions, and logs. Diagnostics shows distinct HTTP, verified HTTPS, and bounded transfer results, with explicit inactive or unknown states.
+- Render charts on the server and deliver authorized live updates as HTML fragments. Native page navigation and forms work with JavaScript disabled. See `mem:frontend/core` for access, package boundaries, and CSP.

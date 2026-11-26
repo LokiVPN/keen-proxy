@@ -568,3 +568,20 @@ func TestSubscriptionBalanceCheckpointPreservesAssignmentsAcrossRollback(t *test
 		})
 	}
 }
+
+func TestSubscriptionBalanceFallbackReplacesBlockWhenPoolIsEmpty(t *testing.T) {
+	route := newSubscriptionBalanceTest(t, "round-robin", nil)
+	route.cfg.Subscriptions[0].Fallback = model.TargetDirect
+	route.apply(nil)
+	route.update("source-a")
+	route.drainTrackedRoutes()
+	_, _ = route.get("video.example") // the direct destination is unreachable; only the route matters
+	select {
+	case got := <-route.routed:
+		if got.tag != model.TargetDirect {
+			t.Fatalf("empty pool counted traffic against %q, want the direct reserve", got.tag)
+		}
+	default:
+		t.Fatal("the tracker missed the routed connection")
+	}
+}

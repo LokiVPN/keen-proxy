@@ -25,12 +25,28 @@ type subscriptionSnapshot struct {
 	Skipped     int                   `json:"skipped,omitempty"`
 	LastSuccess time.Time             `json:"last_success"`
 	Selection   subscriptionSelection `json:"selection"`
+	// LinksChecked records a fetch that filtered metadata links against its redirect paths.
+	LinksChecked bool `json:"links_checked,omitempty"`
+	// HWIDFingerprint binds the catalog's provider text to its redaction context.
+	HWIDFingerprint string `json:"hwid_fingerprint,omitempty"`
+	// RulesWithheld is observed during refresh independently of rule evaluation.
+	RulesWithheld bool `json:"rules_withheld,omitempty"`
+	// Rules exists only for the source named by provider_rules.
+	Rules *rulesSnapshot `json:"rules,omitempty"`
 }
 
 type subscriptionSelection struct {
 	Node   string    `json:"node,omitempty"`
 	At     time.Time `json:"at"`
 	Reason string    `json:"reason,omitempty"`
+}
+
+// subscriptionIdentity drops settings that do not change what is downloaded
+// (the reserve), so editing them keeps the fetched list, health and selection.
+// It must cover the same fields as the fingerprint.
+func subscriptionIdentity(source subscription.Source) subscription.Source {
+	source.Fallback = ""
+	return source
 }
 
 func subscriptionFingerprint(source subscription.Source) string {
@@ -80,15 +96,56 @@ func (d *Daemon) loadSubscriptionSnapshotsLocked(ctx context.Context, cfg *model
 			nodes, skipped := supportedSubscriptionNodes(ctx, snapshot.Nodes)
 			if len(nodes) > 0 {
 				snapshot.Nodes, snapshot.Skipped = nodes, snapshot.Skipped+skipped
+				d.restoreSnapshotDisplay(source, &snapshot)
 				state.snapshot = snapshot
 				state.recordAttempt(subscriptionAttempt{at: snapshot.LastSuccess, result: subscription.Result{
 					State: subscription.StateReady,
 				}})
 			}
 		}
+		syncProviderRules(cfg, &state)
 		states[source.ID] = state
 	}
 	d.subscriptions.states = states
+}
+
+// restoreSnapshotDisplay keeps dial data when the catalog's display context is
+// unverified. Rules need a verified context of their own before activation.
+// The last fetch's withholding decision is independent of the display context.
+func (d *Daemon) restoreSnapshotDisplay(source subscription.Source, snapshot *subscriptionSnapshot) {
+	displayCategory := d.subscriptions.fetcher.SanitizeSnapshotDisplay(
+		source, &snapshot.Metadata, snapshot.Nodes, snapshot.LinksChecked, snapshot.HWIDFingerprint)
+	if displayCategory == nil {
+		snapshot.Metadata = subscription.Metadata{
+			Usage: snapshot.Metadata.Usage, UpdateIntervalHours: snapshot.Metadata.UpdateIntervalHours,
+		}
+		for i := range snapshot.Nodes {
+			snapshot.Nodes[i].Name = ""
+		}
+		snapshot.Rules = nil
+		return
+	}
+	rules := snapshot.Rules
+	if rules == nil {
+		return
+	}
+	if rules.HWIDFingerprint != snapshot.HWIDFingerprint {
+		snapshot.Rules = nil
+		return
+	}
+	// Older snapshots only recorded withholding on the evaluated source.
+	if rules.state() == ProviderRulesWithheld {
+		snapshot.RulesWithheld = true
+	}
+	if rules.Built == nil {
+		return
+	}
+	for i := range rules.Built.Rules {
+		rule := &rules.Built.Rules[i]
+		ref := rule.Reference()
+		rule.ProtectCategory(rules.Profile.RestoreCategoryDisplay(ref, displayCategory(ref)))
+	}
+	rules.Built.MarkUnusableRules()
 }
 
 // validSnapshotNodeIDs prevents a corrupted private file from rebinding a pin.
@@ -104,14 +161,16 @@ func validSnapshotNodeIDs(nodes []subscription.Node) bool {
 }
 
 // saveChangedSubscriptionSnapshotsLocked writes when a source set, usable list,
-// or selection has changed during Apply; ordinary unrelated edits incur no write.
+// selection or provider rules have changed during Apply; ordinary unrelated
+// edits incur no write.
 func (d *Daemon) saveChangedSubscriptionSnapshotsLocked(cfg *model.Config, previous map[string]appliedSubscription) error {
 	if len(previous) != len(d.subscriptions.states) {
 		return d.saveSubscriptionSnapshotsLocked(cfg)
 	}
 	for id, state := range d.subscriptions.states {
 		old := previous[id]
-		if old.source != state.source || old.snapshot.Selection != state.snapshot.Selection || !old.snapshot.LastSuccess.Equal(state.snapshot.LastSuccess) {
+		if subscriptionIdentity(old.source) != subscriptionIdentity(state.source) || old.snapshot.Selection != state.snapshot.Selection ||
+			!old.snapshot.LastSuccess.Equal(state.snapshot.LastSuccess) || old.snapshot.Rules != state.snapshot.Rules {
 			return d.saveSubscriptionSnapshotsLocked(cfg)
 		}
 	}
@@ -138,12 +197,7 @@ func (d *Daemon) saveSubscriptionSnapshotsLocked(cfg *model.Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return errSubscriptionSnapshot
 	}
-	temp, err := stagePrivateFile(path, raw, true)
-	if err != nil {
-		return errSubscriptionSnapshot
-	}
-	defer os.Remove(temp)
-	if err := os.Rename(temp, path); err != nil {
+	if err := d.warnDurability(replacePrivateFile(path, raw, d.log)); err != nil {
 		return errSubscriptionSnapshot
 	}
 	return nil

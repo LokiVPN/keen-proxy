@@ -93,7 +93,7 @@ class OpenWrtTest(NativeFixture):
         self.assertTrue((self.prefix / 'enabled').exists())
         self.assertFalse((self.prefix / 'bin/keenproxy').exists())
         self.assertIn('br-lan', self.config.read_text())
-        self.assertIn(f'token_file: {self.config.with_name("token")}', self.config.read_text())
+        self.assertNotIn('token_file', self.config.read_text())
         self.config.write_text('schema_version: 1\n# operator configuration\n')
         token = self.config.with_name('token')
         token.write_text('private token\n')

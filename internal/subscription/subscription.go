@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ordo-systems/keen-proxy/internal/links"
 	"golang.org/x/net/idna"
 )
 
@@ -29,7 +30,23 @@ type Source struct {
 	ID       string `json:"id" yaml:"id"`
 	URL      string `json:"url" yaml:"url"`
 	SendHWID bool   `json:"send_hwid" yaml:"send_hwid"`
+	// Fallback is the reserve used when no node answers: "", direct, block or a
+	// manual connection ID. It is not part of the snapshot fingerprint.
+	Fallback string `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 }
+
+// PreviewRef identifies the specific checked result that a setup form accepted.
+// The source and its URL stay server-side.
+type PreviewRef struct {
+	Source Source
+	ID     uint64
+}
+
+// ErrPreviewChanged asks setup to check again before activating a subscription.
+var ErrPreviewChanged = errors.New("checked subscription preview is no longer available")
+
+// ErrRulesWithheld means a rule-switch edit lost its provider rules before Apply.
+var ErrRulesWithheld = errors.New("provider routing rules are withheld")
 
 // Node contains the original share link for the private snapshot and compiler.
 // API handlers must project it to an ID and display name before returning it.
@@ -41,7 +58,8 @@ type Node struct {
 
 // MatchesLink checks the persisted ID against the link's normalized dial options.
 func (n Node) MatchesLink() bool {
-	return n.ID != "" && n.ID == nodeID(n.Link)
+	profile, err := links.Parse(n.Link)
+	return err == nil && n.ID != "" && n.ID == nodeID(profile)
 }
 
 // Metadata carries provider information for display and a bounded refresh hint.
@@ -70,6 +88,16 @@ type Result struct {
 	Nodes    []Node   `json:"-"`
 	Skipped  int      `json:"skipped"`
 	Error    string   `json:"error,omitempty"`
+	// Routing is the provider's private routing profile. Contract: parsed ->
+	// Routing set and RoutingError empty; absent, "off" or disabled by
+	// routing-enable -> both empty; malformed -> Routing nil and RoutingError
+	// holds a fixed message without provider text.
+	Routing      *RoutingProfile `json:"-"`
+	RoutingError string          `json:"-"`
+	// RoutingSummary carries only redacted display strings and list counts.
+	RoutingSummary *RoutingSummary `json:"-"`
+	// HWIDFingerprint identifies the redaction context of this fetch in private state.
+	HWIDFingerprint string `json:"-"`
 	// Transient tells the refresh scheduler to retry with bounded backoff.
 	Transient bool `json:"-"`
 }
@@ -97,22 +125,12 @@ func parseSource(source Source) (*url.URL, string, error) {
 // httpsOrigin normalizes hostname spelling and the effective HTTPS port for the
 // redirect check and HWID derivation.
 func httpsOrigin(u *url.URL) string {
-	if u == nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || strings.HasSuffix(u.Host, ":") {
+	if u == nil || u.Scheme != "https" || u.User != nil || strings.HasSuffix(u.Host, ":") {
 		return ""
 	}
-	host := u.Hostname()
-	bracketed := strings.HasPrefix(u.Host, "[")
-	if address, err := netip.ParseAddr(host); err == nil {
-		if bracketed != address.Is6() || address.Zone() != "" {
-			return ""
-		}
-		host = address.String()
-	} else {
-		ascii, err := idna.Lookup.ToASCII(host)
-		if bracketed || err != nil || ascii == "" {
-			return ""
-		}
-		host = strings.ToLower(ascii)
+	host := normalizedHost(u.Hostname(), strings.HasPrefix(u.Host, "["))
+	if host == "" {
+		return ""
 	}
 	port := u.Port()
 	if port == "" {
@@ -123,4 +141,19 @@ func httpsOrigin(u *url.URL) string {
 		return ""
 	}
 	return "https://" + net.JoinHostPort(host, strconv.FormatUint(number, 10))
+}
+
+// normalizedHost canonicalizes a decoded hostname for origin and display checks.
+func normalizedHost(host string, bracketed bool) string {
+	if address, err := netip.ParseAddr(host); err == nil {
+		if bracketed != address.Is6() || address.Zone() != "" {
+			return ""
+		}
+		return address.String()
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if bracketed || err != nil {
+		return ""
+	}
+	return strings.ToLower(ascii)
 }

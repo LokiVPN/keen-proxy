@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -33,13 +34,17 @@ type Config struct {
 	DirectFallback   bool
 	Route            string
 	OnRoute          func(string)
-	BlockReason      func(string) string
 	OnBlock          func(name, client, source string)
 	Observe          func(name string, response *dns.Msg)
 	Listen           string
 	Upstreams        []model.Upstream
 	Fallback         string // System resolver host:port over UDP.
 	Timeout          time.Duration
+	// BlockReason names why a domain gets a local block response for the
+	// device at client, or returns "". client is invalid for queries without
+	// a device (see WithClient). It runs once per query; "firefox-canary"
+	// answers NXDOMAIN, and a Blocked domain is reported as "manual".
+	BlockReason func(name string, client netip.Addr) string
 	// Blocked reports whether a domain should receive a local block response.
 	Blocked func(name string) bool
 	// DropAAAA returns empty AAAA answers when IPv6 tunneling is unsupported.
@@ -133,8 +138,15 @@ func (s *Server) Close() error {
 	return errors.Join(s.udp.Shutdown(), s.tcp.Shutdown())
 }
 
+// WithClient attaches the address of the device that sent a query, as
+// host:port, for Resolve: blocking decisions and the block journal use it.
+// The server attaches it to every query it receives.
+func WithClient(ctx context.Context, client string) context.Context {
+	return context.WithValue(ctx, clientKey{}, client)
+}
+
 func (s *Server) serve(w dns.ResponseWriter, req *dns.Msg) {
-	ctx := context.WithValue(context.Background(), clientKey{}, w.RemoteAddr().String())
+	ctx := WithClient(context.Background(), w.RemoteAddr().String())
 	resp := s.Resolve(ctx, req)
 	resp.Id = req.Id
 	if _, isUDP := w.RemoteAddr().(*net.UDPAddr); isUDP {
@@ -153,19 +165,19 @@ func (s *Server) Resolve(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return reply(req, dns.RcodeFormatError)
 	}
 	q := req.Question[0]
+	client, _ := ctx.Value(clientKey{}).(string)
 	reason := ""
-	if s.cfg.BlockReason != nil && s.cfg.BlockReason(q.Name) == "firefox-canary" {
+	if s.cfg.BlockReason != nil {
+		reason = s.cfg.BlockReason(q.Name, clientAddr(client))
+	}
+	if reason == "firefox-canary" {
 		return reply(req, dns.RcodeNameError)
 	}
 	if s.cfg.Blocked(q.Name) {
 		reason = "manual"
 	}
-	if reason == "" && s.cfg.BlockReason != nil {
-		reason = s.cfg.BlockReason(q.Name)
-	}
 	if reason != "" {
 		if s.cfg.OnBlock != nil {
-			client, _ := ctx.Value(clientKey{}).(string)
 			s.cfg.OnBlock(q.Name, client, reason)
 		}
 		return blocked(req, q)
@@ -269,6 +281,13 @@ func (s *Server) CloseIdle() {
 	for _, c := range s.clients {
 		c.CloseIdleConnections()
 	}
+}
+
+// clientAddr returns the device address of a host:port client, or the
+// invalid address when there is none.
+func clientAddr(client string) netip.Addr {
+	addr, _ := netip.ParseAddrPort(client)
+	return addr.Addr()
 }
 
 func reply(req *dns.Msg, rcode int) *dns.Msg {

@@ -8,11 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"runtime"
-	"slices"
 	"strings"
 	"time"
+
+	"github.com/ordo-systems/keen-proxy/internal/links"
 )
 
 const (
@@ -53,6 +53,49 @@ func NewFetcher(identityPath string, transport http.RoundTripper) *Fetcher {
 	}
 }
 
+// Transport returns the direct HTTPS transport for other provider downloads,
+// such as the geo files a routing profile names.
+func (f *Fetcher) Transport() http.RoundTripper { return f.transport }
+
+// SanitizeSnapshotDisplay reapplies display bounds and source redaction to
+// restored metadata and names. Legacy links cannot use the same-origin
+// account exception because their original redirect paths are unavailable.
+// It returns the same display protection for legacy routing categories.
+// A nil result means the caller must omit the cached provider text.
+// Restoring a snapshot never creates an installation identity.
+func (f *Fetcher) SanitizeSnapshotDisplay(source Source, metadata *Metadata, nodes []Node, linksChecked bool, fingerprint string) func(string) string {
+	u, origin, err := parseSource(source)
+	if err != nil {
+		return nil
+	}
+	sensitive := sourceDisplayRedactor(u)
+	sensitive.blockSameHostLinks = !linksChecked
+	if source.SendHWID {
+		secret, err := readIdentity(f.identityPath)
+		if err != nil {
+			return nil
+		}
+		sensitive.hwid = deriveOriginHWID(secret, origin)
+		if hwidFingerprint(sensitive.hwid) != fingerprint {
+			return nil
+		}
+	}
+	metadata.Title = displayText(metadata.Title, titleLimit, sensitive)
+	metadata.Announce = displayText(metadata.Announce, announceLimit, sensitive)
+	metadata.SupportURL = metadataURL(metadata.SupportURL, sensitive)
+	metadata.ProfileURL = metadataURL(metadata.ProfileURL, sensitive)
+	for i := range nodes {
+		node := &nodes[i]
+		profile, err := links.Parse(node.Link)
+		if err != nil {
+			node.Name = fmt.Sprintf("Node %d", i+1)
+			continue
+		}
+		node.Name = displayNodeName(profile, links.Name(node.Link), node.Name, sensitive, i+1)
+	}
+	return func(entry string) string { return displayRoutingCategory(entry, sensitive) }
+}
+
 func sameOriginRedirect(request *http.Request, previous []*http.Request) error {
 	origin := httpsOrigin(request.URL)
 	if len(previous) > maxRedirects || origin == "" || origin != httpsOrigin(previous[0].URL) {
@@ -86,18 +129,7 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 	}
 	req.Header.Set("User-Agent", "KeenProxy/1")
 	req.Header.Set("Accept", "text/plain, application/octet-stream")
-	sensitive := displayRedactor{source.URL}
-	canonicalHost := strings.TrimSuffix(strings.TrimPrefix(origin, "https://"), ":443")
-	recordURL := func(u *url.URL) {
-		sensitive.add(u.String())
-		// Fragments from a Location header are absent from the wire request.
-		normalized := *u
-		normalized.Fragment, normalized.RawFragment = "", ""
-		sensitive.add(normalized.String())
-		normalized.Host = canonicalHost
-		sensitive.add(normalized.String())
-	}
-	recordURL(req.URL)
+	sensitive := sourceDisplayRedactor(req.URL)
 	if source.SendHWID {
 		hwid, err := originHWID(f.identityPath, origin)
 		if err != nil {
@@ -105,13 +137,13 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 		}
 		req.Header.Set("X-HWID", hwid)
 		req.Header.Set("X-Device-OS", runtime.GOOS)
-		sensitive.add(hwid)
+		sensitive.hwid = hwid
 	}
 	client := http.Client{Transport: f.transport, CheckRedirect: func(request *http.Request, previous []*http.Request) error {
 		if err := sameOriginRedirect(request, previous); err != nil {
 			return err
 		}
-		recordURL(request.URL)
+		sensitive.addURL(request.URL)
 		return nil
 	}}
 	resp, err := client.Do(req)
@@ -125,9 +157,9 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 		return failure(StateNetworkError, "Could not download the subscription")
 	}
 	defer resp.Body.Close()
-	// An initial URL may be a prefix of a followed redirect URL.
-	slices.SortFunc(sensitive, func(a, b string) int { return len(b) - len(a) })
-	return readResponse(ctx, resp, sensitive)
+	result := readResponse(ctx, resp, sensitive)
+	result.HWIDFingerprint = hwidFingerprint(sensitive.hwid)
+	return result
 }
 
 func readResponse(ctx context.Context, resp *http.Response, sensitive displayRedactor) Result {

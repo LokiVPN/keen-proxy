@@ -10,9 +10,6 @@ plugins:
           name: English
         - locale: ru
           name: Русский
-          extra:
-            demo_label: Демо
-            demo_title: Открыть интерактивное демо в браузере
           nav_translations:
             Home: Главная
             Overview: Обзор
@@ -21,7 +18,6 @@ plugins:
             Routing and DNS: Маршрутизация и DNS
             How traffic flows: Как проходит трафик
             Troubleshooting: Диагностика и вопросы
-            Browser demo: Демо в браузере
             Release history: История версий
             Versions: Версии
             Documentation development: Разработка документации

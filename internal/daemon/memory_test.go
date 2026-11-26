@@ -97,10 +97,16 @@ func newMemoryDaemon(t *testing.T, path string, run netfilter.Runner) *Daemon {
 	return d
 }
 
-// Run owns shutdown; register cancellation and joining before starting its goroutine.
 func startMemoryDaemon(t *testing.T, path string, runner netfilter.Runner, want int64) (*Daemon, func()) {
 	t.Helper()
 	d := newMemoryDaemon(t, path, runner)
+	return d, runDaemon(t, d, want)
+}
+
+// runDaemon runs d until the test ends and waits for its startup memory limit.
+// Run owns shutdown; register cancellation and joining before starting its goroutine.
+func runDaemon(t *testing.T, d *Daemon, want int64) func() {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	stop := sync.OnceFunc(func() { stopDaemon(t, cancel, errc) })
@@ -110,7 +116,7 @@ func startMemoryDaemon(t *testing.T, path string, runner netfilter.Runner, want 
 		errc <- d.Run(ctx)
 	}()
 	waitStarted(t, d, errc, want)
-	return d, stop
+	return stop
 }
 
 func writeSavedConfig(t *testing.T, cfg *model.Config) string {
@@ -194,7 +200,8 @@ func TestMemoryLimitStartupApplyAndClear(t *testing.T) {
 	unsaved := d.Config()
 	unsaved.System.MemoryLimitMiB = new(model.MemoryLimitMiB(250))
 	err := d.Apply(context.Background(), unsaved)
-	if err == nil || !strings.Contains(err.Error(), "not saved") {
+	var applied *model.AppliedUnsavedError
+	if !errors.As(err, &applied) || !strings.Contains(err.Error(), "not saved") {
 		t.Fatalf("applied-but-unsaved: %v", err)
 	}
 	requireLimit(t, 250*memoryMiB)

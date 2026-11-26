@@ -36,7 +36,8 @@ ip -n wan route add 192.168.77.11/32 via 198.51.100.1
 
 # --- Synthetic internet: controlled DNS and HTTP targets
 ip netns exec wan dnsmasq -k --no-resolv --no-hosts --listen-address=198.51.100.2,198.51.100.3 --bind-interfaces \
-	--local-ttl=5 --address=/fallback.test/198.51.100.5 --address=/example.test/198.51.100.2 --address=/ads.test/198.51.100.2 --log-queries --log-facility=/tmp/dnsmasq.log &
+	--local-ttl=5 --address=/fallback.test/198.51.100.5 --address=/example.test/198.51.100.2 --address=/ads.test/198.51.100.2 \
+	--address=/provads.test/198.51.100.3 --address=/provdirect.test/198.51.100.4 --log-queries --log-facility=/tmp/dnsmasq.log &
 ip netns exec wan python3 -u -m http.server 80 --bind 198.51.100.3 >/tmp/http.log 2>&1 &
 ip netns exec wan python3 -u -m http.server 80 --bind 198.51.100.4 >/tmp/steam.log 2>&1 &
 ip netns exec wan python3 -u -m http.server 80 --bind 198.51.100.5 >/tmp/fallback-http.log 2>&1 &
@@ -51,7 +52,9 @@ cat >/tmp/server.json <<'JSON'
   "log": {"level": "info"},
   "inbounds": [
     {"type": "shadowsocks", "listen": "198.51.100.2", "listen_port": 8388, "method": "aes-128-gcm", "password": "test-pass"},
-    {"type": "vless", "listen": "198.51.100.2", "listen_port": 8443, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]}
+    {"type": "vless", "listen": "198.51.100.2", "listen_port": 8443, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]},
+    {"type": "vless", "tag": "node-a", "listen": "198.51.100.2", "listen_port": 8445, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]},
+    {"type": "vless", "tag": "node-b", "listen": "198.51.100.2", "listen_port": 8446, "users": [{"uuid": "11111111-2222-3333-4444-555555555555"}]}
   ],
   "outbounds": [{"type": "direct"}]
 }
@@ -76,6 +79,24 @@ ok "client HTTP fails without keenProxy"
 /work/mkgeo /tmp/geo.mmdb 198.51.100.0/24=RU 198.51.100.4/32=FI 203.0.113.0/24=FI
 SS="ss://$(printf 'aes-128-gcm:test-pass' | base64 | tr -d '=\n')@198.51.100.2:8388"
 SS_MAIN="ss://$(printf 'aes-128-gcm:test-pass' | base64 | tr -d '=\n')@198.51.100.2:8389"
+# An HTTPS subscription provider with a Happ routing profile. KeenProxy trusts
+# its self-signed certificate through SSL_CERT_FILE.
+echo 'vless://11111111-2222-3333-4444-555555555555@198.51.100.2:8443?type=tcp&encryption=none#Provider' >/tmp/provider-nodes.txt
+cat >/tmp/provider-profile.json <<'JSON'
+{"Name": "Netns", "GlobalProxy": "false", "DirectSites": ["domain:provdirect.test"], "BlockSites": ["domain:provads.test"], "Geositeurl": "https://198.51.100.2:8444/unused-geosite.dat", "Geoipurl": "https://198.51.100.2:8444/unused-geoip.dat"}
+JSON
+cat >/tmp/provider-failed-profile.json <<'JSON'
+{"Name": "Unavailable data", "GlobalProxy": true, "DirectSites": ["geosite:synthetic"], "Geositeurl": "https://198.51.100.2:8444/missing-geosite.dat"}
+JSON
+cat >/tmp/provider-reserve-nodes.txt <<'NODES'
+vless://11111111-2222-3333-4444-555555555555@198.51.100.2:8445?type=tcp&encryption=none#Node-A
+vless://11111111-2222-3333-4444-555555555555@198.51.100.2:8446?type=tcp&encryption=none#Node-B
+NODES
+ip netns exec wan /work/provider 198.51.100.2:8444 /tmp/provider-ca.pem /tmp/provider-nodes.txt /tmp/provider-profile.json \
+	/sub-failed /tmp/provider-nodes.txt /tmp/provider-failed-profile.json \
+	/sub-reserve /tmp/provider-reserve-nodes.txt /tmp/provider-profile.json >/tmp/provider.log 2>&1 &
+for i in $(seq 1 50); do [ -s /tmp/provider-ca.pem ] && break; sleep 0.1; done
+[ -s /tmp/provider-ca.pem ] || { cat /tmp/provider.log; fail "subscription provider did not start"; }
 cat >/tmp/config.yaml <<YAML
 lan: {interface: br0}
 dns: {listen: "0.0.0.0:5354", upstreams: ["udp://198.51.100.2:53"], fallback: "127.0.0.1:53", bypass_sources: ["192.168.77.11"]}
@@ -96,7 +117,7 @@ networks:
   - {name: LAN, cidr: 192.168.77.0/24, mode: split}
 YAML
 
-$KEENPROXY -config /tmp/config.yaml -rule-sets /tmp/rule-sets -watch 1s \
+SSL_CERT_FILE=/tmp/provider-ca.pem $KEENPROXY -config /tmp/config.yaml -rule-sets /tmp/rule-sets -watch 1s \
 	-iptables /usr/sbin/iptables -iptables-restore /usr/sbin/iptables-restore >/tmp/keenproxy.log 2>&1 &
 KPID=$!
 for i in $(seq 1 50); do
@@ -153,7 +174,7 @@ grep -q 'inbound/shadowsocks.*198.51.100.4' /tmp/sbserver.log || { cat /tmp/sbse
 ok "outside-Russia tunnel with Steam direct: steam.test used direct, the same IP without a domain used Shadowsocks"
 
 # --- The live tracker must account for bytes on each selected outbound
-TOKEN=$(cat /opt/etc/keenproxy/token)
+TOKEN=$(cat /opt/etc/keenproxy/token 2>/dev/null || true)
 STATS=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8086/api/stats)
 echo "$STATS" | python3 -c '
 import json, sys
@@ -201,14 +222,13 @@ assert ss["client"].startswith("192.168.77.10:"), ss
 AUDIT=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8086/api/journal/audit")
 echo "$AUDIT" | grep -q 'Start keenProxy' || { echo "$AUDIT"; fail "startup audit record is missing"; }
 [ -s /tmp/journal/routes.jsonl ] && [ -s /tmp/journal/audit.jsonl ] || { ls -la /tmp/journal; fail "journals are not written to disk"; }
-curl -s -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8086/api/journal/routes/export?since=1h" | grep -q 'steam.test.*Steam direct' || fail "journal export"
-ok "journal: Steam direct and country routes, startup audit, files and export"
+ok "journal: Steam direct and country routes, startup audit and files"
 
-# --- DNS fallback: preview is isolated; a live rule-set reload changes routing.
+# --- DNS fallback: a live rule-set reload changes routing.
 api_get() { curl -fsS -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8086/api/$1"; }
 api_post() { curl -fsS -m 10 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$2" "http://127.0.0.1:8086/api/$1"; }
 
-# Remove the exception through the same configuration endpoint the panel uses.
+# Remove the exception through the configuration endpoint.
 api_get config | python3 -c 'import json,sys; c=json.load(sys.stdin); del c["dns"]["bypass_sources"]; print(json.dumps(c))' >/tmp/dns-no-bypass.json
 curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 	--data-binary @/tmp/dns-no-bypass.json http://127.0.0.1:8086/api/config >/dev/null || fail "clear DNS bypass"
@@ -218,15 +238,13 @@ for transport in +notcp +tcp; do
 done
 ok "clearing DNS bypass through Apply restores UDP/TCP interception"
 
-api_post domains/resolve '{"names":["fallback.test"],"preview":true}' >/tmp/dns-preview.json
-api_get domains | python3 -c 'import json,sys; assert not any(r["name"]=="fallback.test" for r in json.load(sys.stdin)["records"])' || fail "preview changed active cache"
 api_get config | python3 -c 'import json,sys; c=json.load(sys.stdin);c["groups"].append({"name":"DNS reserve","target":"vless","entries":["fallback.test"]});print(json.dumps(c))' >/tmp/dns-config.json
 curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/dns-config.json http://127.0.0.1:8086/api/config >/dev/null || fail "DNS group apply"
-api_post domains/resolve '{"names":["fallback.test"]}' >/dev/null
+# The daemon resolves configured names itself within about a second of Apply.
 dns_routed() {
  api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x.get("ip")=="198.51.100.5" and x["outbound"]=="vless" and "DNS" in x["rule"] for x in json.load(sys.stdin)["entries"])' 2>/dev/null
 }
-for i in $(seq 1 20); do
+for i in $(seq 1 100); do
  ip netns exec client curl -s -m 2 --http1.0 -H 'Host:' http://198.51.100.5/ >/dev/null || true
  dns_routed && break
  sleep 0.1
@@ -234,17 +252,15 @@ done
 dns_routed || { cat /tmp/keenproxy.log; fail "no-SNI DNS fallback"; }
 ip netns exec client curl -fsS -m 3 -H 'Host: unrelated.test' http://198.51.100.5/ >/dev/null
 api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x["host"]=="unrelated.test" and x["outbound"]=="direct" for x in json.load(sys.stdin)["entries"])' || fail "shared IP overrode Host"
-for i in $(seq 1 35); do
- sleep 0.2
- if api_get domains | python3 -c 'import json,sys; r=[r for r in json.load(sys.stdin)["records"] if r["name"]=="fallback.test"]; assert r and not r[0]["addresses"]' 2>/dev/null; then break; fi
-done
+# Wait past the resolved entry's TTL: dnsmasq runs with local-ttl=5, so 7 seconds expire it.
+sleep 7
 expired_direct() {
  ip netns exec client curl -fsS -m 3 --http1.0 -H 'Host:' http://198.51.100.5/ >/dev/null
  api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["entries"] if x.get("ip")=="198.51.100.5" and x.get("host")=="198.51.100.5"]; assert r and r[0]["outbound"]=="direct"' 2>/dev/null
 }
 for i in $(seq 1 15); do expired_direct && break; sleep 0.2; done
 expired_direct || fail "expired DNS still routes"
-ok "DNS reserve: preview isolated, no-SNI via VLESS, readable Host direct, TTL expiry removed route"
+ok "DNS reserve: no-SNI via VLESS, readable Host direct, TTL expiry removed route"
 
 # --- Simulate firmware removing an interception jump; the watchdog repairs it
 iptables -t nat -D PREROUTING -j KEENPROXY_TCP
@@ -306,9 +322,40 @@ ip netns exec client curl -fsS -m 3 http://198.51.100.3:853/ >/dev/null || fail 
 api_get config | python3 -c 'import json,sys;c=json.load(sys.stdin);c["dns"]["block_encrypted"]=True;print(json.dumps(c))' >/tmp/guard-config.json
 curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/guard-config.json http://127.0.0.1:8086/api/config >/dev/null || fail "guard apply"
 if ip netns exec client curl -fsS -m 3 http://198.51.100.3:853/ >/dev/null 2>&1; then fail "DoT guard bypassed by TCP redirect"; fi
-api_get config/previous | python3 -c 'import json,sys;assert not json.load(sys.stdin)["dns"].get("block_encrypted",False)' || fail "previous YAML backup"
 dig +short +time=2 +tries=1 @127.0.0.1 -p 5354 example.test A | grep -q '198.51.100.2' || fail "guard blocked own DNS"
-ok "DNS guard rejects redirected port 853, own resolver works, previous YAML available"
+ok "DNS guard rejects redirected port 853, own resolver works"
+
+# --- Pause and off devices are untouched: no DNS interception, no TCP redirect.
+# .11 has a WAN return route, so direct traffic from it can complete.
+put_config() { # python expression body mutating c
+	api_get config | python3 -c "import json,sys; c=json.load(sys.stdin); $1; print(json.dumps(c))" >/tmp/untouched-config.json
+	curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @/tmp/untouched-config.json http://127.0.0.1:8086/api/config >/dev/null || fail "apply: $1"
+}
+untouched_probe() { # label; expect direct DNS and direct TCP from .11
+	name="$1.ads.test"
+	a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @198.51.100.3 "$name" A)
+	[ "$a" = "198.51.100.2" ] || fail "$1: DNS was intercepted: '$a'"
+	grep -Fq "query[A] $name from 192.168.77.11" /tmp/dnsmasq.log || fail "$1: DNS did not reach the resolver directly"
+	ip netns exec client curl --interface 192.168.77.11 -s -m 5 -o /dev/null http://198.51.100.3/ || fail "$1: direct HTTP failed"
+	tail -1 /tmp/http.log | grep -q '^192.168.77.11 ' || fail "$1: TCP was redirected"
+}
+intercepted_probe() { # label
+	name="$1.ads.test"
+	a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @198.51.100.3 "$name" A)
+	[ "$a" = "0.0.0.0" ] || fail "$1: DNS not intercepted: '$a'"
+	ip netns exec client curl --interface 192.168.77.11 -s -m 5 -o /dev/null http://198.51.100.3/ || fail "$1: HTTP through keenProxy failed"
+	tail -1 /tmp/http.log | grep -q '^198.51.100.1 ' || fail "$1: TCP was not intercepted"
+}
+intercepted_probe before-pause
+put_config 'c["paused"]=True'
+untouched_probe paused
+put_config 'c.pop("paused",None)'
+intercepted_probe unpaused
+put_config 'c["clients"]=c.get("clients",[])+[{"name":"Off","mac":"02:00:00:00:00:99","ip":"192.168.77.11","mode":"off"}]'
+untouched_probe off-device
+put_config 'c["clients"]=[x for x in c["clients"] if x["name"]!="Off"]'
+intercepted_probe off-removed
+ok "pause and off devices: DNS and TCP untouched; interception returns after unpause"
 
 # --- Activation is applied through the real API without deleting profiles or references.
 # Register cleanup before creating this phase's uniquely owned temporary directory.
@@ -323,43 +370,6 @@ trap activation_cleanup 0
 trap 'exit 1' 1 2 15
 ACTIVATION_TMP=$(mktemp -d /tmp/keenproxy-activation.XXXXXX)
 api_get config >"$ACTIVATION_TMP/baseline.json"
-curl -fsS -m 10 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' \
-	--data-binary '{"version":1,"entries":[{"type":"domain_suffix","value":"resource-list.test"},{"type":"domain_suffix","value":"resource-off.test","disabled":true}]}' \
-	'http://127.0.0.1:8086/api/resources/preview?format=json' >"$ACTIVATION_TMP/resources.json" || fail "resource preview"
-api_get config | cmp -s "$ACTIVATION_TMP/baseline.json" - || fail "resource preview changed applied configuration"
-resource_http() {
-	ip netns exec client curl -fsS -m 3 -H "Host: $1" http://198.51.100.3/ >/dev/null 2>&1
-}
-resource_apply() {
-	curl -fsS -m 10 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-		--data-binary "@$1" http://127.0.0.1:8086/api/config >/dev/null
-}
-python3 - "$ACTIVATION_TMP/baseline.json" "$ACTIVATION_TMP/resources.json" "$ACTIVATION_TMP" <<'PY'
-import json, pathlib, sys
-config = json.load(open(sys.argv[1]))
-preview = json.load(open(sys.argv[2]))
-assert preview["valid"], preview
-entries = preview["list"]["entries"]
-assert [entry["value"] for entry in entries] == ["resource-list.test", "resource-off.test"], entries
-preset = {
-    "id": "imported-list", "name": "Imported resources",
-    "entries": [entry["value"] for entry in entries],
-    "disabled_entries": [entry["value"] for entry in entries if entry.get("disabled")],
-}
-root = pathlib.Path(sys.argv[3])
-config["local_presets"] = [preset]
-(root / "local.json").write_text(json.dumps(config))
-config["groups"].append({k: v for k, v in preset.items() if k != "id"} | {"target": "block"})
-(root / "group.json").write_text(json.dumps(config))
-PY
-resource_apply "$ACTIVATION_TMP/local.json" || fail "local preset apply"
-resource_http child.resource-list.test || fail "local preset changed routing before group copy"
-resource_apply "$ACTIVATION_TMP/group.json" || fail "imported group apply"
-if resource_http child.resource-list.test; then fail "imported suffix did not block a subdomain"; fi
-resource_http resource-off.test || fail "imported disabled entry was activated"
-resource_apply "$ACTIVATION_TMP/baseline.json" || fail "resource scenario restore"
-resource_http child.resource-list.test || fail "clearing imported group did not restore routing"
-ok "resource preview is read-only; local preset is inert; applied group honors suffix and disabled entry"
 
 activation_apply() {
 	python3 - "$ACTIVATION_TMP/baseline.json" "$1" >"$ACTIVATION_TMP/draft.json" <<'PY'
@@ -453,6 +463,101 @@ ACTIVATION_TMP=""
 trap - 0 1 2 15
 ok "activation: disabled primary and intermediate bypassed; all-off network/client references block; explicit direct and re-enable restore"
 
+# --- Provider rules in DNS: for split devices a block rule answers locally
+# unless an own list holds the name; a full tunnel device (.11) gets the real
+# answer. A domain rule learns addresses only from device answers.
+api_get config >/tmp/provider-baseline.json
+provider_apply() { # JSON list of switched-off provider rule keys
+	python3 - "$1" >/tmp/provider-config.json <<'PY'
+import json, sys
+c = json.load(open("/tmp/provider-baseline.json"))
+c["subscriptions"] = [{"id": "prov", "url": "https://198.51.100.2:8444/sub"}]
+c["provider_rules"] = {"source": "prov", "disabled": json.loads(sys.argv[1])}
+# Provider proxy rules go to the split network's target, which they require.
+c["networks"][0]["target"] = "ss"
+c["groups"].append({"name": "Provider exception", "target": "direct", "entries": ["keep.provads.test"]})
+c["clients"] = [{"name": "Full tunnel", "mac": "02:00:00:00:00:88", "ip": "192.168.77.11", "mode": "full", "target": "ss"}]
+print(json.dumps(c))
+PY
+	curl -fsS -m 30 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+		--data-binary @/tmp/provider-config.json http://127.0.0.1:8086/api/config >/dev/null ||
+		{ tail -20 /tmp/keenproxy.log; cat /tmp/provider.log; fail "provider rules apply"; }
+}
+dig_a() { ip netns exec client dig +short +time=2 +tries=1 @8.8.8.8 "$1" A; }
+provider_apply '[]'
+grep -q 'GET /sub$' /tmp/provider.log || fail "the subscription was not fetched over HTTPS"
+a=$(dig_a x.provads.test)
+[ "$a" = "0.0.0.0" ] || fail "provider block rule: '$a'"
+a=$(dig_a www.keep.provads.test)
+[ "$a" = "198.51.100.3" ] || fail "an own list must win over a provider block rule: '$a'"
+a=$(dig_a x.ads.test)
+[ "$a" = "0.0.0.0" ] || fail "block group next to provider rules: '$a'"
+a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @8.8.8.8 x.provads.test A)
+[ "$a" = "198.51.100.3" ] || fail "a full tunnel device must get the real answer for a provider block name: '$a'"
+a=$(ip netns exec client dig -b 192.168.77.11 +short +time=2 +tries=1 @8.8.8.8 x.ads.test A)
+[ "$a" = "0.0.0.0" ] || fail "block group for a full tunnel device: '$a'"
+api_get 'journal/routes?limit=200' | python3 -c 'import json,sys; assert any(x["host"]=="x.provads.test." and x.get("source")=="provider" for x in json.load(sys.stdin)["entries"])' ||
+	fail "the provider DNS block is not journaled"
+ok "provider block rule answers DNS locally for split devices only; an own list and a block group keep their rules"
+
+# Without a name, .4 takes the country tunnel (FI → ss). A device answer for
+# provdirect.test sends it directly until the answer's 5-second TTL ends.
+a=$(dig_a provdirect.test)
+[ "$a" = "198.51.100.4" ] || fail "provider domain: '$a'"
+provider_route() { # outbound expected for a request to .4 without a name
+	ip netns exec client curl -s -m 3 --http1.0 -H 'Host:' http://198.51.100.4/ >/dev/null || return 1
+	api_get 'journal/routes?limit=50' | python3 -c '
+import json, sys
+e = [x for x in json.load(sys.stdin)["entries"] if x.get("ip") == "198.51.100.4" and x.get("host") == "198.51.100.4"]
+assert e and e[0]["outbound"] == sys.argv[1], e[:1]
+assert sys.argv[1] != "direct" or "dns-" in e[0].get("rule_raw", ""), e[:1]
+' "$1" 2>/dev/null
+}
+for i in $(seq 1 30); do provider_route direct && break; sleep 0.2; done
+provider_route direct || { tail -20 /tmp/keenproxy.log; fail "provider DNS fallback did not route the observed address"; }
+sleep 7
+for i in $(seq 1 15); do provider_route ss && break; sleep 0.2; done
+provider_route ss || fail "an expired provider answer still routes"
+# KeenProxy resolves an observed own subdomain again after its 30-second retry
+# minimum, but never an observed provider name.
+queries() { grep -c "query\[A\] $1 from 198.51.100.1" /tmp/dnsmasq.log || true; }
+for i in $(seq 1 200); do [ "$(queries www.keep.provads.test)" -ge 2 ] && break; sleep 0.2; done
+[ "$(queries www.keep.provads.test)" -ge 2 ] || fail "the observed own subdomain was not kept warm"
+[ "$(queries provdirect.test)" = "1" ] || fail "KeenProxy resolved the provider name itself: $(queries provdirect.test) queries"
+ok "provider DNS fallback: a device answer routed the address until its TTL; the provider name was never resolved by KeenProxy"
+
+provider_apply '["block:literals:site"]'
+a=$(dig_a y.provads.test)
+[ "$a" = "198.51.100.3" ] || fail "a switched-off provider block rule still answers locally: '$a'"
+if grep -Eq 'GET /unused-(geosite|geoip)\.dat$' /tmp/provider.log; then
+	fail "a literal-only profile requested a dat file"
+fi
+ok "literal provider rules work without downloading either advertised dat file"
+ok "switching the provider block rule off releases its names on Apply"
+
+# A distinct source keeps last-good rules from masking a first download failure.
+# The WAN site can be reached directly, so a fallback to direct is observable.
+ip netns exec client curl --noproxy '*' -fsS -m 3 -o /dev/null 'http://198.51.100.3/?probe=direct-control'
+grep -Eq '^198\.51\.100\.1 .*GET /\?probe=direct-control ' /tmp/http.log || fail "provider failure direct control"
+put_config 'c["subscriptions"]=[{"id":"missing-data","url":"https://198.51.100.2:8444/sub-failed"}]; c["provider_rules"]={"source":"missing-data"}; c["groups"]=[]; c["networks"][0].update(default="profile", target="ss")'
+grep -q 'GET /missing-geosite.dat$' /tmp/provider.log || fail "the missing geosite file was not requested over HTTPS"
+curl -fsS -m 5 -H 'Accept-Language: en' http://127.0.0.1:8086/connections >/tmp/provider-failed.html
+grep -Fq 'Provider routing rules could not be loaded.' /tmp/provider-failed.html || fail "missing dat did not report unavailable rules"
+server_lines=$(wc -l </tmp/sbserver.log)
+ip netns exec client curl --noproxy '*' -fsS -m 3 -o /dev/null 'http://198.51.100.3/?probe=missing-data'
+tail -n "+$((server_lines + 1))" /tmp/sbserver.log | grep -q 'inbound/shadowsocks.*198\.51\.100\.3:80' || fail "profile default did not reach the WAN site through ss"
+if grep -Eq '^198\.51\.100\.1 .*GET /\?probe=missing-data ' /tmp/http.log; then
+	fail "traffic went direct when the geosite download failed"
+fi
+ok "missing geosite download reports unavailable rules and profile default still uses the tunnel"
+curl -fsS -m 15 -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+	--data-binary @/tmp/provider-baseline.json http://127.0.0.1:8086/api/config >/dev/null || fail "provider rules restore"
+
+timeout -k 3s 55s python3 -B /work/test/netns/simple_ui_cases.py reserve || {
+	tail -20 /tmp/keenproxy.log /tmp/sbserver.log
+	fail "subscription reserve scenario"
+}
+
 # --- Shutdown removes all interception owned by KeenProxy
 kill -TERM $KPID
 wait $KPID || true
@@ -494,8 +599,11 @@ for i in $(seq 1 20); do
     [ -S /var/run/ndm.core.socket ] && break
     sleep 0.1
 done
+FIREWALL_TEST_DIR=$(mktemp -d /tmp/keenproxy-firewall.XXXXXX)
+install -m 755 /work/test/netns/firewall-command.sh "$FIREWALL_TEST_DIR/iptables"
+install -m 755 /work/test/netns/firewall-command.sh "$FIREWALL_TEST_DIR/iptables-restore"
 /opt/bin/keenproxy -config /opt/etc/keenproxy/config.yaml -rule-sets /tmp/event-rule-sets -watch 1h \
-    -iptables /usr/sbin/iptables -iptables-restore /usr/sbin/iptables-restore >/tmp/keenproxy-event.log 2>&1 &
+    -iptables "$FIREWALL_TEST_DIR/iptables" -iptables-restore "$FIREWALL_TEST_DIR/iptables-restore" >/tmp/keenproxy-event.log 2>&1 &
 KPID=$!
 for i in $(seq 1 50); do
     iptables -t nat -C PREROUTING -j KEENPROXY_TCP 2>/dev/null && break
@@ -522,15 +630,21 @@ ip netns exec client curl -s -m 5 -o /dev/null http://198.51.100.3/ || fail "HTT
 api_get 'journal/audit?actor=watchdog' | python3 -c 'import json,sys; events=json.load(sys.stdin)["entries"]; assert any(e.get("firewall",{}).get("trigger")=="netfilter_hook" and e["firewall"]["outcome"]=="restored" and e["firewall"].get("duration_ms",-1)>=0 for e in events)' || fail "event recovery source or verification is missing"
 if grep -Eq 'checking firewall after netfilter event|interception rules restored and verified|interception rule check failed' /tmp/keenproxy-event.log; then fail "successful event recovery duplicated into system log"; fi
 ok "NDM callback restores a deleted chain and HTTP before the one-hour poll"
+# Test guarded forwarding with a real IPv4 return path in place.
+ip -n wan route add 192.168.77.10/32 via 198.51.100.1
+timeout -k 3s 55s python3 -B /work/test/netns/simple_ui_cases.py firewall "$FIREWALL_TEST_DIR" "$HOOK" || {
+    tail -40 /tmp/keenproxy-event.log "$FIREWALL_TEST_DIR/dns.log" "$FIREWALL_TEST_DIR/http.log" 2>/dev/null || true
+    fail "guarded firewall recovery scenarios"
+}
 kill -TERM "$KPID"
 wait "$KPID"
+rm -rf "$FIREWALL_TEST_DIR"
 [ ! -e "$HOOK" ] || fail "owned NDM hook remains after stop"
 [ ! -e /var/run/keenproxy/netfilter/changed ] || fail "event marker remains after stop"
 kill "$NDMPID"
 ok "NDM lifecycle cleanup is safe"
 
-# Give both families direct return routes so the probes detect an unguarded gap.
-ip -n wan route add 192.168.77.10/32 via 198.51.100.1
+# Add a direct IPv6 return route as well so both families can detect a gap.
 ip addr add 2001:db8:1::1/64 dev br0 nodad
 ip addr add 2001:db8:2::1/64 dev veth-w nodad
 ip -n client addr add 2001:db8:1::2/64 dev eth0 nodad

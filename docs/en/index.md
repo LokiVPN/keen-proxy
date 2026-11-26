@@ -14,16 +14,14 @@ hide:
 
 # Your network, your routes
 
-Selective traffic routing for Keenetic and Netcraze routers running Entware. Choose which devices, domains, addresses, and countries use a tunnel, connect directly, or are blocked — from one web panel.
+Selective traffic routing for Keenetic and Netcraze routers running Entware. Manage connections, device access, and site rules in the browser. Configure advanced policies such as country rules in YAML.
 
 <div class="kp-actions" markdown>
-[:material-play: Try the demo](demo/){ .md-button .md-button--primary }
-[Get started](getting-started.md){ .md-button }
+[Get started](getting-started.md){ .md-button .md-button--primary }
 </div>
 
 </div>
 
-[![KeenProxy web panel overview with synthetic traffic](../assets/screenshots/readme-overview.png){ .kp-hero__shot }](demo/)
 
 </section>
 
@@ -54,7 +52,7 @@ Route by domain, CIDR, or country — including exclusions such as “everything
 
 ### Many connection types
 
-WireGuard, sing-box connection links, raw sing-box outbounds, and an optional TrustTunnel client.
+WireGuard, sing-box connection links, raw sing-box outbounds, and embedded TrustTunnel.
 </div>
 
 <div class="kp-card" markdown>
@@ -68,17 +66,17 @@ Fall back to another connection when one goes down, and return after it has reco
 <div class="kp-card" markdown>
 :material-dns:{ .kp-card__icon }
 
-### DNS and blocklists
+### DNS
 
-A local DNS frontend with DoH/DoT resolvers, selectable DNS routing, and DNS-only blocklists.
+A local DNS frontend with DoH/DoT resolvers and selectable DNS routing.
 </div>
 
 <div class="kp-card" markdown>
 :material-file-document-check-outline:{ .kp-card__icon }
 
-### Review before Apply
+### Review and save on each page
 
-Every change goes into one shared draft. Apply it when ready, or discard it; journals explain the result.
+Save connection, routing, and device edits on their own pages. **Overview** shows and controls the active connection.
 </div>
 
 </div>
@@ -98,15 +96,15 @@ Import a WireGuard file or a connection link, or use the wizard.
 </div>
 
 <div class="kp-step" markdown>
-### Define groups
+### Choose routing
 
-Collect domains, addresses, or countries and pick where they go.
+On **Routing**, follow subscription rules or enter sites and addresses to tunnel or send directly.
 </div>
 
 <div class="kp-step" markdown>
-### Choose devices and Apply
+### Choose devices
 
-Select which networks and clients follow the rules, then apply the draft.
+On **Devices**, choose which home devices use KeenProxy and save the page.
 </div>
 
 </div>
@@ -115,40 +113,12 @@ KeenProxy also watches its interception rules. On compatible Keenetic/Netcraze f
 
 </section>
 
-<section class="kp-section" markdown>
-
-## A look at the panel
-
-<div class="kp-gallery" markdown>
-
-<figure markdown>
-[![Domain groups, targets, and address observations](../assets/screenshots/en-rules.png)](user-guide.md#3-add-a-routing-group)
-<figcaption>Rules</figcaption>
-</figure>
-
-<figure markdown>
-[![Connection profiles and routing targets](../assets/screenshots/en-connections.png)](user-guide.md#2-configure-a-connection)
-<figcaption>Connections</figcaption>
-</figure>
-
-<figure markdown>
-[![Diagnostics for a selected connection](../assets/screenshots/en-diagnostics.png)](user-guide.md#7-verify-the-result)
-<figcaption markdown>Diagnostics. [How to download the ZIP on your router](troubleshooting.md#download-the-diagnostic-zip).</figcaption>
-</figure>
-
-</div>
-
-</section>
-
 <section class="kp-cta" markdown>
 
-## Try it in your browser
-
-The demo runs the real web panel with synthetic data. No router or credentials are required.
+## Learn more
 
 <div class="kp-actions" markdown>
-[:material-play: Open the demo](demo/){ .md-button .md-button--primary }
-[Read the overview](overview.md){ .md-button }
+[Read the overview](overview.md){ .md-button .md-button--primary }
 </div>
 
 <p class="kp-note">KeenProxy is experimental. Compatibility depends on the router architecture, firmware, kernel capabilities, and build features.</p>

@@ -64,3 +64,31 @@ func (c *Config) validateSubscriptions(add func(string, ...any)) {
 		seen[source.ID] = true
 	}
 }
+
+// SubscriptionFallbackTargets returns the explicit reserve choices for a
+// subscription. A disabled manual connection still has its configured chain.
+func (c *Config) SubscriptionFallbackTargets() []string {
+	targets := make([]string, 0, len(c.Connections)+2)
+	for _, cn := range c.Connections {
+		if cn.ID != "" && cn.ID != TargetDirect && cn.ID != TargetBlock && !c.HasManagedTarget(cn.ID) {
+			targets = append(targets, cn.ID)
+		}
+	}
+	return append(targets, TargetDirect, TargetBlock)
+}
+
+func (c *Config) validateSubscriptionFallbacks(add func(string, ...any)) {
+	if len(c.Subscriptions) == 0 {
+		return
+	}
+	targets := c.SubscriptionFallbackTargets()
+	for i, source := range c.Subscriptions {
+		switch fb := source.Fallback; {
+		case fb == "" || slices.Contains(targets, fb):
+		case c.HasManagedTarget(fb):
+			add("subscriptions[%d]: fallback cannot be a subscription target", i)
+		default:
+			add("subscriptions[%d]: unknown fallback %q", i, fb)
+		}
+	}
+}

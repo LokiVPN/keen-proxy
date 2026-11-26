@@ -24,15 +24,15 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/ndmhook"
 	"github.com/ordo-systems/keen-proxy/internal/netfilter"
+	"github.com/ordo-systems/keen-proxy/internal/ui"
 	"github.com/ordo-systems/keen-proxy/internal/update"
-	"github.com/ordo-systems/keen-proxy/web"
 
 	// Routers often lack a CA bundle. The Mozilla roots are used only when the
 	// system has none, so HTTPS downloads (country databases, filter lists) work.
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
-// main selects read-only disclosure, dry-run, synthetic demo, or the live router lifecycle.
+// main selects read-only disclosure, dry-run, or the live router lifecycle.
 func main() {
 	configPath := flag.String("config", "/opt/etc/keenproxy/config.yaml", "configuration file path")
 	arpPath := flag.String("arp", "/proc/net/arp", "ARP table path")
@@ -41,9 +41,8 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "print derived engine/firewall settings without applying them")
 	iptables := flag.String("iptables", "/opt/sbin/iptables", "Entware iptables executable")
 	restore := flag.String("iptables-restore", "/opt/sbin/iptables-restore", "Entware iptables-restore executable")
-	uiDemo := flag.Bool("ui-demo", false, "serve synthetic UI demo data without changing network state")
-	key := flag.Bool("key", false, "print the current panel token and exit")
 	showURL := flag.Bool("url", false, "print the configured panel URL and exit")
+	keeneticAuth := flag.String("keenetic-auth-origin", os.Getenv("KEENPROXY_KEENETIC_AUTH_ORIGIN"), "local KeeneticOS HTTP origin for browser sign-in; empty derives it on Keenetic, off disables")
 	startupProtocol := flag.Bool("startup-state-protocol", false, "print the service readiness protocol version and exit")
 	flag.Parse()
 	if *startupProtocol {
@@ -51,12 +50,12 @@ func main() {
 		return
 	}
 
-	if err := rejectAccessConflict(*key, *showURL, *dryRun, *uiDemo); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if *showURL && *dryRun {
+		fmt.Fprintln(os.Stderr, "cannot combine -url with -dry-run")
 		os.Exit(1)
 	}
-	if *key || *showURL {
-		if err := discloseAccess(os.Stdout, *configPath, *key); err != nil {
+	if *showURL {
+		if err := discloseAccess(os.Stdout, *configPath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -74,11 +73,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Keep journals beside derived rule sets; the UI demo uses memory only.
+	// Keep journals beside derived rule sets.
 	journalDir := filepath.Join(filepath.Dir(*ruleSetDir), "journal")
-	if *uiDemo {
-		journalDir = ""
-	}
 	journals := journal.NewSet(journalDir)
 	defer func() {
 		for _, j := range journals {
@@ -87,17 +83,13 @@ func main() {
 	}()
 	log := slog.New(journal.NewHandler(slog.NewTextHandler(os.Stderr, nil), journals[journal.System]))
 
-	cfg, err := model.Load(*configPath)
+	cfg, err := startupConfig(*configPath, log)
 	if err != nil {
-		log.Error("configuration", "err", err)
+		// The load error can quote share links with credentials, so it stays
+		// out of the journal; -dry-run prints it to the terminal only.
+		log.Error("configuration cannot be loaded; fix the file and restart", "path", *configPath,
+			"hint", "keenproxy -dry-run -config "+*configPath+" shows the error on the terminal only")
 		os.Exit(1)
-	}
-	if *uiDemo {
-		if err := serveAPI(ctx, cfg, api.NewDemo(cfg), nil, log, nil); err != nil {
-			log.Error("web interface", "err", err)
-			os.Exit(1)
-		}
-		return
 	}
 
 	fw := netfilter.NewFirewall()
@@ -116,7 +108,7 @@ func main() {
 		go publishStartupState(ctx, state, listening, path, log)
 	}
 	d := daemon.New(daemon.Options{
-		ConfigPath: *configPath, ARPPath: *arpPath, RuleSetDir: *ruleSetDir, WatchInterval: *watch,
+		ConfigPath: *configPath, Config: cfg, ARPPath: *arpPath, RuleSetDir: *ruleSetDir, WatchInterval: *watch,
 		Firewall: fw, Log: log, Journals: journals, SingBoxLog: singBoxLog(journals[journal.System], log),
 		OnStartupActive:  onStartupActive,
 		OnStartupBlocked: onStartupBlocked,
@@ -131,8 +123,12 @@ func main() {
 	updates := update.NewManaged(*configPath, log)
 	go updates.Run(ctx)
 	// A management API failure must not stop the independent routing daemon.
+	origin, originErr := keeneticOrigin(*keeneticAuth, cfg.LAN.Interface, isKeenetic, interfaceAddrs)
+	if originErr != nil {
+		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working", "err", originErr)
+	}
 	go func() {
-		if err := serveAPI(ctx, cfg, d, updates, log, onAPIListening); err != nil {
+		if err := serveAPI(ctx, cfg, d, updates, log, origin, *keeneticAuth != "", originErr != nil, onAPIListening); err != nil {
 			log.Error("web interface failed to start", "err", err)
 		}
 	}()
@@ -204,18 +200,42 @@ func writeStartupState(path, mode string) error {
 }
 
 // serveAPI serves management requests until cancellation, using startup bind
-// and token settings; it does not apply routing changes itself.
-func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *update.Manager, log *slog.Logger, onListening func(context.Context)) error {
-	token, created, err := api.LoadToken(cfg.API.TokenFile)
+// settings; it does not apply routing changes itself.
+func serveAPI(ctx context.Context, cfg *model.Config, d managementDaemon, updates *update.Manager, log *slog.Logger, keeneticOrigin string, operatorOrigin, unavailable bool, onListening func(context.Context)) error {
+	keenetic, err := api.NewKeeneticAuth(keeneticOrigin, cfg.API.Listen)
 	if err != nil {
-		return fmt.Errorf("token: %w", err)
+		// An origin that cannot work (for example api.listen is loopback-only)
+		// must not take the loopback panel down with it, whether it was
+		// derived or set by the operator (ruling R16). The reasons are fixed
+		// texts; the origin itself is not logged.
+		source := "derived from lan.interface"
+		if operatorOrigin {
+			source = "-keenetic-auth-origin or KEENPROXY_KEENETIC_AUTH_ORIGIN"
+		}
+		log.Error("KeeneticOS sign-in unavailable; browsers are refused until restart, loopback keeps working",
+			"origin", source, "reason", err.Error())
+		keenetic, unavailable = nil, true
 	}
-	if created {
-		log.Info("web interface login token created", "file", cfg.API.TokenFile, "token", token)
+	opts := ui.Options{
+		Role: pageRole,
+		User: func(r *http.Request) string { return api.KeeneticUserFrom(r.Context()) },
+		SessionKey: func(r *http.Request) [32]byte {
+			return api.KeeneticSessionKeyFrom(r.Context())
+		},
 	}
+	if keenetic != nil {
+		opts.KeeneticOrigin, opts.DirectURL = keenetic.Origin(), keenetic.PanelURL()
+	} else {
+		opts.DirectURL, _ = panelURL(cfg.API.Listen, cfg.LAN.Interface, interfaceAddrs)
+	}
+	management := &api.Server{
+		D: d, Log: log, Updates: updates, Keenetic: keenetic, Unavailable: unavailable,
+		PageError: opts.AccessError,
+	}
+	management.Pages = ui.New(uiDeps{daemon: d, updates: updates, bundle: management.ServeSupportBundle}, opts)
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,
-		Handler:           (&api.Server{D: d, Token: token, UI: web.FS(), Log: log, Updates: updates}).Handler(),
+		Handler:           management.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ln, err := net.Listen("tcp", srv.Addr)
@@ -241,10 +261,15 @@ func serveAPI(ctx context.Context, cfg *model.Config, d api.Daemon, updates *upd
 }
 
 // printDryRun renders derived settings without enabling interception; output may contain secrets.
+// A file that the daemon would reset at startup is reported on stderr and
+// rendered as reset. Like the daemon start, it changes no file.
 func printDryRun(configPath, arpPath, ruleSetDir string) error {
-	cfg, err := model.Load(configPath)
+	cfg, reset, err := loadOrReset(configPath)
 	if err != nil {
 		return err
+	}
+	if reset {
+		logReset(slog.New(slog.NewTextHandler(os.Stderr, nil)), "configuration would be reset after upgrade", cfg)
 	}
 	neighbors, _ := devices.ReadARP(arpPath, cfg.LAN.Interface)
 	out, err := compile.Compile(compile.Input{Config: cfg, Neighbors: neighbors, RuleSetDir: ruleSetDir})

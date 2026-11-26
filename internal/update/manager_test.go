@@ -47,13 +47,14 @@ func TestScheduledInstallRefreshesReleaseAndPersistsAttempt(t *testing.T) {
 		}
 		return nil
 	}
-	if p := m.Status().Preferences; p.Enabled || p.Time != defaultTime {
+	p := m.Status().Preferences
+	if p.Enabled || p.Time != defaultTime {
 		t.Fatalf("unsafe defaults: %+v", p)
 	}
-	if err := m.SetPreferences(Preferences{Enabled: true, Time: "4:30"}); !errors.Is(err, ErrPreferences) {
+	if err := m.SetPreferencesIfCurrent(Preferences{Enabled: true, Time: "4:30"}, p.Revision()); !errors.Is(err, ErrPreferences) {
 		t.Fatalf("accepted invalid time: %v", err)
 	}
-	if err := m.SetPreferences(Preferences{Enabled: true, Time: "04:30"}); err != nil {
+	if err := m.SetPreferencesIfCurrent(Preferences{Enabled: true, Time: "04:30"}, p.Revision()); err != nil {
 		t.Fatal(err)
 	}
 	m.scheduled(context.Background(), now.Add(-time.Minute))
@@ -73,7 +74,7 @@ func TestScheduledInstallRefreshesReleaseAndPersistsAttempt(t *testing.T) {
 func TestRollbackDisablesAutoInstallOnlyWhenAccepted(t *testing.T) {
 	m := fixtureManager(t)
 	prefs := Preferences{Enabled: true, Time: "04:30"}
-	if err := m.SetPreferences(prefs); err != nil {
+	if err := m.SetPreferencesIfCurrent(prefs, m.Status().Preferences.Revision()); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Start("v0.2.0", true); !errors.Is(err, ErrTarget) {
@@ -97,6 +98,24 @@ func TestRollbackDisablesAutoInstallOnlyWhenAccepted(t *testing.T) {
 	}
 	if m.Status().Preferences.Enabled {
 		t.Fatal("rollback left automatic installation enabled")
+	}
+}
+
+func TestUpdatePreferencesCompareAndSave(t *testing.T) {
+	m := fixtureManager(t)
+	initial := m.Status().Preferences
+	updated := Preferences{Enabled: true, Time: "05:30"}
+	rev := initial.Revision()
+	if err := m.SetPreferencesIfCurrent(updated, rev); err != nil {
+		t.Fatalf("save new schedule: %v", err)
+	}
+	for _, stale := range []string{rev, ""} {
+		if err := m.SetPreferencesIfCurrent(initial, stale); !errors.Is(err, ErrPreferencesChanged) {
+			t.Fatalf("write with stale or absent revision returned %v", err)
+		}
+		if got := m.Status().Preferences; got != updated {
+			t.Fatalf("stored schedule = %+v, want %+v", got, updated)
+		}
 	}
 }
 

@@ -30,21 +30,10 @@ jobs:
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - name: Go and installer tests
         run: make test
       - name: Go vet
         run: make vet
-      - name: Frontend tests and production build
-        working-directory: web
-        run: |
-          npm ci --no-audit --no-fund
-          npm test
-          npm run build
 
   memory:
     name: Memory regression
@@ -157,11 +146,6 @@ jobs:
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - name: Router cross-builds
         run: make build-router-ci build-router-lite-ci
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"math"
@@ -22,15 +23,14 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/ordo-systems/keen-proxy/internal/catalog"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/devices"
 	"github.com/ordo-systems/keen-proxy/internal/dnsfront"
 	"github.com/ordo-systems/keen-proxy/internal/domaincache"
 	"github.com/ordo-systems/keen-proxy/internal/engine"
-	"github.com/ordo-systems/keen-proxy/internal/filterlist"
 	"github.com/ordo-systems/keen-proxy/internal/geoip"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/lists"
@@ -42,7 +42,12 @@ import (
 
 // Options supplies local paths, runtime dependencies, and watchdog settings.
 type Options struct {
-	ConfigPath    string
+	ConfigPath string
+	// Config is the configuration Run starts with; nil loads ConfigPath. The
+	// caller may have reset an older file in memory: ConfigPath changes only
+	// when a configuration is saved, and that first save keeps a file older
+	// releases read as config.v1.yaml.
+	Config        *model.Config
 	ARPPath       string        // /proc/net/arp
 	RuleSetDir    string        // local sing-box client address rule-sets
 	WatchInterval time.Duration // watchdog interval for firewall and neighbor checks
@@ -61,19 +66,16 @@ type Options struct {
 
 // Daemon owns runtime components and coordinates serialized configuration changes.
 type Daemon struct {
-	domainGeneration  atomic.Pointer[domainGeneration]
-	filters           *filterlist.Manager
-	featureMu         sync.Mutex
-	dnsInfo           DNSInfo
-	domains           *domaincache.Cache
-	domainSlots       chan struct{}
-	domainMu          sync.Mutex
-	domainError       string
-	domainWritten     time.Time
-	domainFingerprint []byte
-	opt               Options
-	log               *slog.Logger
-	tproxyProbe       func(context.Context) netfilter.TProxyReadiness
+	domainGeneration atomic.Pointer[domainGeneration]
+	dnsRouteMu       sync.Mutex
+	dnsRoute         string // latest DNS route, to journal fallback transitions
+	domains          *domaincache.Cache
+	domainSlots      chan struct{}
+	domainError      string
+	dnsFiles         dnsFiles // protected by mu
+	opt              Options
+	log              *slog.Logger
+	tproxyProbe      func(context.Context) netfilter.TProxyReadiness
 
 	// startupBlocked is protected by mu and closed on first successful activation.
 	startupBlocked chan struct{}
@@ -89,11 +91,13 @@ type Daemon struct {
 	routeRelease func() error // ownership-aware cleanup for a recovered TPROXY route
 	plan         netfilter.Plan
 	planOn       bool
-	planPending  bool // installation failed after the plan and its dependencies were prepared
+	planPending  bool            // installation failed after the plan and its dependencies were prepared
+	planGuard    *netfilter.Plan // desired protection until a replacement plan is verified
 	neighbors    map[string]netip.Addr
 	deviceNames  map[string]cachedDeviceName
 	started      time.Time
-	restored     int // number of watchdog firewall restorations
+	appliedAt    time.Time // latest successful application to the running core
+	restored     int       // number of watchdog firewall restorations
 	stats        *stats.Tracker
 	geo          geoState
 
@@ -108,9 +112,20 @@ type Daemon struct {
 	firewallWake chan struct{}
 	// serverHosts maps connection IDs to server hosts from the latest compilation.
 	serverHosts map[string]string
-	journals    journal.Set
+	// targetAliases records the route aliases installed with the running core.
+	targetAliases map[string]string
+	journals      journal.Set
 	// live publishes the current configuration to route logging without d.mu.
 	live atomic.Pointer[model.Config]
+	// dnsNames publishes the matcher built during compilation to the DNS
+	// frontend's goroutines, which read it without d.mu.
+	dnsNames atomic.Pointer[dnsNamesState]
+	// acceptedDNSNames keeps the accepted own lists through Apply and rollback.
+	acceptedDNSNames *compile.DNSNames
+	// split publishes which devices follow split policies, from the latest
+	// compilation, to the DNS frontend's goroutines. Only compileLocked
+	// stores it.
+	split atomic.Pointer[compile.SplitAddresses]
 	// coreRestarted records whether the latest applyLocked restarted the engine.
 	coreRestarted bool
 	// memoryBaseline is the process limit captured before configuration is applied.
@@ -119,6 +134,10 @@ type Daemon struct {
 	memoryDefault int64
 	// memoryActive is the limit from the last successful activation.
 	memoryActive int64
+	// configCurrent records that ConfigPath holds the current schema because
+	// this daemon saved it. Until then a save checks whether the file is one
+	// older releases read and keeps it first.
+	configCurrent bool
 	// Fallback chains, selected members, and probe results from the latest
 	// compilation (see failover.go).
 	chains  []compile.FailoverChain
@@ -159,7 +178,6 @@ func New(opt Options) *Daemon {
 	d.memoryBaseline = baseline
 	d.memoryDefault = memoryDefault
 	d.memoryActive = baseline
-	d.filters = filterlist.New(filepath.Join(filepath.Dir(opt.RuleSetDir), "filters"), nil)
 	d.geoStore = geoip.NewStore(filepath.Join(filepath.Dir(opt.RuleSetDir), "geoip"))
 	d.geoWake = make(chan struct{}, 1)
 	d.subscriptions = newSubscriptionRuntime(opt.RuleSetDir)
@@ -207,7 +225,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go d.runSubscriptions(ctx)
 		go d.runSubscriptionHealth(ctx)
 		go d.runDomains(ctx)
-		go d.runFilterUpdates(ctx)
 		go d.runDeviceNames(ctx)
 		d.runWatchdog(ctx)
 	}
@@ -220,11 +237,13 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 	if ctx.Err() != nil {
 		return nil, nil
 	}
-	cfg, err := model.Load(d.opt.ConfigPath)
-	if err != nil {
-		return nil, err
+	cfg := d.opt.Config
+	if cfg == nil {
+		var err error
+		if cfg, err = model.Load(d.opt.ConfigPath); err != nil {
+			return nil, err
+		}
 	}
-	catalog.AutoUpdate(cfg)
 	d.started = time.Now()
 	blocked := d.tproxyPreflight(ctx, cfg)
 	if ctx.Err() != nil {
@@ -262,6 +281,8 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 	if err := d.applyLocked(ctx, cfg); err != nil {
 		return nil, err
 	}
+	d.appliedAt = time.Now()
+	d.commitDomainCacheLocked()
 	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
 	if err := d.saveChangedSubscriptionSnapshotsLocked(cfg, before); err != nil {
 		d.audit("system", "Subscription selection not saved", "subscriptions", "warn", err.Error())
@@ -280,19 +301,64 @@ func (d *Daemon) startLocked(ctx context.Context) (<-chan struct{}, error) {
 // startup commits only after saving; an already-active daemon can report an
 // applied-but-unsaved change.
 func (d *Daemon) Apply(ctx context.Context, cfg *model.Config) error {
+	return d.apply(ctx, cfg, applyConditions{})
+}
+
+// ApplyIfCurrent applies a page draft only while the configuration used to
+// build it is current. The revision is checked under the commit lock even
+// when fetching provider data required dropping that lock.
+func (d *Daemon) ApplyIfCurrent(ctx context.Context, cfg *model.Config, revision string) error {
+	if revision == "" {
+		return model.ErrConfigChanged
+	}
+	return d.apply(ctx, cfg, applyConditions{revision: revision})
+}
+
+// ApplyUnlessRulesWithheld checks the revision and source under the commit
+// lock when selecting provider mode or editing its rule switches.
+func (d *Daemon) ApplyUnlessRulesWithheld(ctx context.Context, cfg *model.Config, revision, source string) error {
+	if revision == "" {
+		return model.ErrConfigChanged
+	}
+	return d.apply(ctx, cfg, applyConditions{revision: revision, requireRulesFrom: source})
+}
+
+// ApplySubscriptionPreview applies only the checked attempt for the selected
+// source. It cannot substitute another preview or retry the download.
+func (d *Daemon) ApplySubscriptionPreview(ctx context.Context, cfg *model.Config, revision string, checked subscription.PreviewRef) error {
+	if revision == "" {
+		return model.ErrConfigChanged
+	}
+	checked.Source = subscriptionIdentity(checked.Source)
+	if checked.ID == 0 || !slices.ContainsFunc(cfg.Subscriptions, func(source subscription.Source) bool {
+		return subscriptionIdentity(source) == checked.Source
+	}) {
+		return subscription.ErrPreviewChanged
+	}
+	return d.apply(ctx, cfg, applyConditions{revision: revision, checked: &checked})
+}
+
+type applyConditions struct {
+	revision         string
+	checked          *subscription.PreviewRef
+	requireRulesFrom string
+}
+
+func (d *Daemon) apply(ctx context.Context, cfg *model.Config, conditions applyConditions) error {
 	by, from := applyActor(ctx)
 	cfg.Defaults()
-	catalog.AutoUpdate(cfg)
 	if err := cfg.Validate(); err != nil {
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
 	}
+	// Apply saves the configuration, and saves use the current schema.
+	cfg.SchemaVersion = model.SchemaVersion
 	// Compile first so protocol errors do not disturb the running configuration.
 	if _, err := compile.Compile(compile.Input{Config: cfg, RuleSetDir: d.opt.RuleSetDir}); err != nil {
 		d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 		return err
 	}
-	return d.applyWithSubscriptions(ctx, cfg)
+	return d.applyWithSubscriptions(ctx, cfg, conditions)
 }
 
 func applyActor(ctx context.Context) (by, from string) {
@@ -310,8 +376,10 @@ func (d *Daemon) applyAdmissionLocked(ctx context.Context) error {
 	return ctx.Err()
 }
 
+const applyRuntimeTimeout = 30 * time.Second
+
 // applyConfigLocked is shared by draft Apply and saved recovery.
-func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save bool, candidates map[subscription.Source]subscriptionAttempt) error {
+func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save bool, candidates map[subscription.Source]subscriptionAttempt, checked *subscription.PreviewRef) error {
 	if err := d.applyAdmissionLocked(ctx); err != nil {
 		return err
 	}
@@ -323,19 +391,32 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	if err := d.applyAdmissionLocked(ctx); err != nil {
 		return err
 	}
+	var checkedSource subscription.Source
+	if checked != nil {
+		if _, err := d.checkedPreviewLocked(*checked, time.Now()); err != nil {
+			return err
+		}
+		checkedSource = checked.Source
+	}
+	// Admission, preflight and provider I/O can be canceled by the requester.
+	// Once mutation begins, the daemon owns both apply and rollback.
+	applyCtx, cancel := context.WithTimeout(context.Background(), applyRuntimeTimeout)
+	defer cancel()
 	prev := d.cfg
+	previousPlan := d.plan
 	changes := configChanges(prev, cfg)
 	activation := d.startupBlocked
 	neighbors := d.neighbors
 	previousSubscriptions := d.subscriptions.states
 	previousHealth := d.health
-	if len(previousSubscriptions) > 0 || len(cfg.Subscriptions) > 0 {
+	if len(previousSubscriptions) > 0 || len(cfg.Subscriptions) > 0 || prev != nil && len(prev.Connections) > 0 {
 		previousHealth = maps.Clone(d.health)
 	}
+	removedConnections := d.discardReplacedManualHealthLocked(prev, cfg)
 	restoreBalanceSessions := d.eng.SubscriptionBalanceCheckpoint()
-	d.subscriptions.states = d.subscriptionDraftLocked(cfg, candidates)
+	d.subscriptions.states = d.subscriptionDraftLocked(cfg, candidates, checkedSource)
 	d.discardReplacedSubscriptionHealthLocked(previousSubscriptions)
-	err := d.applyLocked(ctx, cfg)
+	err := d.applyLocked(applyCtx, cfg)
 	if err == nil {
 		err = d.saveChangedSubscriptionSnapshotsLocked(cfg, previousSubscriptions)
 	}
@@ -352,10 +433,17 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 			details += "; interception remains inactive"
 		} else if prev != nil {
 			d.log.Error("new configuration failed to apply, restoring previous configuration", "err", err)
-			if rbErr := d.applyLocked(ctx, prev); rbErr != nil {
+			rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), applyRuntimeTimeout)
+			rbErr := d.applyLocked(rollbackCtx, prev)
+			cancelRollback()
+			if rbErr != nil {
 				d.log.Error("rollback also failed", "err", rbErr)
 				details += "; rollback also failed: " + rbErr.Error()
 				rollbackRestore = journalRestoreFailure(rbErr)
+				if guardErr := d.protectPreviousPlan(previousPlan); guardErr != nil {
+					d.log.Error("protect previous interception sources", "err", guardErr)
+					details += "; previous sources could not be guarded: " + guardErr.Error()
+				}
 			} else {
 				details += "; previous configuration restored"
 			}
@@ -370,7 +458,8 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		return err
 	}
 	if activation != nil {
-		err := d.applyAdmissionLocked(ctx)
+		// Respect daemon shutdown when publishing the first activation.
+		err := d.applyAdmissionLocked(applyCtx)
 		if err == nil && save {
 			err = d.persistConfig(cfg, true)
 		}
@@ -387,13 +476,16 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 		d.startupBlocked = nil
 		close(activation)
 	}
+	d.commitDomainCacheLocked()
+	d.stats.ForgetConnections(removedConnections)
 	d.stats.RetainSubscriptionNodes(d.subscriptions.members)
+	d.appliedAt = time.Now()
 	if activation == nil && save {
 		if err := d.persistConfig(cfg, false); err != nil {
 			d.auditSubscriptionSelectionsLocked(previousSubscriptions)
 			wakeSubscriptionWorker(d.subscriptions.wake)
 			d.audit(by, "Configuration applied but not saved", "config", "warn", err.Error()+from)
-			return fmt.Errorf("configuration applied but not saved: %w", err)
+			return &model.AppliedUnsavedError{Err: err}
 		}
 	}
 	if save {
@@ -429,37 +521,61 @@ func (d *Daemon) applyConfigLocked(ctx context.Context, cfg *model.Config, save 
 	return nil
 }
 
+// persistConfig saves cfg at ConfigPath while d.mu is held. Until the daemon
+// has saved the file once, it first keeps a file older releases read (see
+// keepV1Config); afterwards the file is known to be current and is not parsed
+// again. The replaced bytes become config.yaml.previous.
 func (d *Daemon) persistConfig(cfg *model.Config, recovery bool) error {
 	raw, err := cfg.Marshal()
 	if err != nil {
 		return err
 	}
-	if previous, err := os.ReadFile(d.opt.ConfigPath); err == nil {
-		if recovery {
-			return persistRecoveryConfig(d.opt.ConfigPath, previous, raw)
+	previous, err := os.ReadFile(d.opt.ConfigPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// What the save would replace is unknown, so it cannot be backed up.
+		return fmt.Errorf("current configuration could not be read: %w", err)
+	}
+	if err == nil {
+		if !d.configCurrent {
+			backup, err := keepV1Config(d.opt.ConfigPath, previous, d.log)
+			if err != nil {
+				return err
+			}
+			if backup != "" {
+				d.log.Info("configuration for older releases kept", "backup", backup)
+			}
 		}
-		if err := writeFile(d.opt.ConfigPath+".previous", previous, 0o600); err != nil {
+		if recovery {
+			if err := d.warnDurability(persistRecoveryConfig(d.opt.ConfigPath, previous, raw, d.log)); err != nil {
+				return err
+			}
+			d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
+			return nil
+		}
+		if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath+".previous", previous, d.log)); err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
 		}
 	} else if recovery {
 		return fmt.Errorf("previous configuration could not be read: %w", err)
 	}
-	if err := writeFile(d.opt.ConfigPath, raw, 0o600); err != nil {
+	if err := d.warnDurability(replacePrivateFile(d.opt.ConfigPath, raw, d.log)); err != nil {
 		return fmt.Errorf("configuration was not saved: %w", err)
 	}
+	d.configCurrent = cfg.SchemaVersion >= model.SchemaVersion
 	return nil
 }
 
 // persistRecoveryConfig stages the main YAML before publishing its backup.
 // If the final rename fails, the original rollback snapshot can be restored
-// without allocating disk space. Ordinary active applies keep their best-effort
-// persistence behavior.
-func persistRecoveryConfig(path string, original, next []byte) error {
+// without allocating disk space. Ordinary active applies replace each file in
+// turn and report a failure without restoring the other. A directory sync
+// failure after the last rename is a durabilityError.
+func persistRecoveryConfig(path string, original, next []byte, log *slog.Logger) error {
 	mainChanged := !bytes.Equal(original, next)
 	var mainTemp string
 	if mainChanged {
 		var err error
-		mainTemp, err = stagePrivateFile(path, next, false)
+		mainTemp, err = stagePrivateFile(path, next)
 		if err != nil {
 			return fmt.Errorf("configuration was not saved: %w", err)
 		}
@@ -476,7 +592,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 	var rollbackTemp string
 	if previousChanged {
 		if mainChanged && !missing {
-			rollbackTemp, err = stagePrivateFile(previousPath+".recovery", previous, false)
+			rollbackTemp, err = stagePrivateFile(previousPath+".recovery", previous)
 			if err != nil {
 				return fmt.Errorf("rollback snapshot was not saved: %w", err)
 			}
@@ -486,7 +602,7 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 				}
 			}()
 		}
-		previousTemp, err := stagePrivateFile(previousPath, original, false)
+		previousTemp, err := stagePrivateFile(previousPath, original)
 		if err != nil {
 			return fmt.Errorf("previous configuration was not saved: %w", err)
 		}
@@ -497,6 +613,11 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 	}
 
 	if !mainChanged {
+		if previousChanged {
+			if err := syncDir(filepath.Dir(path), log); err != nil {
+				return &durabilityError{err}
+			}
+		}
 		return nil
 	}
 	if err := os.Rename(mainTemp, path); err != nil {
@@ -514,16 +635,61 @@ func persistRecoveryConfig(path string, original, next []byte) error {
 		}
 		return saveErr
 	}
+	if err := syncDir(filepath.Dir(path), log); err != nil {
+		return &durabilityError{err}
+	}
 	return nil
 }
 
-func stagePrivateFile(path string, data []byte, syncData bool) (string, error) {
+// durabilityError reports that a file was replaced but its directory entry
+// may not survive a crash. The save counts as done; callers log a warning.
+type durabilityError struct{ err error }
+
+func (e *durabilityError) Error() string { return "directory sync failed: " + e.err.Error() }
+func (e *durabilityError) Unwrap() error { return e.err }
+
+// warnDurability logs and drops a durabilityError and passes other errors on.
+func (d *Daemon) warnDurability(err error) error {
+	var de *durabilityError
+	if errors.As(err, &de) {
+		d.log.Warn("configuration saved, but its directory could not be synced", "err", de.err)
+		return nil
+	}
+	return err
+}
+
+// replacePrivateFile atomically replaces path with a mode 0600 file holding
+// data and leaves a file that already holds data alone. The data is synced
+// before the rename and the directory after it, so after a crash path holds
+// the old or the new bytes. The daemon writes its configuration, the
+// configuration's rollback copy and subscription snapshots this way.
+func replacePrivateFile(path string, data []byte, log *slog.Logger) error {
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
+		return nil
+	}
+	temp, err := stagePrivateFile(path, data)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temp, path); err != nil {
+		os.Remove(temp)
+		return err
+	}
+	if err := syncDir(filepath.Dir(path), log); err != nil {
+		return &durabilityError{err}
+	}
+	return nil
+}
+
+// stagePrivateFile writes data to a new synced mode 0600 file beside path and
+// returns its name. The caller renames it into place or removes it.
+func stagePrivateFile(path string, data []byte) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return "", err
 	}
 	_, err = f.Write(data)
-	if err == nil && syncData {
+	if err == nil {
 		err = f.Sync()
 	}
 	if err := errors.Join(err, f.Close()); err != nil {
@@ -533,9 +699,29 @@ func stagePrivateFile(path string, data []byte, syncData bool) (string, error) {
 	return f.Name(), nil
 }
 
+// fsyncDir flushes an open directory; tests replace it.
+var fsyncDir = func(f *os.File) error { return f.Sync() }
+
+// syncDir makes entries created or renamed in dir durable. Filesystems that
+// cannot fsync a directory (EINVAL, ENOTSUP) are tolerated with a warning on
+// log, the daemon's logger, so it reaches the system journal.
+func syncDir(dir string, log *slog.Logger) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = fsyncDir(f)
+	if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+		log.Warn("directory sync is not supported here; durability after a crash is not guaranteed", "dir", dir)
+		err = nil
+	}
+	return errors.Join(err, f.Close())
+}
+
 // applyLocked reconciles runtime state with cfg while d.mu is held.
 func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	prev := d.cfg
+	hadPlan := d.planOn || d.planPending || d.planGuard != nil
 	if d.startupBlocked != nil {
 		d.neighbors = d.readNeighbors(cfg)
 	}
@@ -563,6 +749,7 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	if err != nil {
 		return err
 	}
+	d.warnDroppedProviderEntries(out)
 	restarted, err := d.applyCoreLocked(out)
 	if err != nil {
 		return err
@@ -571,8 +758,6 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 		d.coreRestarted = true
 		d.log.Info("sing-box core restarted with new configuration")
 	}
-	d.filters.Configure(cfg.Filters)
-
 	if d.dns == nil || prev == nil || dnsFrontendChanged(prev.DNS, cfg.DNS) || dnsGroupsChanged(prev.Groups, cfg.Groups) {
 		if d.dns != nil {
 			d.dns.Close()
@@ -602,16 +787,16 @@ func (d *Daemon) applyLocked(ctx context.Context, cfg *model.Config) error {
 	}
 	d.route = newRoute
 
-	// Interception mode changes require removing the complete previous chain set.
-	if d.planOn && d.plan.Mode != out.Plan.Mode {
-		d.removeFirewall()
+	// Mode changes retire the old prerouting chains. Keep recovery drops
+	// attached until the replacement can take over.
+	if hadPlan && d.plan.Mode != out.Plan.Mode {
+		d.removeFirewall(d.planGuard != nil)
 	}
-	d.plan = out.Plan
+	d.setFirewallPlan(out.Plan)
 	if err := d.installFirewall(ctx); err != nil {
-		if d.startupBlocked == nil {
-			d.removeFirewall()
-			d.planPending = true
-		}
+		// Keep residual jumps while the caller attempts rollback. Detaching
+		// them here would return protected traffic straight to the router.
+		d.planOn = false
 		return fmt.Errorf("interception rules: %w", err)
 	}
 	if d.startupBlocked == nil {
@@ -660,8 +845,8 @@ func (d *Daemon) shutdown() {
 
 // stopInterceptionLocked detaches firewall and routing state before closing listeners.
 func (d *Daemon) stopInterceptionLocked() {
-	if d.planOn || d.planPending {
-		d.removeFirewall()
+	if d.planOn || d.planPending || d.planGuard != nil {
+		d.removeFirewall(false)
 	}
 	d.removeRouteLocked()
 	if d.dns != nil {
@@ -700,7 +885,6 @@ func (d *Daemon) restoreInactiveLocked(cfg *model.Config) {
 	d.subscriptions.generation++
 	if cfg != nil {
 		d.reselectLocked()
-		d.filters.Configure(cfg.Filters)
 	} else {
 		d.live.Store(nil)
 	}
@@ -739,22 +923,35 @@ func (d *Daemon) startDNS() error {
 	cfg.DropAAAA = true
 	cfg.Blocked = func(name string) bool { return m.Domain(name) != lists.NoMatch }
 	canary := d.cfg.DNS.FirefoxCanary
-	cfg.BlockReason = func(name string) string {
+	cfg.BlockReason = func(name string, client netip.Addr) string {
 		if canary && strings.EqualFold(strings.TrimSuffix(name, "."), "use-application-dns.net") {
 			return "firefox-canary"
 		}
-		return d.filters.Match(name)
+		if d.providerBlocked(name, client) {
+			return "provider"
+		}
+		return ""
 	}
 	cfg.OnRoute = d.recordDNSRoute
 	cfg.OnBlock = d.recordDNSBlock
-	d.dns = dnsfront.New(cfg)
-	return d.dns.Start()
+	frontend := dnsfront.New(cfg)
+	if err := frontend.Start(); err != nil {
+		_ = frontend.Close()
+		return err
+	}
+	d.dns = frontend
+	return nil
 }
 
 // watch refreshes neighbor addresses and restores missing interception rules.
 func (d *Daemon) watch(ctx context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.planGuard != nil {
+		// Repair the guard or the prepared plan before recompiling neighbors.
+		d.checkFirewall(ctx, "watchdog")
+		return
+	}
 	if ctx.Err() != nil || (!d.planOn && !d.planPending) {
 		return
 	}
@@ -779,7 +976,7 @@ func (d *Daemon) watch(ctx context.Context) {
 		} else if restarted {
 			d.log.Warn("sing-box configuration changed after address updates, core restarted")
 		}
-		d.plan = out.Plan
+		d.setFirewallPlan(out.Plan)
 		if !d.planPending {
 			if err := d.installFirewall(ctx); err != nil && ctx.Err() == nil {
 				d.log.Error("rule update", "err", err)
@@ -799,15 +996,31 @@ func (d *Daemon) applyCoreLocked(out compile.Output) (bool, error) {
 	if err := d.restoreSubscriptionSelectorsLocked(out, restarted, time.Now()); err != nil {
 		return restarted, err
 	}
+	d.targetAliases = out.TargetAliases
 	d.reselectLocked()
 	return restarted, nil
 }
 
 func (d *Daemon) compileRuntimeLocked() (compile.Output, error) {
-	return compile.Compile(compile.Input{
-		Config: d.cfg, Neighbors: d.neighbors, RuleSetDir: d.opt.RuleSetDir,
+	return compile.Compile(d.runtimeCompileInputLocked(d.cfg))
+}
+
+func (d *Daemon) runtimeCompileInputLocked(cfg *model.Config) compile.Input {
+	return compile.Input{
+		Config: cfg, Neighbors: d.neighbors, RuleSetDir: d.opt.RuleSetDir,
 		Subscriptions: d.subscriptionCompileInputLocked(),
-	})
+		ProviderRules: d.providerRulesLocked(),
+	}
+}
+
+// CompileConnectionDraft uses the current runtime snapshots to compile an
+// edited config without activation or writes. Snapshot payloads are immutable.
+func (d *Daemon) CompileConnectionDraft(cfg *model.Config) (compile.Output, error) {
+	d.mu.Lock()
+	input := d.runtimeCompileInputLocked(cfg)
+	input.Neighbors = maps.Clone(input.Neighbors)
+	d.mu.Unlock()
+	return compile.Compile(input)
 }
 
 // compileLocked compiles configuration and writes local rule-sets while d.mu
@@ -834,12 +1047,13 @@ func (d *Daemon) compileLocked() (compile.Output, error) {
 	if err := d.writeCategorySetsLocked(out.Categories); err != nil {
 		return out, err
 	}
-	d.writeDNSLocked()
+	d.writeDNSLocked(d.dnsNamesLocked())
 	if d.domainError != "" {
 		return out, fmt.Errorf("DNS rule-sets: %s", d.domainError)
 	}
 	d.serverHosts = out.ServerHosts
 	d.chains = out.Failover
+	d.split.Store(&out.Split)
 	return out, nil
 }
 
@@ -849,6 +1063,11 @@ func writeFile(path string, data []byte, perm os.FileMode) error {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
 		return nil
 	}
+	return replaceFile(path, data, perm)
+}
+
+// replaceFile atomically replaces a file through a temporary file and rename.
+func replaceFile(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, perm); err != nil {
 		return err
@@ -867,23 +1086,20 @@ func (d *Daemon) readNeighbors(cfg *model.Config) map[string]netip.Addr {
 }
 
 // removeFirewall removes active interception rules using a fresh bounded context.
-func (d *Daemon) removeFirewall() {
+func (d *Daemon) removeFirewall(keepProtection bool) {
 	// Use a fresh context because cleanup must run after the serving context is canceled.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := d.opt.Firewall.Remove(ctx, d.plan); err != nil && !errors.Is(err, context.Canceled) {
+	remove := d.opt.Firewall.Remove
+	if keepProtection {
+		remove = d.opt.Firewall.RemovePrerouting
+	} else {
+		d.planGuard = nil
+	}
+	if err := remove(ctx, d.plan); err != nil && !errors.Is(err, context.Canceled) {
 		d.log.Warn("remove rules", "err", err)
 	}
 	d.planOn, d.planPending = false, false
-}
-
-// NoTokenFrom returns trusted dashboard networks from the atomic configuration
-// snapshot, avoiding locks and configuration copies on every API request.
-func (d *Daemon) NoTokenFrom() []netip.Prefix {
-	if cfg := d.live.Load(); cfg != nil {
-		return cfg.API.NoTokenPrefixes()
-	}
-	return nil
 }
 
 // Config returns a deep copy of the current configuration.
@@ -896,9 +1112,17 @@ func (d *Daemon) Config() *model.Config {
 	return d.cfg.Clone()
 }
 
+// matchesConfigRevisionLocked uses the same copied representation as Config.
+func (d *Daemon) matchesConfigRevisionLocked(revision string) bool {
+	return revision != "" && d.cfg != nil && model.ConfigRevision(d.cfg.Clone()) == revision
+}
+
 // Status summarizes daemon, engine, interception, and connection health for the API.
 type Status struct {
 	Started       time.Time `json:"started"`
+	CoreRunning   bool      `json:"-"`
+	AppliedAt     time.Time `json:"-"`
+	Paused        bool      `json:"-"`
 	Mode          string    `json:"mode"`
 	Sources       int       `json:"sources"`
 	Connections   int       `json:"connections"`
@@ -926,6 +1150,7 @@ func (d *Daemon) Status(ctx context.Context) Status {
 	if d.cfg == nil {
 		return st
 	}
+	st.CoreRunning, st.AppliedAt, st.Paused = d.eng.Running(), d.appliedAt, d.cfg.Paused
 	st.Mode = string(d.cfg.Intercept.Mode)
 	st.Sources = len(d.plan.Sources)
 	st.Connections = len(d.cfg.Connections)
@@ -946,6 +1171,9 @@ func (d *Daemon) Status(ctx context.Context) Status {
 
 // Stats returns connection traffic history and summaries.
 func (d *Daemon) Stats(withSeries bool) stats.Snapshot { return d.stats.Snapshot(withSeries) }
+
+// SystemStats returns the latest CPU and RAM sample without ranking hosts.
+func (d *Daemon) SystemStats() stats.System { return d.stats.SystemUsage() }
 
 // Hosts returns per-host traffic for one connection.
 func (d *Daemon) Hosts(tag, query string, limit int) ([]stats.Host, int) {

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"slices"
 	"time"
 
@@ -27,11 +28,21 @@ type subscriptionChecks struct {
 	sweep   SubscriptionCheckProgress
 }
 
-// CheckSubscription schedules a probe of a saved node, or a sweep of the saved
-// catalog when nodeID is empty. The background worker owns all network work.
-func (d *Daemon) CheckSubscription(sourceID, nodeID string) bool {
+// CheckSubscriptionIfCurrent queues a probe of the saved node or, with an
+// empty node ID, its catalog. The revision check and scheduling share a lock.
+func (d *Daemon) CheckSubscriptionIfCurrent(sourceID, nodeID, revision string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if !d.matchesConfigRevisionLocked(revision) {
+		return model.ErrConfigChanged
+	}
+	if !d.checkSubscriptionLocked(sourceID, nodeID) {
+		return errors.New("applied subscription node or catalog is unavailable")
+	}
+	return nil
+}
+
+func (d *Daemon) checkSubscriptionLocked(sourceID, nodeID string) bool {
 	state, exists := d.subscriptions.states[sourceID]
 	nodes := state.snapshot.Nodes
 	if !exists || d.closed || d.startupBlocked != nil || len(nodes) == 0 {
@@ -160,7 +171,7 @@ func (d *Daemon) recordSubscriptionProbeLocked(target subscriptionProbeTarget, r
 func (d *Daemon) discardReplacedSubscriptionHealthLocked(previous map[string]appliedSubscription) {
 	for tag := range d.health {
 		source, _, managed := model.ParseManagedTarget(tag)
-		if managed && previous[source].source != d.subscriptions.states[source].source {
+		if managed && subscriptionIdentity(previous[source].source) != subscriptionIdentity(d.subscriptions.states[source].source) {
 			delete(d.health, tag)
 		}
 	}

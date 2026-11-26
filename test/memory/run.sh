@@ -1,13 +1,14 @@
 #!/bin/sh
-# Compare complete daemons, or stress the current daemon, in a uniquely owned container.
-# Never run either mode on a live router.
+# Compare complete daemons or measure the current daemon in a uniquely owned container.
+# Never run these modes on a live router.
 set -eu
 
 MODE=compare
 if [ "$#" -gt 0 ]; then
     case "$1" in
         --stress) MODE=stress; shift ;;
-        *) echo "ERROR: unknown argument: $1" >&2; echo "usage: sh test/memory/run.sh [--stress]" >&2; exit 1 ;;
+        --provider) MODE=provider; shift ;;
+        *) echo "ERROR: unknown argument: $1" >&2; echo "usage: sh test/memory/run.sh [--stress | --provider]" >&2; exit 1 ;;
     esac
 fi
 if [ "$#" -ne 0 ]; then
@@ -256,6 +257,8 @@ cleanup() {
     printf '%s\n' "$result" >"$OUT/exit-code"
     if [ "$MODE" = stress ]; then
         printf 'AWG stress evidence: %s\n' "$OUT"
+    elif [ "$MODE" = provider ]; then
+        printf 'Provider memory evidence: %s\n' "$OUT"
     else
         printf 'Memory gate evidence: %s\n' "$OUT"
     fi
@@ -269,9 +272,10 @@ build() {
     source=$1
     tags=$2
     output=$3
+    shift 3
     (cd "$source" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GOTOOLCHAIN="$TOOLCHAIN" \
         go build -buildvcs=false -trimpath -tags "$tags" -ldflags '-s -w -buildid=' \
-        -o "$output" ./cmd/keenproxy)
+        "$@" -o "$output" ./cmd/keenproxy)
 }
 
 claim_container() {
@@ -397,20 +401,24 @@ if [ "$MODE" = compare ]; then
     tar -xf "$OUT/baseline.tar" -C "$OUT/source"
     rm "$OUT/baseline.tar"
 else
-    mkdir -p "$OUT/results/stress"
+    mkdir -p "$OUT/results/$MODE"
+    case "$MODE" in
+        stress) gate_name="AWG stress" ;;
+        provider) gate_name="Provider memory" ;;
+    esac
     # Fail before weakening affinity. Do not drop --cpus or --cpuset-cpus.
     NCPU=$(docker info --format '{{.NCPU}}')
     case "$NCPU" in
         ''|*[!0-9]*) fail "Docker engine CPU count is not a number: ${NCPU:-empty}" ;;
     esac
     if [ "$NCPU" -lt 2 ]; then
-        fail "AWG stress requires a Docker engine with at least 2 CPUs, got $NCPU; refusing to weaken affinity or quota"
+        fail "$gate_name requires a Docker engine with at least 2 CPUs, got $NCPU; refusing to weaken affinity or quota"
     fi
 fi
 # One immutable fixture revision for every scenario in this run.
 cp -R "$ROOT/test/memory" "$OUT/fixture"
-if [ "$MODE" = stress ] && [ ! -f "$OUT/fixture/stress.py" ]; then
-    fail "immutable fixture is missing stress.py"
+if [ "$MODE" != compare ] && [ ! -f "$OUT/fixture/$MODE.py" ]; then
+    fail "immutable fixture is missing $MODE.py"
 fi
 
 if [ "$MODE" = compare ]; then
@@ -423,7 +431,7 @@ if [ "$MODE" = compare ]; then
     binary_names="baseline candidate sbserver"
 else
     {
-        printf 'mode=stress\nbaseline=not_built\ncandidate=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
+        printf 'mode=%s\nbaseline=not_built\ncandidate=%s\n' "$MODE" "$(git -C "$ROOT" rev-parse HEAD)"
         printf 'toolchain=%s\nGOOS=linux\nGOARCH=%s\n' "$TOOLCHAIN" "$GOARCH"
         printf 'candidate_tags=%s\nui_assets=excluded\n' "$CANDIDATE_TAGS"
         printf 'engine_ncpu=%s\nmemory_bytes=%s\nmemory_swap_bytes=%s\n' "$NCPU" "$STRESS_MEMORY" "$STRESS_MEMORY"
@@ -435,7 +443,42 @@ fi
 if [ "$MODE" = compare ]; then
     build "$OUT/source" "$BASE_TAGS" "$OUT/bin/baseline" >"$OUT/baseline-build.log" 2>&1
 fi
-build "$ROOT" "$CANDIDATE_TAGS" "$OUT/bin/candidate" >"$OUT/candidate-build.log" 2>&1
+if [ "$MODE" = provider ]; then
+    # Only this measurement binary gets the private heap sampler.
+    python3 - "$ROOT" "$OUT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root, output = map(Path, sys.argv[1:])
+daemon = root / "internal/daemon"
+snapshots = daemon / "subscription_snapshots.go"
+source = snapshots.read_text()
+# Checkpoint after marshaling, while the encoded buffer is still live, and
+# before the fixture can observe the saved snapshot.
+anchor = ("\traw, err := json.Marshal(snapshots)\n"
+          "\tif err != nil {\n\t\treturn errSubscriptionSnapshot\n\t}\n")
+if source.count(anchor) != 1:
+    raise SystemExit("provider heap checkpoint could not locate the snapshot write")
+measured = output / snapshots.name
+measured.write_text(source.replace(anchor, anchor + "\trecordProviderSnapshotHeap()\n"))
+(output / "provider-overlay.json").write_text(json.dumps({"Replace": {
+    str(daemon / "provider_fixture_metrics.go"): str(output / "fixture/provider_metrics.go.in"),
+    str(snapshots): str(measured),
+}}))
+PY
+    set -- -overlay "$OUT/provider-overlay.json"
+    for helper in provider providerload; do
+        case "$helper" in
+            provider) helper_package=./test/netns/provider ;;
+            providerload) helper_package=./test/memory/providerload ;;
+        esac
+        (cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GOTOOLCHAIN="$TOOLCHAIN" \
+            go build -buildvcs=false -trimpath -o "$OUT/bin/$helper" "$helper_package") >"$OUT/$helper-build.log" 2>&1
+    done
+    binary_names="$binary_names provider providerload"
+fi
+build "$ROOT" "$CANDIDATE_TAGS" "$OUT/bin/candidate" "$@" >"$OUT/candidate-build.log" 2>&1
 (cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GOTOOLCHAIN="$TOOLCHAIN" \
     go build -buildvcs=false -trimpath -tags "$CANDIDATE_TAGS" \
     -o "$OUT/bin/sbserver" ./test/netns/sbserver) >"$OUT/server-build.log" 2>&1
@@ -447,12 +490,14 @@ import hashlib
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
+binaries = sys.argv[2:]
+provider_assets = {"provider.py", "provider_metrics.go.in"}
 with (root / 'manifest.txt').open('a') as manifest:
-    for binary in sys.argv[2:]:
+    for binary in binaries:
         digest = hashlib.sha256((root / 'bin' / binary).read_bytes()).hexdigest()
         manifest.write(f'{binary}_sha256={digest}\n')
     for path in sorted((root / 'fixture').iterdir()):
-        if path.is_file():
+        if path.is_file() and ("provider" in binaries or path.name not in provider_assets):
             manifest.write(f'fixture_{path.name}_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}\n')
 PY
 
@@ -496,8 +541,9 @@ verify_stress_container() {
         *python3*) ;;
         *) fail "stress entrypoint was not applied: $entry" ;;
     esac
-    case "$cmd" in
-        *'/fixture/stress.py'*'/binaries/candidate'*'/binaries/sbserver'*'/results/stress.json'*) ;;
+    case "$MODE:$cmd" in
+        stress:*'/fixture/stress.py'*'/binaries/candidate'*'/binaries/sbserver'*'/results/stress.json'*) ;;
+        provider:*'/fixture/provider.py'*'/binaries/candidate'*'/binaries/sbserver'*'/results/provider.json'*'/binaries/provider '*'/binaries/providerload'*) ;;
         *) fail "stress command was not applied: $cmd" ;;
     esac
     printf '%s\n' "$env_dump" | grep -Fx 'GOMAXPROCS=2' >/dev/null || fail "parent GOMAXPROCS=2 was not applied"
@@ -513,10 +559,13 @@ verify_stress_container() {
     } >>"$OUT/manifest.txt"
 }
 
-run_stress() {
+run_candidate_only() {
     claim_container
     EVIDENCE_DIRTY=1
     mkdir -p "$OUT/container-tmp"
+    if [ "$MODE" = provider ]; then
+        set -- --provider /binaries/provider --load /binaries/providerload
+    fi
     # Image entrypoint is scenario.py; this mode must not run the comparison fixture.
     docker create --name "$CONTAINER" --label "keenproxy.memory.owner=$OWNER" \
         --network none --privileged \
@@ -525,16 +574,16 @@ run_stress() {
         -e GOMAXPROCS=2 -e GOGC=100 -e GOMEMLIMIT=off \
         --entrypoint python3 \
         -v "$OUT/bin:/binaries:ro" -v "$OUT/fixture:/fixture:ro" \
-        -v "$OUT/results/stress:/results" "$IMAGE" \
-        -B /fixture/stress.py \
+        -v "$OUT/results/$MODE:/results" "$IMAGE" \
+        -B "/fixture/$MODE.py" \
         --binary /binaries/candidate --server /binaries/sbserver \
-        --output /results/stress.json >"$OUT/create.log"
+        --output "/results/$MODE.json" "$@" >"$OUT/create.log"
     verify_stress_container
     status=0
-    docker start -a "$CONTAINER" >"$OUT/results/stress/stress.log" 2>&1 || status=$?
-    prove_container_finished "$OUT/results/stress/stress.state.json" "AWG stress" "$status"
-    if [ ! -s "$OUT/results/stress/stress.json" ]; then
-        echo "ERROR: AWG stress exited 0 without a result file; see $OUT" >&2
+    docker start -a "$CONTAINER" >"$OUT/results/$MODE/$MODE.log" 2>&1 || status=$?
+    prove_container_finished "$OUT/results/$MODE/$MODE.state.json" "$gate_name" "$status"
+    if [ ! -s "$OUT/results/$MODE/$MODE.json" ]; then
+        echo "ERROR: $gate_name exited 0 without a result file; see $OUT" >&2
         exit 1
     fi
     release_container
@@ -562,8 +611,8 @@ scenario() {
     release_container
 }
 
-if [ "$MODE" = stress ]; then
-    run_stress
+if [ "$MODE" != compare ]; then
+    run_candidate_only
     exit 0
 fi
 

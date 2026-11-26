@@ -23,7 +23,9 @@ import (
 )
 
 type subscriptionBalanceOptions struct {
-	Outbounds []string `json:"outbounds"`
+	Outbounds []string `json:"outbounds" reference:"outbound"`
+	// Fallback replaces block as the target while no member is eligible.
+	Fallback string `json:"fallback,omitempty" reference:"outbound"`
 }
 
 func registerSubscriptionBalance(registry *outbound.Registry) {
@@ -35,6 +37,7 @@ func registerSubscriptionBalance(registry *outbound.Registry) {
 type subscriptionBalance struct {
 	outbound.Adapter
 	strategy    string
+	fallback    string
 	manager     adapter.OutboundManager
 	connections adapter.ConnectionManager
 	block       adapter.Outbound
@@ -68,10 +71,15 @@ func newSubscriptionBalance(ctx context.Context, _ adapter.Router, _ log.Context
 	}
 	members := slices.Clone(opts.Outbounds)
 	slices.Sort(members)
-	dependencies := append([]string{model.TargetBlock}, slices.Compact(members)...)
+	dependencies := []string{model.TargetBlock}
+	if opts.Fallback != "" && opts.Fallback != model.TargetBlock {
+		dependencies = append(dependencies, opts.Fallback)
+	}
+	dependencies = append(dependencies, slices.Compact(members)...)
 	return &subscriptionBalance{
 		Adapter:     outbound.NewAdapter(model.SubscriptionBalanceOutboundType, tag, []string{N.NetworkTCP, N.NetworkUDP}, dependencies),
 		strategy:    strategy,
+		fallback:    opts.Fallback,
 		manager:     service.FromContext[adapter.OutboundManager](ctx),
 		connections: service.FromContext[adapter.ConnectionManager](ctx),
 	}, nil
@@ -87,12 +95,17 @@ func (b *subscriptionBalance) Start(stage adapter.StartStage, _ *adapter.Scope) 
 		if !ok {
 			return fmt.Errorf("subscription balance outbound %q is missing", tag)
 		}
-		if tag == model.TargetBlock {
+		switch {
+		case tag == model.TargetBlock:
 			if member.Type() != "block" {
 				return fmt.Errorf("subscription balance requires a block outbound")
 			}
+			if b.fallback == "" || b.fallback == model.TargetBlock {
+				b.block = member
+			}
+		case tag == b.fallback:
 			b.block = member
-		} else {
+		default:
 			b.candidates = append(b.candidates, member)
 		}
 	}

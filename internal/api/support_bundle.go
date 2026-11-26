@@ -63,9 +63,14 @@ func journalClientHost(value string) string {
 	return strings.Trim(value, "[]")
 }
 
-// supportBundle streams sanitized records through a bounded set of ZIP members.
-func (s *Server) supportBundle(w http.ResponseWriter, r *http.Request) {
+// ServeSupportBundle streams a redacted archive from the diagnostics page.
+// Use it behind the server's authorization middleware.
+func (s *Server) ServeSupportBundle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if RoleFrom(r.Context()) != RoleManage {
+		s.refuse(w, r, http.StatusForbidden, "diagnostic archive requires management access")
+		return
+	}
 	if !s.supportBusy.CompareAndSwap(false, true) {
 		writeError(w, http.StatusServiceUnavailable, "another diagnostic archive is being generated")
 		return

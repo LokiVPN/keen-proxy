@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"context"
+	"github.com/miekg/dns"
 	"github.com/ordo-systems/keen-proxy/internal/compile"
 	"github.com/ordo-systems/keen-proxy/internal/domaincache"
 	"github.com/ordo-systems/keen-proxy/internal/model"
-	"github.com/miekg/dns"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,17 +14,33 @@ import (
 	"time"
 )
 
+// domainRecords returns the fresh cache records of the published DNS names.
+func (d *Daemon) domainRecords() []domaincache.Record {
+	out := []domaincache.Record{}
+	names := d.publishedDNSNames()
+	if names == nil {
+		return out
+	}
+	for _, r := range d.domains.Snapshot(nil) {
+		if names.Observed(r.Name) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func TestDomainsObserveAndReconcile(t *testing.T) {
 	d := New(Options{RuleSetDir: t.TempDir()})
 	cfg := &model.Config{Groups: []model.Group{{Name: "test", Target: "direct", Entries: []string{"example.com"}}}}
 	d.live.Store(cfg)
 	d.cfg = cfg
+	d.flushDomains() // publishes the DNS names of the applied configuration, as Apply does
 	m := new(dns.Msg)
 	rr, _ := dns.NewRR("www.example.com. 60 IN A 203.0.113.9")
 	m.Answer = []dns.RR{rr}
 	d.observeDomain("www.example.com.", m)
 	d.flushDomains()
-	if len(d.Domains().Records) != 1 {
+	if len(d.domainRecords()) != 1 {
 		t.Fatal("observation lost")
 	}
 	raw, err := os.ReadFile(filepath.Join(d.opt.RuleSetDir, compile.DomainTag(cfg.Groups[0])+".json"))
@@ -35,29 +51,11 @@ func TestDomainsObserveAndReconcile(t *testing.T) {
 	d.live.Store(changed)
 	d.cfg = changed
 	d.flushDomains()
-	if len(d.Domains().Records) != 0 {
+	if len(d.domainRecords()) != 0 {
 		t.Fatal("old group observations exposed")
 	}
-	if _, err = d.RefreshDomains(context.Background(), []string{"example.com"}, false); err == nil {
+	if err := d.RefreshDomains(context.Background(), []string{"example.com"}); err == nil {
 		t.Fatal("refresh of removed domain accepted")
-	}
-}
-
-func TestDomainPreviewDoesNotPopulateActiveCache(t *testing.T) {
-	d := New(Options{RuleSetDir: t.TempDir()})
-	cfg := &model.Config{}
-	cfg.Defaults()
-	cfg.DNS.Upstreams = []string{"udp://127.0.0.1:1"}
-	cfg.DNS.Fallback = ""
-	d.live.Store(cfg)
-	d.cfg = cfg
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := d.RefreshDomains(ctx, []string{"draft.test"}, true); err == nil {
-		t.Fatal("cancellation ignored")
-	}
-	if len(d.Domains().Records) != 0 {
-		t.Fatal("preview escaped into active cache")
 	}
 }
 
@@ -76,7 +74,7 @@ func TestSameDomainDifferentGroupsIsConflict(t *testing.T) {
 	if len(domainConflicts(cfg, records)["203.0.113.1"]) != 2 {
 		t.Fatal("same name hides group ambiguity")
 	}
-	note := dnsRouteNote(cfg, records, compile.DomainTag(cfg.Groups[0]), "203.0.113.1")
+	note := dnsRouteNote(cfg, compile.DomainTag(cfg.Groups[0]), "203.0.113.1", func() []domaincache.Record { return records })
 	if !strings.Contains(note, "example.com") || !strings.Contains(note, "ambiguous") {
 		t.Fatal(note)
 	}
@@ -103,14 +101,14 @@ func TestDomainResolutionInFlightCancellation(t *testing.T) {
 	cfg.Defaults()
 	cfg.DNS.Upstreams = []string{"udp://" + socket.LocalAddr().String()}
 	cfg.DNS.Fallback = ""
+	cfg.Groups = []model.Group{{Target: "direct", Entries: []string{"one.test", "two.test", "three.test", "four.test"}}}
 	d.live.Store(cfg)
 	d.cfg = cfg
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := d.RefreshDomains(ctx, []string{"one.test", "two.test", "three.test", "four.test"}, true)
-		done <- err
+		done <- d.RefreshDomains(ctx, []string{"one.test", "two.test", "three.test", "four.test"})
 	}()
 	select {
 	case <-received:

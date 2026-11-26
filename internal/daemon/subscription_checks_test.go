@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,47 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/subscription"
 )
+
+func TestPageSubscriptionCheckRequiresCurrentConfig(t *testing.T) {
+	const id, nodeID = "sample", "aabbccddeeff00112233445566778899"
+	d := &Daemon{
+		cfg: &model.Config{Subscriptions: []subscription.Source{{ID: id, URL: "https://provider.example/saved"}}},
+		subscriptions: subscriptionRuntime{
+			states:    map[string]appliedSubscription{id: {snapshot: subscriptionSnapshot{Nodes: []subscription.Node{{ID: nodeID}}}}},
+			probeWake: make(chan struct{}, 1),
+		},
+	}
+	checker, ok := any(d).(interface {
+		CheckSubscriptionIfCurrent(string, string, string) error
+	})
+	if !ok {
+		t.Fatal("page requests have no revision-checked entry point for saved probes")
+	}
+	stale := model.ConfigRevision(d.Config())
+	d.cfg.Subscriptions[0].URL = "https://provider.example/replaced"
+	if err := checker.CheckSubscriptionIfCurrent(id, "", stale); !errors.Is(err, model.ErrConfigChanged) {
+		t.Fatalf("stale all-node check returned %v", err)
+	}
+	if got := d.Subscriptions()[0]; got.CheckProgress != nil || got.Nodes[0].Checking || len(d.subscriptions.probeWake) != 0 {
+		t.Fatal("stale request queued subscription probes")
+	}
+	current := model.ConfigRevision(d.Config())
+	if err := checker.CheckSubscriptionIfCurrent(id, "removed-node", current); err == nil {
+		t.Fatal("a removed node was accepted for checking")
+	}
+	if err := checker.CheckSubscriptionIfCurrent(id, nodeID, current); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Subscriptions()[0]; got.CheckProgress != nil || !got.Nodes[0].Checking || len(d.subscriptions.probeWake) != 1 {
+		t.Fatal("the requested node was not queued for checking")
+	}
+	if err := checker.CheckSubscriptionIfCurrent(id, "", current); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Subscriptions()[0].CheckProgress; got == nil || got.Total != 1 || got.Completed != 0 {
+		t.Fatalf("the saved catalog was not queued for checking: %+v", got)
+	}
+}
 
 // This fixture refuses SOCKS handshakes at a loopback listener. Each completed
 // check must open a connection to it through the corresponding saved profile.
@@ -54,18 +96,19 @@ func TestSubscriptionCheckVisitsSavedCatalogWithoutRoutes(t *testing.T) {
 	if err := d.Apply(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	checker, ok := any(d).(interface{ CheckSubscription(string, string) bool })
-	if !ok {
-		t.Fatal("managed subscriptions do not expose an on-demand check")
-	}
 	status := d.Subscriptions()[0]
 	if len(status.Nodes) != count {
 		t.Fatalf("want %d usable nodes, got %d", count, len(status.Nodes))
 	}
 	nodeID := status.Nodes[count-1].ID
-	if !checker.CheckSubscription("sample", "") || !checker.CheckSubscription("sample", "") ||
-		!checker.CheckSubscription("sample", nodeID) || checker.CheckSubscription("sample", "invalid") {
-		t.Fatal("unexpected scheduling result")
+	rev := model.ConfigRevision(d.Config())
+	for _, node := range []string{"", "", nodeID} {
+		if err := d.CheckSubscriptionIfCurrent("sample", node, rev); err != nil {
+			t.Fatalf("queue check for %q: %v", node, err)
+		}
+	}
+	if err := d.CheckSubscriptionIfCurrent("sample", "invalid", rev); err == nil {
+		t.Fatal("accepted an unknown node")
 	}
 	type nodeCheck struct {
 		Checking bool       `json:"checking"`
@@ -162,8 +205,8 @@ func TestSubscriptionCheckDiscardsCompletionAfterSourceReplacement(t *testing.T)
 		t.Fatal(err)
 	}
 	nodeID := d.Subscriptions()[0].Nodes[0].ID
-	if !d.CheckSubscription("sample", nodeID) {
-		t.Fatal("initial check was rejected")
+	if err := d.CheckSubscriptionIfCurrent("sample", nodeID, model.ConfigRevision(d.Config())); err != nil {
+		t.Fatalf("initial check: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -179,8 +222,8 @@ func TestSubscriptionCheckDiscardsCompletionAfterSourceReplacement(t *testing.T)
 	if err := d.Apply(t.Context(), replacement); err != nil {
 		t.Fatal(err)
 	}
-	if !d.CheckSubscription("sample", nodeID) {
-		t.Fatal("replacement check was rejected")
+	if err := d.CheckSubscriptionIfCurrent("sample", nodeID, model.ConfigRevision(d.Config())); err != nil {
+		t.Fatalf("replacement check: %v", err)
 	}
 	_ = first.Close()
 	second := waitProbe()
@@ -235,12 +278,13 @@ func TestSubscriptionDetachedSweepProgressesDuringRepeatedSingleChecks(t *testin
 
 func TestSubscriptionCheckRejectsManagementOnlyStartup(t *testing.T) {
 	d := New(Options{RuleSetDir: t.TempDir()})
+	d.cfg = &model.Config{Subscriptions: []subscription.Source{{ID: "sample", URL: "https://provider.example/saved"}}}
 	d.startupBlocked = make(chan struct{})
 	d.subscriptions.states = map[string]appliedSubscription{
 		"sample": {snapshot: subscriptionSnapshot{Nodes: []subscription.Node{{ID: strings.Repeat("a", 32)}}}},
 	}
-	if d.CheckSubscription("sample", "") {
-		t.Fatal("accepted a check before the worker was available")
+	if err := d.CheckSubscriptionIfCurrent("sample", "", model.ConfigRevision(d.Config())); err == nil || errors.Is(err, model.ErrConfigChanged) {
+		t.Fatalf("check while startup is blocked: %v", err)
 	}
 }
 
@@ -299,8 +343,8 @@ func TestSubscriptionTLSProbeFeedsTheBalancedRoute(t *testing.T) {
 	if status := d.Subscriptions()[0]; status.BalanceEligible == nil || *status.BalanceEligible != 0 {
 		t.Fatal("a new route should wait for a successful check")
 	}
-	if !d.CheckSubscription("sample", "") {
-		t.Fatal("catalog check was rejected")
+	if err := d.CheckSubscriptionIfCurrent("sample", "", model.ConfigRevision(d.Config())); err != nil {
+		t.Fatalf("catalog check: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	workerDone := make(chan struct{})

@@ -96,7 +96,7 @@ func (p *profileParser) finish() (map[string]any, error) {
 
 func interfaceField(ep map[string]any, name, value string) error {
 	if name == "dns" {
-		return dnsMetadata(value)
+		return ValidateDNSMetadata(value)
 	}
 	out, parsed, err := interfaceValue(name, value)
 	if err != nil {
@@ -138,8 +138,9 @@ func mtuValue(value string) (uint64, error) {
 	return n, nil
 }
 
-// DNS is accepted only as metadata; awg-quick cannot replace router DNS policy.
-func dnsMetadata(value string) error {
+// ValidateDNSMetadata checks wg-quick search domains and unscoped IP addresses.
+// DNS in a tunnel profile cannot replace router DNS policy.
+func ValidateDNSMetadata(value string) error {
 	for item := range strings.SplitSeq(value, ",") {
 		item = strings.TrimSpace(item)
 		ip, err := netip.ParseAddr(item)
@@ -245,9 +246,14 @@ func peerEndpoint(peer map[string]any, value string) error {
 	return nil
 }
 
-func parseKey(value string) (string, error) {
+// ValidKey accepts a canonical base64-encoded WireGuard key.
+func ValidKey(value string) bool {
 	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
-	if err != nil || len(decoded) != 32 || base64.StdEncoding.EncodeToString(decoded) != value {
+	return err == nil && len(decoded) == 32 && base64.StdEncoding.EncodeToString(decoded) == value
+}
+
+func parseKey(value string) (string, error) {
+	if !ValidKey(value) {
 		return "", fmt.Errorf("expected a base64 32-byte key")
 	}
 	return value, nil

@@ -6,18 +6,17 @@ KeenProxy is an experimental routing application for Keenetic and Netcraze route
 
 ## Start here
 
-- **Explore first:** open the [browser demo](browser-demo.md). No router or credentials are required.
 - **Prepare a router:** read [Getting started](getting-started.md) before installing anything.
-- **Learn the workflow:** follow the [illustrated user guide](user-guide.md).
+- **Learn the workflow:** follow the [user guide](user-guide.md).
 - **Understand policy:** read [Routing and DNS](routing.md).
 - **Collect evidence:** use [Diagnostics and journal export](troubleshooting.md#download-the-diagnostic-zip) when reporting a router issue.
 - **Manage releases:** see [updates and rollback from the panel](getting-started.md#update-from-the-panel).
 
 ## The core idea
 
-A **connection** is a named WireGuard, link-based, sing-box, or TrustTunnel profile. A **group** connects domains, addresses, or country selectors to a routing target. **Networks and clients** choose which devices use those rules. The **Overview, Logs, and Diagnostics** screens help explain the applied state.
+A **connection** is a named WireGuard, link-based, sing-box, or TrustTunnel profile. A **group** connects domains, addresses, or country selectors to a routing target. **Networks and clients** choose which devices use those rules. **Overview** shows the active connection, and **Diagnostics** shows service state and provides checks and a support report.
 
-Routing settings share one draft. Review changes to connections or rules and choose **Apply**. **Discard** returns to the last saved configuration. Release installation and scheduling use their own controls under **Settings**.
+Use **Save** on the page where you edited a connection, routing rule, or device setting. **Overview** applies changes to the routing switch and main connection immediately when JavaScript is available. Manage software releases under **Diagnostics → Updates**. [Edit and reload settings such as DNS or country groups](user-guide.md#edit-and-reload-yaml)
 
 !!! warning "Experimental software"
-    Compatibility depends on architecture, firmware, kernel capabilities, and build features. Synthetic demo results do not prove connectivity, DNS protection, or compatibility with your router.
+    Compatibility depends on architecture, firmware, kernel capabilities, and build features. Synthetic test results do not prove connectivity, DNS protection, or compatibility with your router.

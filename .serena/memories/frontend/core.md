@@ -1,11 +1,11 @@
-# Panel and API
-- web/src/store.ts owns the reactive draft and saved snapshot. Apply PUTs the complete /api/config. Discard resets the draft and failed Apply leaves it available for correction.
-- The panel uses Vue, Naive UI, and a shared API client. Keep same-origin auth, the shared 401 handler, and EventSource for journal updates. Unknown /api/ routes return 404 rather than the SPA.
-- Keep both demo paths in sync with the API. Go api.Demo serves synthetic data through the real HTTP layer. Vite demo mode aliases web/src/api.ts imports to web/src/demo/api.ts and uses relative assets for static hosting. Demo configuration is in memory.
-- Both demo paths read the planned preview version from web/src/demo/release.json; Release Please synchronizes it separately from the last published installer/package versions. The Go demo serves the real offline vpn:// decoder; the static demo explicitly requires a backend for that operation.
-- API access checks RemoteAddr. Do not trust forwarded headers. Credentials use bearer auth or the session cookie; configured no-token CIDRs come from applied configuration.
-- Keep EN messages typed against RU. Preserve browser locale, the stored user preference, and the Naive UI locale. Use translation keys for route titles.
-- ConnTabs uses ResizeObserver for overflow and exposes hidden connections through a dropdown. Keep toolbar actions outside the scrolling tab area.
-- Groups expand to domain/IP/TTL rows. Preview resolution is isolated from active routing. Match frontend domain normalization against model.ParseEntry.
-- Health status measures HTTP reachability and freshness. Keep the reactive clock scoped to the component lifecycle. Diagnostics distinguishes HTTP, HTTPS, and transfer checks.
-- LAN names are discovered in the background. Show the manual name first, then the DHCP or local DNS name, then address identifiers. Search both names. Discovery does not edit the configuration.
+# API and management pages
+
+- `internal/ui` serves Go `html/template` pages, partials, embedded CSS, Roboto, and progressive enhancement in `static/app.js`. `cmd/keenproxy/ui_deps.go` and `ui_diagnostics.go` adapt daemon, LAN discovery, and release manager state to `ui.Deps`. Tests substitute synthetic dependencies. Keep `internal/api` and `internal/ui` independent.
+- `api.Server.Handler` checks local peer scope and cross-origin writes, then verifies the session and role. It mounts the page handler and renders HTML refusals outside `/api`. The escaped-path allowlist admits canonical assets, `GET /api/session`, and `POST /api/logout`. Native form logout redirects to `/`.
+- Trusted local access requires a loopback peer and a loopback Host (`127.0.0.1`, `::1`, or `localhost`). An SSH tunnel to a loopback listener satisfies both. `Authorization` and forwarding headers do not grant access.
+- KeeneticOS sign-in derives the origin from the configured LAN interface's private IPv4 address, or uses the explicit `-keenetic-auth-origin` or `KEENPROXY_KEENETIC_AUTH_ORIGIN` setting. `off` disables it. Entware persists the override in `/opt/etc/keenproxy/keenproxy.env`. Native OpenWrt uses loopback access.
+- A verified KeeneticOS account with web and CLI access manages. Web access with `readonly` or `manager` grants view access. Pages disable viewer edits and the central policy refuses their write requests. Private connection parameters require explicit manage-role reveal and a no-store response.
+- Browser forms submit a revision of the applied configuration. Changes use read-modify-Apply, retain settings owned by other pages, and reject stale revisions. A successful save follows Post/Redirect/Get with a flash. Update preferences use the release manager's revision and storage.
+- Page CSP admits same-origin assets, data images, and no framing. Use classes and SVG attributes, with no inline CSS, scripts, or event handlers. Serve pages no-store, and immutable embedded assets with ETags.
+- `locales/ui.en.yml` and `locales/ui.ru.yml` supply embedded text selected by `Accept-Language`. `prefers-color-scheme` selects the theme. Authorized `/fragments/` responses are HTML. The script refreshes fragments while visible, preserves focus, and enhances native forms.
+- The loopback-only control API provides configuration, status, statistics, journals, and TPROXY readiness/retry. The support ZIP is a management page download. Keep the route inventory in the bilingual development guides in sync.

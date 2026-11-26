@@ -12,6 +12,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 
 	"github.com/ordo-systems/keen-proxy/internal/compile"
+	"github.com/ordo-systems/keen-proxy/internal/domaincache"
 	"github.com/ordo-systems/keen-proxy/internal/journal"
 	"github.com/ordo-systems/keen-proxy/internal/model"
 	"github.com/ordo-systems/keen-proxy/internal/stats"
@@ -40,23 +41,6 @@ func actorOf(ctx context.Context) Actor {
 
 // Journal returns the requested journal stream.
 func (d *Daemon) Journal(k journal.Kind) *journal.Journal { return d.journals[k] }
-
-// Mask returns a function that redacts current configuration secrets from log exports.
-func (d *Daemon) Mask() func(string) string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.cfg == nil {
-		return journal.Masker(nil)
-	}
-	cfg := *d.cfg
-	cfg.Connections = slices.Clone(cfg.Connections)
-	for _, state := range d.subscriptions.states {
-		for _, node := range state.snapshot.Nodes {
-			cfg.Connections = append(cfg.Connections, model.Connection{Type: model.ConnLink, Link: node.Link})
-		}
-	}
-	return journal.Masker(&cfg)
-}
 
 // audit records an operation result with the initiating actor and target.
 func (d *Daemon) audit(who, action, target, result, details string) {
@@ -98,7 +82,7 @@ func (d *Daemon) onRoute(m adapter.InboundContext, rule adapter.Rule, out adapte
 	}
 	e.Rule = journal.DescribeRule(cfg, e.RuleRaw) + note
 	if strings.Contains(e.RuleRaw, "dns-") {
-		e.Rule += dnsRouteNote(cfg, d.domainRecords(), e.RuleRaw, e.IP)
+		e.Rule += dnsRouteNote(cfg, e.RuleRaw, e.IP, func() []domaincache.Record { return d.domains.Snapshot(holdsAddress(e.IP)) })
 	}
 	d.journals[journal.Routes].Add(e)
 }
@@ -120,6 +104,9 @@ func configChanges(prev, cfg *model.Config) string {
 		return "first start"
 	}
 	var parts []string
+	if prev.Paused != cfg.Paused {
+		parts = append(parts, map[bool]string{true: "paused", false: "unpaused"}[cfg.Paused])
+	}
 	count := func(name string, a, b int, same bool) {
 		switch {
 		case a != b:
@@ -139,23 +126,39 @@ func configChanges(prev, cfg *model.Config) string {
 	if !reflect.DeepEqual(prev.Intercept, cfg.Intercept) {
 		parts = append(parts, "interception changed")
 	}
-	if !reflect.DeepEqual(prev.API.NoTokenFrom, cfg.API.NoTokenFrom) {
-		if len(cfg.API.NoTokenFrom) == 0 {
-			parts = append(parts, "tokenless login disabled")
-		} else {
-			parts = append(parts, "tokenless login from "+strings.Join(cfg.API.NoTokenFrom, ", "))
-		}
-	}
 	if !reflect.DeepEqual(prev.GeoIP, cfg.GeoIP) {
 		parts = append(parts, "country database changed")
 	}
 	if !reflect.DeepEqual(prev.System.MemoryLimitMiB, cfg.System.MemoryLimitMiB) {
 		parts = append(parts, memoryLimitChange(prev.System.MemoryLimitMiB, cfg.System.MemoryLimitMiB))
 	}
+	if change := providerRulesChange(prev.ActiveProviderRules(), cfg.ActiveProviderRules()); change != "" {
+		parts = append(parts, change)
+	}
 	if len(parts) == 0 {
 		return "no changes"
 	}
 	return strings.Join(parts, "; ")
+}
+
+// providerRulesChange describes a change of the provider-rules settings
+// without their keys, which are provider text; "" means none.
+func providerRulesChange(prev, next *model.ProviderRulesSettings) string {
+	switch {
+	case prev == nil && next == nil:
+		return ""
+	case prev == nil:
+		return "provider rules on"
+	case next == nil:
+		return "provider rules off"
+	case prev.Source != next.Source:
+		return "provider rules source changed"
+	case len(prev.Disabled) != len(next.Disabled):
+		return fmt.Sprintf("switched-off provider rules: %d → %d", len(prev.Disabled), len(next.Disabled))
+	case !slices.Equal(prev.Disabled, next.Disabled):
+		return "switched-off provider rules changed"
+	}
+	return ""
 }
 
 func memoryLimitChange(prev, next *model.MemoryLimitMiB) string {

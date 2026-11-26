@@ -128,6 +128,50 @@ esac''')
             self.assertEqual(limits, ['4095', '4096'])
             self.assertIn('could not raise the open-file limit to 8192', stderr)
 
+    def test_start_exports_settings_from_the_env_file(self):
+        self.env.pop('KEENPROXY_KEENETIC_AUTH_ORIGIN', None)
+        env_file = self.prefix / 'etc/keenproxy/keenproxy.env'
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text('# kept by updates\nKEENPROXY_KEENETIC_AUTH_ORIGIN=off\n')
+        self.assert_success(self.action('start'))
+        environ = Path(f'/proc/{self.running_pid()}/environ').read_bytes().split(b'\0')
+        self.assertIn(b'KEENPROXY_KEENETIC_AUTH_ORIGIN=off', environ)
+        self.assert_success(self.action('stop'))
+
+    def test_env_file_is_parsed_and_never_executed(self):
+        for name in ('KEENPROXY_QUOTED', 'KEENPROXY_PLAIN', 'KEENPROXY_SINGLE', 'KEENPROXY_REF', 'KEENPROXY_LAST'):
+            self.env.pop(name, None)
+        env_file = self.prefix / 'etc/keenproxy/keenproxy.env'
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text(
+            '# comment\n\nKEENPROXY_QUOTED="a b"\nKEENPROXY_PLAIN=off\nKEENPROXY_SINGLE=\'x y\'\n'
+            'false\nexit 0\nOTHER=1\nKEENPROXY_REF=$UNSET_FOR_TEST\nKEENPROXY_LAST=end')
+        result = self.action('start')
+        self.assert_success(result)
+        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
+        self.assertEqual(stderr.count('ignored a line in keenproxy.env'), 3)
+        environ = Path(f'/proc/{self.running_pid()}/environ').read_bytes().split(b'\0')
+        for item in (b'KEENPROXY_QUOTED=a b', b'KEENPROXY_PLAIN=off', b'KEENPROXY_SINGLE=x y',
+                     b'KEENPROXY_REF=$UNSET_FOR_TEST', b'KEENPROXY_LAST=end'):
+            self.assertIn(item, environ)
+        self.assertNotIn(b'OTHER=1', environ)
+        self.assert_success(self.action('stop'))
+
+    def test_env_file_with_crlf_line_endings(self):
+        """A file saved with Windows line endings yields the same settings."""
+        for name in ('KEENPROXY_KEENETIC_AUTH_ORIGIN', 'KEENPROXY_QUOTED'):
+            self.env.pop(name, None)
+        env_file = self.prefix / 'etc/keenproxy/keenproxy.env'
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_bytes(b'# saved on Windows\r\n\r\nKEENPROXY_KEENETIC_AUTH_ORIGIN=off\r\nKEENPROXY_QUOTED="a b"\r\n')
+        result = self.action('start')
+        self.assert_success(result)
+        self.assertNotIn('ignored a line', result.stderr)
+        environ = Path(f'/proc/{self.running_pid()}/environ').read_bytes().split(b'\0')
+        self.assertIn(b'KEENPROXY_KEENETIC_AUTH_ORIGIN=off', environ)
+        self.assertIn(b'KEENPROXY_QUOTED=a b', environ)
+        self.assert_success(self.action('stop'))
+
     def test_start_is_idempotent_and_restart_replaces_the_process(self):
         self.assert_success(self.action('start'))
         first = self.running_pid()

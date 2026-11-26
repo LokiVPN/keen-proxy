@@ -2,29 +2,22 @@
 
 ## Build locally
 
-Use Python 3.12+ and Node 22.12+:
+Use Python 3.12+:
 
 ```sh
 make docs-preview
 ```
 
-This creates `.venv-docs`, builds the documentation in strict mode with the browser demo in `site/`, and serves it on port 8097. Set `DOCS_PORT` to use another port. `make docs` builds without serving. The equivalent manual steps are:
+This creates `.venv-docs`, builds the documentation in strict mode in `site/`, and serves it on port 8097. Set `DOCS_PORT` to use another port. `make docs` builds without serving. The equivalent manual steps are:
 
 ```sh
 python3 -m venv .venv-docs
 .venv-docs/bin/pip install -r requirements-docs.txt
 DOCS_SITE_URL=http://localhost:8097/ .venv-docs/bin/mkdocs build --strict
-cd web
-npm ci
-npm test
-npm run build:demo
-cd ..
-mkdir -p site/demo
-cp -R web/dist-demo/. site/demo/
 python3 -m http.server 8097 --directory site
 ```
 
-Open `http://localhost:8097/` for English, `/ru/` for Russian and `/demo/` for the independent demo. The server serves static files only. `npm run build` still builds the normal router UI in `web/dist`; `build:demo` writes to `web/dist-demo`.
+Open `http://localhost:8097/` for English and `/ru/` for Russian. The server serves static files only.
 
 ## Embedded engine modules
 
@@ -82,6 +75,22 @@ If a local comparison fails while the **Memory regression** job passes:
 3. Investigate the failed phase and distinguish a reproducible increase from an identified environmental cause. If such a cause is corrected, record a separate measurement and retain the original failure and explanation. Do not retry merely until a run passes, force GC, or change thresholds/baseline to hide the result.
 4. If the discrepancy remains unexplained, keep the local build blocked and review the evidence. Do not bypass the local gate with `-o`, `build-router-ci`, `build-router-lite-ci`, direct build commands, or a previously successful CI result. A passing **Router builds** check does not certify memory.
 
+### Provider rules memory
+
+Run the candidate-only provider workload from the repository root with Docker available.
+
+```sh
+sh test/memory/run.sh --provider
+```
+
+Each size runs twice with a fresh candidate daemon, first with `provider_rules` on and then with `provider_rules.off: true`. Both use the same synthetic HTTPS subscription with a Happ routing header, two WireGuard tunnels, and fixture data. The realistic-size geosite and GeoIP files are 10,900,000 and 16,300,000 bytes respectively, with 20,000 referenced domains and 35,000 referenced prefixes. The limit files are exactly 16 MiB each, with 100,000 referenced domains and 200,000 referenced prefixes. The realistic wire sizes are rounded from published assets. [Geosite size](https://github.com/Loyalsoldier/v2ray-rules-dat/blob/release/geosite.dat) · [GeoIP size](https://github.com/Loyalsoldier/v2ray-rules-dat/blob/release/geoip.dat)
+
+The workload checks the first Apply with both downloads, a successful refresh that reuses the files, and an Apply against a fresh source URL with one file temporarily missing. The scheduled geo retry must restore that file without refetching the subscription. The rules-off control waits for the same retry interval. The watchdog must acknowledge 20 changes to a synthetic ARP table. A LAN client verifies replies for 4,096 distinct provider names. It verifies the same TCP and UDP echoes on both tunnels after warmup and every batch of 64 queries in both runs. The two runs must report identical verified payload totals. After traffic stops, both runs measure a three-second publication window. With rules on, the DNS fallback file must contain all 4,096 answer addresses by the end of that window. With rules off, the file must be absent. A scheduled node failover must save the new selection while preserving the subscription payload and the saved configuration.
+
+The isolated container uses 2 GiB with swap disabled, a 2 CPU quota, and CPU affinity `0-1`. The measurement verifies the daemon's soft Go limit of 320 MiB. RSS and lifetime `VmHWM` must each stay strictly below 384 MiB. Procfs samples capture RSS, high-water RSS, and process CPU ticks at operation boundaries. A test-only sampler reads current heap and cumulative allocations using Go runtime metrics on a 20 ms ticker and immediately after encoding a subscription snapshot. The heap peak uses samples within the operation window. Each phase that saves a snapshot requires an in-window checkpoint from that save. The report includes rules-on minus rules-off deltas for the paired phases. Heap and CPU deltas are diagnostic. Missing measurements, failed phase checks, process or container failure, and cleanup errors fail the run.
+
+Find the report at `.agents-work/memory-regression/run.*/results/provider/provider.json`, alongside container state, logs, and per-case artifacts with raw heap samples. The WireGuard comparison and the continuous AWG stress gate have their own commands and results.
+
 ### AWG memory stress
 
 `make memory-stress` (`sh test/memory/run.sh --stress`) is a separate gate. It builds only the current daemon and the test server, copies the fixture, and does not archive, build, or run the comparison reference. The result is not an input to the comparison report.
@@ -106,7 +115,7 @@ Local `make build`, `make build-router`, and `make build-router-lite` run this g
 
 For tagged source outside historical recovery, the release asset job runs `make memory-stress` and `make memory-regression` as separate steps, then `make -o memory-stress -o memory-regression build-router build-router-lite` with the existing release identity arguments. Both `-o` flags are permitted only after the corresponding step has succeeded in that same job. GNU make `-o` marks those phony targets already satisfied so the public targets do not repeat the gates. Public targets are required because older AWG tags do not define the CI-only names. A missing gate target fails and never selects historical recovery. `-o` is not an environment bypass, a cache, or a local shortcut. Do not use it unless both separate steps have just succeeded in the same job.
 
-The LokiVPN Release workflow checks the exact version tag. The independent CI jobs run before the asset job, which also runs both memory gates before building binaries. Repository protection rules are configured separately. [Release procedure](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md#build-a-lokivpn-release)
+The Release workflow in this repository checks the exact version tag. The independent CI jobs run before the asset job, which also runs both memory gates before building binaries. Repository protection rules are configured separately. [Release procedure](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md#build-a-lokivpn-release)
 
 Historical release-asset recovery from `main` is explicitly limited by Git ancestry to commits at or before the fixed pre-AWG boundary `9d398fb3754036cbe35df1cf07098164ff62a9d5`, including `v0.8.0`. Current workflow CI is still required, and the tagged version is checked before expensive work. Recovery leaves tagged source unchanged and runs its original Makefile/protocol flags for Go tests, vet, network integration, frontend tests, and full/lite router builds with the requested release identity. A visible notice and uploaded `.agents-work/release-legacy/<run>-<attempt>/` manifest, command log, and exit code record this separate verification contract, including failures; they are not memory measurements or AWG certification, because that source does not support AWG. Commits outside this ancestry must pass both memory gates; missing targets fail rather than selecting recovery. Existing assets must remain byte-identical before missing assets are published. See [RELEASING](https://github.com/ordo-systems/keen-proxy/blob/main/RELEASING.md#github-setup-and-recovery).
 
@@ -114,7 +123,7 @@ Historical release-asset recovery from `main` is explicitly limited by Git ances
 
 Maintain matching Markdown filenames under `docs/en/` and `docs/ru/`. Navigation is configured in `mkdocs.yml`; the i18n plugin creates language switching and localized search/navigation. Add screenshots under `docs/assets/screenshots/` in both UI languages. Capture only synthetic sessions and update related captions when screens change.
 
-Demo mode replaces imports of the API module with `web/src/demo/api.ts` through a Vite alias. Its `satisfies` contract catches differences from the normal API. Add behavior tests when extending the adapter; do not add backend networking to simulate a feature.
+Run `make check-language` to check localization boundaries and provider-neutral wording.
 
 ## KeeneticOS WebUI prototype
 
@@ -150,10 +159,213 @@ python3 -B test/keenetic-webui/orca_fixture.py \
   --firmware /path/to/KN-3812_stable_5.1.10_5.01.C.10.0-0.bin
 ```
 
+### KeenProxy shortcut in Applications
+
+The Applications preview loads a script and a stylesheet from
+`tools/keenetic-webui/` alongside the stock 5.1.10 assets. The card occupies
+the first column of the Applications grid on `/apps` and opens the current
+KeenProxy panel. It follows the stock column layout and stays visible when
+the built-in application list is empty. The default destination is HTTP
+port 8086 on the current host, whether the router's LAN IPv4 address or
+`my.keenetic.net`. A different deployment can set
+`data-keenproxy-panel-url` on the script element to an absolute HTTP or HTTPS
+panel URL.
+
+Run the firmware fixture with `--applications-card` to compare the stock
+and extended Applications pages. Add `--panel-url` to override the link in
+the preview.
+
+```sh
+python3 -B test/keenetic-webui/orca_fixture.py \
+  --firmware /path/to/KN-3812_stable_5.1.10_5.01.C.10.0-0.bin \
+  --applications-card --panel-url http://127.0.0.1:8086/
+```
+
+The browser regression fixture clicks the shipped card from both hosts and
+checks that the KeeneticOS session opens the server-rendered setup page. It
+uses a synthetic router and needs Chromium but no firmware archive.
+
+```sh
+KEENPROXY_TEST_CHROMIUM=/path/to/chromium \
+  go test -count=1 -tags with_quic,with_utls,with_wireguard,with_awg,with_gvisor,with_xhttp,with_trusttunnel \
+  ./internal/api -run '^TestApplicationsCardOpensAuthorizedPages$'
+```
+
+### Entware package for KN-3812
+
+Build the optional card package with Python 3.
+
+```sh
+python3 tools/keenetic-webui/build-ipk.py .agents-work/keenetic-app-card
+```
+
+Copy the resulting `keenproxy-app-card_0.1.0-1_all.ipk` to the router.
+Run the following command in the Entware shell, using the path to the copy.
+
+```sh
+opkg install /path/to/keenproxy-app-card_0.1.0-1_all.ipk
+```
+
+Open **Applications** at the usual KeeneticOS address and select
+**Open panel** on the KeenProxy card. The link points to the running panel
+on port 8086. The WebUI loads its Angular bundles from the firmware.
+At install and Entware startup the package verifies the KN-3812 stable 5.1.10
+(`5.01.C.10.0-0`) HTML, JavaScript and stylesheet fingerprints, then
+bind-mounts the HTML with the two card assets embedded. When the fingerprints
+change, the router serves its stock page.
+
+Remove the card and restore the stock page with `opkg remove keenproxy-app-card`.
+
+### KeeneticOS sign-in { #keenetic-auth }
+
+On KeeneticOS sign-in is on by default. KeenProxy derives the origin from the
+first private IPv4 address of the LAN interface (`lan.interface`, `br0` by
+default) and expects the router's web interface on port 80 there; if it uses
+another port, set the origin explicitly (`http://ROUTER_LAN_IP:PORT`). Browsers may use the router's LAN IPv4 address or `my.keenetic.net`,
+each with the panel port (the port is omitted when it is 80); any other `Host`
+is refused. To override the origin pass
+`-keenetic-auth-origin http://ROUTER_LAN_IP` or set
+`KEENPROXY_KEENETIC_AUTH_ORIGIN`; `-keenetic-auth-origin=off` disables
+sign-in. On Entware, to keep such a setting across restarts and updates, put
+it in the optional `/opt/etc/keenproxy/keenproxy.env`, for example
+`KEENPROXY_KEENETIC_AUTH_ORIGIN=off`; `/opt/etc/init.d/S99keenproxy` reads
+that file at every start, and updates and uninstall keep it. Only `KEENPROXY_NAME=value` lines are read (one pair of surrounding quotes is removed, and Windows line endings are accepted); nothing is executed, and other lines are ignored with a warning. If the
+LAN interface has no IPv4 address at startup, the daemon and
+routing still start, a single error is logged, and non-loopback requests get
+`503` until restart. Sign-in needs `api.listen` to be empty-host, `0.0.0.0`,
+`::` or the LAN IPv4 address. An origin that cannot be used, derived or set
+explicitly (for example with `api.listen` `127.0.0.1:8086`), falls back to the
+503 mode above with an error in the system journal; loopback keeps working.
+The mode targets the LAN HTTP session protocol in KeeneticOS 5.1.10.
+
+KeenProxy verifies the current session and the account's permissions for
+each page request. An administrator (Web interface and command-line
+permissions) can view and change settings. Read-only and manager accounts can
+only view: writes get `403 KeeneticOS management access denied`. Other
+accounts and demo mode are denied.
+Signing out of either panel ends the router session.
+
+A KeeneticOS session opens server-rendered pages. The browser-facing routes
+under `/api` are `GET /api/session` and `POST /api/logout`. Access to the
+[control API](#control-api) requires loopback. With KeeneticOS sign-in off,
+non-loopback clients receive `403 local access only` for protected routes.
+
+Recovery and non-Keenetic systems: forward the panel through SSH and open it
+on loopback, which is always trusted. On Keenetic, use the Entware SSH server
+on port 222; port 22 is the KeeneticOS command line. On OpenWrt, omit `-p 222`:
+
+```sh
+ssh -p 222 -L 8086:127.0.0.1:8086 root@ROUTER
+# then open http://127.0.0.1:8086
+```
+
+On OpenWrt and other non-Keenetic systems sign-in is off, so the panel is
+reachable only through such a tunnel. See
+[recovering panel access](troubleshooting.md#recover-access).
+
+## Control API { #control-api }
+
+The HTTP control API serves local processes. A request whose
+`RemoteAddr` is loopback and whose `Host` is `127.0.0.1`, `::1` or `localhost`
+(any port) is trusted without a token; a loopback peer with any other `Host`
+is treated like a LAN client. The memory gate
+(`test/memory/scenario.py`), `make integration` (`test/netns/run.sh`), the
+OpenWrt CI smoke test (`test/openwrt/smoke.sh`) and local scripts on the router
+rely on this. The installer uses the service controller.
+Any `Authorization` header a client still sends is ignored. Every other
+client gets `403 local access only` on `/api`, with or without a KeeneticOS
+session (`503` while sign-in is unavailable); only `GET /api/session` and
+`POST /api/logout` answer browsers, so a signed-in read-only account never
+receives subscription URLs, keys or journal entries. The session and logout
+endpoints and canonical `GET` and `HEAD` requests under `/static/` skip the
+session requirement. The LAN address and cross-origin write checks still apply.
+A successful same-origin sign-out form redirects to `/`. JSON callers receive
+`{"ok":true}`.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /api/config` | Read the applied configuration, including secrets. |
+| `PUT /api/config` | Validate and apply a complete JSON configuration. |
+| `GET /api/status` | Read daemon, interception and build status. |
+| `GET /api/stats` | Read traffic statistics. Use `series=1` to include history. |
+| `GET /api/stats/hosts` | Read per-host traffic, with filters for connection and host. |
+| `GET /api/journal/{kind}` | Read retained `routes`, `audit` or `system` entries. |
+| `GET /api/diagnostics/tproxy` | Check preliminary TPROXY readiness and whether saved startup is blocked. |
+| `POST /api/diagnostics/tproxy/retry` | Retry blocked startup using the saved configuration. [SSH recovery](troubleshooting.md#keenetic-tproxy-apply) |
+| `GET /api/session` | Report access and, in KeeneticOS mode, where to sign in. |
+| `POST /api/logout` | End the KeeneticOS session. |
+
+The pages handle device discovery, connection validation and import,
+subscription management, connectivity checks, diagnostic ZIP downloads and
+release updates. Requests to removed routes return a JSON `404` to loopback.
+
+Before it decides on trust, the middleware refuses cross-origin writes with
+`403 cross-origin request denied`: any method other than `GET`, `HEAD` and
+`OPTIONS` whose `Sec-Fetch-Site` is not `same-origin` or `none`, or whose
+`Origin` does not match `Host`. This applies to loopback and KeeneticOS
+sessions alike, so a page you visit while an SSH tunnel is open cannot change
+settings through it. Clients that send neither header, such as curl and the
+test gates, are not affected.
+
+Residual risk: loopback trust cannot tell a local script from a proxy on the
+router that relays someone else's request. It trusts a forward proxy
+(tinyproxy, xray and the like) that connects from `127.0.0.1` with
+`Host: 127.0.0.1:<port>`, and a reverse proxy that forwards to `127.0.0.1` with
+a loopback `Host`, such as nginx with `proxy_pass http://127.0.0.1:8086`,
+which sends `Host: 127.0.0.1:8086` by default. Whether KeenDNS web-app
+publishing in KeeneticOS forwards this way is unverified, so do not publish
+the panel port through it. Do not run such proxies next to KeenProxy, or make
+them pass the client's own `Host` (nginx `proxy_set_header Host $host`).
+
+The panel token, the `-key` option, trusted networks and `POST /api/login` are
+removed. `api.token_file` and `api.no_token_from` are accepted and ignored.
+`GET /` opens the server-rendered panel for trusted loopback clients and
+signed-in KeeneticOS accounts. Page refusals show the sign-in screen with
+`401`, `403` or `503` according to the reason. The control API returns JSON
+errors. The journal is available on loopback and in redacted form in the
+diagnostic ZIP.
+
+## Configuration schema 2 and rollback { #config-schema }
+
+New configurations are written with `schema_version: 2`.
+
+- A schema 1 file that still loads is used as is. Before the first write it is
+  copied byte for byte to `config.v1.yaml` (mode 0600, never overwritten; a
+  timestamped name is used if that file exists). Installer starter files,
+  whose only top-level keys are `schema_version`, `lan` and `api`, are not
+  backed up.
+- A schema 1 or unreadable file that no longer loads is reset in memory at
+  startup: `api.listen`, `lan` and the first valid subscription are kept, and
+  everything else starts from defaults. When a subscription is kept and the
+  `lan.interface` has a private IPv4 address, the reset also adds the `Home`
+  network for that subnet: split mode, target `subscription:<id>:auto`,
+  `default: direct`, with `provider_rules` on for the kept subscription
+  (`Config.RouteHomeThroughSubscription`, shared with the first-run setup).
+  Without such an address no network is created. Startup does not change the file. The
+  first save copies it byte for byte to `config.v1.yaml` (unless it holds only
+  installer starter settings) and then writes schema 2, so an older release can still read its file if the update is
+  rolled back before any save, and every restart until then computes the same
+  reset. A broken schema 2 file is still an error: the daemon does not start
+  and its log names only the file, because the error can quote credentials.
+  Run `keenproxy -dry-run -config <path>` on the router to see the error on
+  the terminal. `-dry-run` and `--url` use the reset without writing.
+- `keenproxy -dry-run` compiles the configuration without subscription nodes
+  and without provider rules, because it neither fetches subscriptions nor
+  downloads geo files. A subscription target is therefore empty and its
+  provider rules are absent in that output, which differs from what the
+  running daemon compiles.
+- This release's `tools/bootstrap.sh` also snapshots the configuration before
+  installing and restores it if the update fails. When the target release
+  cannot read schema 2 at all, it atomically switches to the newest kept
+  `config.v1*.yaml` and keeps the newer file as `config.v2*.yaml`. A target
+  that reads schema 2 but rejects the file is refused and nothing changes. A
+  fresh install of this release has no v1 backup, so a rollback to an older
+  release is refused at validation and changes nothing.
+
 ## GitHub Pages
 
-The **Documentation** workflow builds and checks both outputs on relevant PRs and pushes. It uploads only `site/`, containing generated documentation and the demo. Internal reports, local memories, application source maps, credentials, and Go runtime state are not part of that directory.
+The **Documentation** workflow builds and checks both outputs on relevant PRs and pushes. It uploads only `site/`, containing generated documentation. Internal reports, local memories, application source maps, credentials, and Go runtime state are not part of that directory.
 
-Use `make docs-preview` to build and preview the source documentation and demo for LokiVPN. The hosted documentation and demo are maintained by Ordo Systems. The checked-in Pages workflow deploys from the upstream `main` branch. [Hosted documentation](https://ordo-systems.github.io/keen-proxy/)
+Use `make docs-preview` to build and preview this repository's documentation. The hosted documentation is maintained by Ordo Systems. The checked-in Pages workflow deploys from the upstream `main` branch. [Hosted documentation](https://ordo-systems.github.io/keen-proxy/)
 
-Binary releases use the tagged LokiVPN Release workflow. [Release guide](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md)
+The Release workflow builds binaries from the version tag. [Release guide](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md)

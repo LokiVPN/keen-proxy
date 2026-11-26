@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
+	"github.com/ordo-systems/keen-proxy/internal/stats"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
@@ -55,7 +56,15 @@ func (e *Engine) Apply(config []byte) (bool, error) {
 		cancel()
 		return false, fmt.Errorf("create sing-box: %w", err)
 	}
+	// A stale catalog or a direct API write can change the actual graph
+	// after UI validation. Refuse it while the previous core still runs.
+	if err := validateRuntimeDependencies(instance); err != nil {
+		instance.Close()
+		cancel()
+		return false, err
+	}
 	tracker := e.Tracker
+	stats.RegisterTargetClasses(ctx, instance.Outbound())
 	for _, outbound := range instance.Outbound().Outbounds() {
 		if _, ok := outbound.(*subscriptionBalance); ok {
 			tracker = subscriptionBalanceTracker{next: tracker}
@@ -89,6 +98,14 @@ func (e *Engine) Close() error {
 	return e.closeLocked()
 }
 
+// Running reports whether a core instance has successfully started and has
+// not been closed, including after a failed restart.
+func (e *Engine) Running() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.box != nil
+}
+
 // closeLocked releases instance resources while the engine mutex is held.
 func (e *Engine) closeLocked() error {
 	if e.box == nil {
@@ -110,6 +127,25 @@ func (e *Engine) Outbound(tag string) (adapter.Outbound, context.Context, bool) 
 	}
 	o, ok := e.box.Outbound().Outbound(tag)
 	return o, e.ctx, ok
+}
+
+// TargetClass reports the class of a compiled target in the running core.
+func (e *Engine) TargetClass(tag string) stats.TargetClass {
+	out, ctx, ok := e.Outbound(tag)
+	if !ok {
+		return stats.TargetUnknown
+	}
+	return stats.TargetClassOf(ctx, out)
+}
+
+// TrafficMembers returns the running group's accounting tags for traffic links.
+func (e *Engine) TrafficMembers(tag string) ([]string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.box == nil {
+		return nil, false
+	}
+	return stats.TrafficMemberTags(e.box.Outbound(), tag)
 }
 
 // Select switches group to outbound tag. Existing selector connections close

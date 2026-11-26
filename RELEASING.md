@@ -4,8 +4,8 @@ This guide is for maintainers preparing an initial public repository or a later 
 
 ## Build a LokiVPN release
 
-Prepare the version in `version.txt`, the Release Please manifest, the demo
-version, and the changelog. Merge the reviewed source into `master`. Tag that
+Prepare the version in `version.txt`, the Release Please manifest, and the
+changelog. Merge the reviewed source into `master`. Tag that
 commit, push the tag, create a draft GitHub Release for it, and dispatch
 **Release** with both the workflow ref and the `tag` input set to the same tag.
 
@@ -45,8 +45,7 @@ Use the Git tag as the release identity and derive build versions from it; any t
 - The version job issues a short-lived token restricted to this repository. The built-in `GITHUB_TOKEN` keeps read permissions by default. The separate asset job requests Contents write to attach files to the release. The app needs access to the Release Please branch and release tags under the repository rules. Keep required reviews and CI in place for `main`.
 - After merging a change to release authentication, verify a fresh Release run on `main`. Rerunning an older run uses its original workflow revision. For asset recovery with a supplied tag, the workflow skips the App token step.
 - `version.txt` and `.release-please-manifest.json` start at the development baseline `0.1.0`; this does not assert that `v0.1.0` has been published. The initial commit is the bootstrap boundary. The first releasable changes determine the next version; if the first public release must be `0.1.0`, use a reviewed commit with a `Release-As: 0.1.0` footer before merging its release PR.
-- Release PRs update `version.txt`, the manifest, `CHANGELOG.md`, and the private frontend package/lockfile version fields together. `BUILD_INFO.txt` records the tag, source commit, toolchains, and protocol build tags; the running release and build appear in the panel footer, **Diagnostics → Build details**, and the diagnostic ZIP's `status.json`.
-- `web/src/demo/release.json` records the planned demo preview separately from the last published installer/package versions. Update it when planning the next feature release; the release PR synchronizes it through the same JSON extra-file updater. Both the static demo and `make ui-demo` read this one source, so previewing an unpublished version never redirects the bootstrap to missing assets.
+- Release PRs update `version.txt`, the manifest, `CHANGELOG.md` together. `BUILD_INFO.txt` records the tag, source commit, toolchains, and protocol build tags; the running release and build appear in the panel footer, **Diagnostics → Build details**, and the diagnostic ZIP's `status.json`.
 - The LokiVPN `tools/bootstrap.sh` reads the latest published release's `BUILD_INFO.txt` unless the user supplies `--version`. It needs the selected release's checksum file, binary, and platform-specific installer assets before touching a running service. Entware requires `install.sh` and `S99keenproxy`; native OpenWrt requires `keenproxy.openwrt`. Missing native assets must not prevent Entware upgrades to existing releases. Validate these assets on the published release before advertising the installation command.
 - If asset publication fails after release creation, manually run the Release workflow from `main` with its existing tag in the `tag` input. Packaging includes `keenproxy.openwrt` only when that controller exists in the checked-out tag, including its checksum and upload entry; retries of older Entware-only tags must not require it. Existing assets must be byte-identical before missing ones are uploaded. A different rebuild fails rather than replacing files; investigate toolchain/dependency differences and publish a new version when needed. Running without a tag retries Release Please.
 - Historical recovery is a separate, explicit contract only for a tag whose commit is an ancestor of, or equal to, the fixed pre-AWG boundary `9d398fb3754036cbe35df1cf07098164ff62a9d5` (including `v0.8.0`). Current workflow CI remains a prerequisite. The tagged `version.txt` must match the requested tag before toolchain setup or expensive work. The workflow leaves tagged source unchanged and uses its original Makefile and protocol flags for Go tests, vet, network integration, frontend tests, and full/lite router cross-builds with the requested release identity. A visible notice and `.agents-work/release-legacy/<run>-<attempt>/` manifest, command log, and exit code distinguish this evidence from memory reports; the always-run evidence uploader retains it even on failure. Pre-AWG source cannot execute AWG tests: this recovery is not AWG stress or memory-comparison certification. Every commit outside that ancestry boundary must pass both memory gates; a missing target fails and never selects historical recovery. Existing-asset byte checks and publication order are unchanged.
@@ -74,7 +73,6 @@ Use the Git tag as the release identity and derive build versions from it; any t
 ```sh
 CGO_ENABLED=0 make test
 CGO_ENABLED=0 make vet
-cd web && npm ci && npm test && npm run build
 ```
 
 Run `make integration` for the full network test suite. Test the relevant x86, ARM32, ARM64, or MIPS build and the relevant protocol registry on the intended hardware; a host build alone is insufficient. Auxiliary tools have separate Go modules. Document checks that could not be run.

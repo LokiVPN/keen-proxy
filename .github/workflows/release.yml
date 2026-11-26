@@ -118,11 +118,11 @@ jobs:
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache-dependency-path: go.sum
+      # Only historical tags still contain the Vue panel and need Node.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: steps.contract.outputs.historical == 'true'
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - name: Verify and build historical source without AWG certification
         if: steps.contract.outputs.historical == 'true'
         env:
@@ -222,11 +222,9 @@ jobs:
           {
             printf 'Version: %s\nCommit: %s\n' "$RELEASE_TAG" "$(git rev-parse HEAD)"
             go version
-            node --version
-            npm --version
             # Make expands its own variables in the tag report.
             # shellcheck disable=SC2016
-            make -s --eval='print-tags:;@echo Full tags: $(TAGS),ui; echo Lite tags: $(LITE_TAGS)' print-tags
+            make -s --eval='print-tags:;@echo Full tags: $(TAGS); echo Lite tags: $(LITE_TAGS)' print-tags
             go list -m all
           } > dist/BUILD_INFO.txt
           tar --sort=name --mtime="$(git show -s --format=%cI HEAD)" \

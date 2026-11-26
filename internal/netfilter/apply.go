@@ -51,7 +51,62 @@ func NewFirewall() *Firewall {
 // Apply loads owned chains and installs jumps idempotently, restoring rules
 // after an NDM firewall rebuild when needed.
 func (f *Firewall) Apply(ctx context.Context, p Plan) error {
-	rules := p.Render()
+	if err := f.restore(ctx, p.Render()); err != nil {
+		return err
+	}
+	return f.installJumps(ctx, p.Jumps())
+}
+
+// ApplyProtected assumes Protect has installed the rollback guard. It loads
+// interception before changing the filter, which still drops traffic that
+// would bypass the replacement plan. A failed jump check is a verification
+// result so the caller can retry after a firmware rebuild.
+func (f *Firewall) ApplyProtected(ctx context.Context, p Plan) (*CheckFailure, error) {
+	var rules strings.Builder
+	p.renderPrerouting(&rules)
+	if err := f.restore(ctx, rules.String()); err != nil {
+		return nil, err
+	}
+	if err := f.installJumps(ctx, p.preroutingJumps()); err != nil {
+		return nil, err
+	}
+	if failure := f.Check(ctx, p); failure != nil {
+		return failure, nil
+	}
+	rules.Reset()
+	p.renderFilter(&rules, true)
+	return nil, f.restore(ctx, rules.String())
+}
+
+// ReleaseProtection restores the ordinary filter and immediately verifies
+// the entry jumps. Probe DNS first because another local resolver can receive
+// queries as soon as the drops are removed if that jump has disappeared.
+func (f *Firewall) ReleaseProtection(ctx context.Context, p Plan) (*CheckFailure, error) {
+	var rules strings.Builder
+	p.renderFilter(&rules, false)
+	jumps := p.Jumps()
+	for i, j := range jumps {
+		if j.To == ChainDNS {
+			jumps[0], jumps[i] = j, jumps[0]
+			break
+		}
+	}
+	if err := f.restore(ctx, rules.String()); err != nil {
+		return nil, err
+	}
+	return f.checkJumps(ctx, jumps), nil
+}
+
+// Protect installs temporary drops in the normal filter chains. DNSListen
+// is unset when the frontend is unavailable and cannot accept local DNS.
+func (f *Firewall) Protect(ctx context.Context, p Plan) error {
+	if err := f.restore(ctx, p.renderProtection()); err != nil {
+		return err
+	}
+	return f.installJumps(ctx, filterJumps())
+}
+
+func (f *Firewall) restore(ctx context.Context, rules string) error {
 	wait := true
 	err := f.Run.Run(ctx, rules, f.Restore, "-w", "--noflush")
 	if restoreRejectsWait(err) {
@@ -62,7 +117,11 @@ func (f *Firewall) Apply(ctx context.Context, p Plan) error {
 	if err != nil {
 		return describeRestoreFailure(err, rules, wait)
 	}
-	for _, j := range p.Jumps() {
+	return nil
+}
+
+func (f *Firewall) installJumps(ctx context.Context, jumps []Jump) error {
+	for _, j := range jumps {
 		if f.Run.Run(ctx, "", f.IPTables, "-w", "-t", j.Table, "-C", j.From, "-j", j.To) == nil {
 			continue
 		}
@@ -87,8 +146,11 @@ func restoreRejectsWait(err error) bool {
 // Detach removes only the exact owned entry jumps, leaving their chains and
 // unrelated rules untouched. A missing jump is already detached.
 func (f *Firewall) Detach(ctx context.Context, p Plan) error {
+	return f.detach(ctx, p.Jumps())
+}
+
+func (f *Firewall) detach(ctx context.Context, jumps []Jump) error {
 	var errs []error
-	jumps := p.Jumps()
 	for i := len(jumps) - 1; i >= 0; i-- {
 		j := jumps[i]
 		for {
@@ -119,9 +181,18 @@ func jumpAbsent(err error, j Jump) bool {
 // Remove detaches jumps before flushing and deleting owned chains so client
 // DNS immediately returns to the router resolver (fail-open).
 func (f *Firewall) Remove(ctx context.Context, p Plan) error {
-	_ = f.Detach(ctx, p)
+	return f.remove(ctx, p.Jumps())
+}
+
+// RemovePrerouting retires obsolete interception chains on a mode change
+// while keeping any rollback protection attached to the filter hooks.
+func (f *Firewall) RemovePrerouting(ctx context.Context, p Plan) error {
+	return f.remove(ctx, p.preroutingJumps())
+}
+
+func (f *Firewall) remove(ctx context.Context, jumps []Jump) error {
+	_ = f.detach(ctx, jumps)
 	var errs []error
-	jumps := p.Jumps()
 	seen := map[string]bool{}
 	for _, j := range jumps {
 		key := j.Table + "/" + j.To

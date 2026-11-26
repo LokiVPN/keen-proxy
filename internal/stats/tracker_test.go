@@ -17,10 +17,19 @@ import (
 
 type fakeOut struct {
 	adapter.Outbound
-	tag string
+	tag, kind string
 }
 
 func (f fakeOut) Tag() string { return f.tag }
+func (f fakeOut) Type() string {
+	if f.kind != "" {
+		return f.kind
+	}
+	if f.tag == "direct" || f.tag == "block" {
+		return f.tag
+	}
+	return "vless"
+}
 
 func TestTrackerCountsAndSamples(t *testing.T) {
 	tr := NewTracker()
@@ -66,6 +75,90 @@ func TestTrackerCountsAndSamples(t *testing.T) {
 	}
 	if h, _ := tr.Hosts("fi", "nomatch", 10); len(h) != 0 {
 		t.Errorf("filter: %+v", h)
+	}
+}
+
+func TestTunnelSeriesUsesOnlyVPNAndKeepsRetiredSamples(t *testing.T) {
+	const node = "subscription:sample:123456789abcdef0123456789abcdef0"
+	tr := NewTracker()
+	tr.RetainSubscriptionNodes([]string{node})
+	for i, tag := range []string{"manual", node, "direct", "block"} {
+		flow := tr.open(t.Context(), adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
+		read, write := flow.counters()
+		for _, count := range read {
+			count(int64(100 * (i + 1)))
+		}
+		for _, count := range write {
+			count(int64(200 * (i + 1)))
+		}
+		tr.close(flow)
+	}
+	now := time.Now()
+	tr.sample(now)
+	tr.RetainSubscriptionNodes(nil)
+	tr.sample(now.Add(SampleInterval))
+	want := []Point{{T: now.UnixMilli(), Down: 600 * 8 / SampleInterval.Seconds(), Up: 300 * 8 / SampleInterval.Seconds()},
+		{T: now.Add(SampleInterval).UnixMilli()}}
+	if got := tr.TunnelSeries(); !slices.Equal(got, want) {
+		t.Fatalf("aggregate series = %+v, want %+v", got, want)
+	}
+	for i := 2; i <= seriesLen; i++ {
+		tr.sample(now.Add(time.Duration(i) * SampleInterval))
+	}
+	got := tr.TunnelSeries()
+	if len(got) != seriesLen || got[0].T != want[1].T {
+		t.Fatalf("aggregate history has the wrong window: %d samples", len(got))
+	}
+	got[0] = Point{}
+	if tr.TunnelSeries()[0] != want[1] {
+		t.Fatal("editing a series snapshot changed the tracker")
+	}
+}
+
+func TestTunnelSeriesExcludesCustomDirect(t *testing.T) {
+	tr := NewTracker()
+	proxy := fakeOut{tag: "vpn", kind: "vless"}
+	direct := fakeOut{tag: "local-egress", kind: "direct"}
+	for _, flow := range []struct {
+		out    adapter.Outbound
+		upload int64
+	}{
+		{proxy, 100}, {direct, 200},
+	} {
+		tracked := tr.open(t.Context(), adapter.InboundContext{Domain: "example.test"}, flow.out)
+		read, _ := tracked.counters()
+		for _, count := range read {
+			count(flow.upload)
+		}
+		tr.close(tracked)
+	}
+	tr.sample(time.Now())
+	if got := tr.TunnelSeries()[0].Up; got != 100*8/SampleInterval.Seconds() {
+		t.Fatalf("VPN upload rate includes bytes from a direct egress: %g", got)
+	}
+}
+
+func TestTunnelSeriesKeepsUnsampledTrafficWhenCatalogRetires(t *testing.T) {
+	const tag = "subscription:sample:123456789abcdef0123456789abcdef0"
+	tr := NewTracker()
+	tr.RetainSubscriptionNodes([]string{tag})
+	tracked := tr.open(t.Context(), adapter.InboundContext{Domain: "example.test"}, fakeOut{tag: tag})
+	read, write := tracked.counters()
+	for _, count := range read {
+		count(100)
+	}
+	for _, count := range write {
+		count(200)
+	}
+	tr.close(tracked)
+	tr.RetainSubscriptionNodes(nil)
+	if snapshot := tr.Snapshot(true); len(snapshot.Outbounds) != 0 {
+		t.Fatal("test left the retired outbound in the per-connection history")
+	}
+	tr.sample(time.Now())
+	got := tr.TunnelSeries()[0]
+	if got.Up != 100*8/SampleInterval.Seconds() || got.Down != 200*8/SampleInterval.Seconds() {
+		t.Fatalf("VPN series lost bytes from the retired outbound: %+v", got)
 	}
 }
 
@@ -178,7 +271,7 @@ func TestHostsTotalCountsFilteredMatchesBeforeLimit(t *testing.T) {
 		if i >= 12 {
 			name = "mail" + strconv.Itoa(i) + ".example"
 		}
-		tr.open(adapter.InboundContext{Domain: name}, fakeOut{tag: "fi"}).host.down.Store(int64(i))
+		tr.open(t.Context(), adapter.InboundContext{Domain: name}, fakeOut{tag: "fi"}).host.down.Store(int64(i))
 	}
 	list, total := tr.Hosts("fi", "VIDEO", 10)
 	if total != 12 || len(list) != 10 || list[0].Host != "video11.example" || list[9].Host != "video2.example" {

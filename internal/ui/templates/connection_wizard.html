@@ -1,0 +1,178 @@
+{{define "connection-wizard"}}{{template "page-start" .}}
+      {{$wizard := .ConnectionWizard}}
+      {{$disabled := or .ViewOnly (not $wizard.Revision)}}
+      <a class="wizard-crumb" href="/connections">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg>{{.Text.nav_connections}}
+      </a>
+      <h1>{{.Title}}</h1>
+      <p class="lead wizard-lead">{{.Text.wizard_intro}}</p>
+      <nav class="wizard-methods" aria-label="{{.Text.wizard_method}}">
+        <a href="{{$wizard.Entry}}"{{if eq $wizard.Method "paste"}} aria-current="page"{{end}}>{{.Text.wizard_paste}}</a>
+        <a href="{{$wizard.Entry}}?method=file"{{if eq $wizard.Method "file"}} aria-current="page"{{end}}>{{.Text.wizard_file}}</a>
+        <a href="{{$wizard.Entry}}?method=manual"{{if eq $wizard.Method "manual"}} aria-current="page"{{end}}>{{.Text.wizard_manual}}</a>
+      </nav>
+
+      {{if $wizard.Error}}
+      <div class="note warn wizard-error" role="alert">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 9v4m0 3v1"/></svg>
+        <p>{{$wizard.Error}}</p>
+      </div>
+      {{end}}
+
+      {{if $wizard.Review}}
+        {{template "wizard-review" .}}
+      {{else if $wizard.Choices}}
+        {{template "wizard-choices" .}}
+      {{else}}
+        {{if eq $wizard.Method "manual"}}
+          {{template "wizard-protocol" .}}
+        {{end}}
+        <form class="wizard-input" method="post" action="{{$wizard.CheckAction}}"
+          {{if ne $wizard.Method "manual"}}enctype="multipart/form-data"{{end}} autocomplete="off" data-guard novalidate>
+          {{template "wizard-context" $wizard}}
+          <fieldset class="wizard-fields"{{if $disabled}} disabled{{end}}>
+            {{if eq $wizard.Method "paste"}}
+            <div class="fld">
+              <label for="wizard-profile">{{.Text.wizard_profile}}</label>
+              <textarea id="wizard-profile" name="profile" rows="5" aria-describedby="wizard-format-hint"
+                spellcheck="false" placeholder="vless://…&#10;hy2://…&#10;[Interface]…" required></textarea>
+            </div>
+            <p id="wizard-format-hint" class="hint">{{.Text.wizard_format_hint}}</p>
+            {{else if eq $wizard.Method "file"}}
+            <label class="wizard-drop" for="wizard-file">
+              <span class="wizard-drop-text">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M4 16v4h16v-4"/></svg>
+                <span>{{.Text.wizard_file_choose}}</span>
+                <span class="hint">{{.Text.wizard_file_hint}}</span>
+              </span>
+              <input id="wizard-file" name="file" type="file" accept=".conf,.txt,.json,.vpn" required>
+            </label>
+            {{else}}
+            <div class="wizard-grid">
+              {{range $wizard.Fields}}{{template "wizard-field" .}}{{end}}
+            </div>
+            {{if $wizard.Advanced}}
+            <details class="wizard-more"{{if $wizard.AdvancedOpen}} open{{end}}>
+              <summary>{{.Text.wizard_advanced}}</summary>
+              <div class="wizard-grid">
+                {{range $wizard.Advanced}}{{template "wizard-field" .}}{{end}}
+              </div>
+            </details>
+            {{end}}
+            {{end}}
+            <div class="row-btns wizard-buttons">
+              <button class="btn" type="submit">{{.Text.setup_check}}</button>
+              <a class="btn soft" href="/connections">{{.Text.setup_cancel}}</a>
+            </div>
+          </fieldset>
+        </form>
+      {{end}}
+{{template "page-end" .}}{{end}}
+
+{{define "wizard-context"}}
+          <input type="hidden" name="rev" value="{{.Revision}}">
+          <input type="hidden" name="method" value="{{.Method}}">
+          {{if eq .Method "manual"}}<input type="hidden" name="protocol" value="{{.Protocol}}">{{end}}
+          {{if .Replace}}<input type="hidden" name="replace" value="{{.Replace}}">{{end}}
+{{end}}
+
+{{define "wizard-protocol"}}
+      <form class="wizard-select" method="get" action="{{.ConnectionWizard.Entry}}">
+        <input type="hidden" name="method" value="manual">
+        <fieldset class="wizard-fields"{{if or .ViewOnly (not .ConnectionWizard.Revision)}} disabled{{end}}>
+          <div class="fld">
+            <label for="wizard-protocol">{{.Text.wizard_field_protocol}}</label>
+            <select id="wizard-protocol" name="protocol" data-autosubmit{{if .ConnectionWizard.ProtocolError}} aria-invalid="true" aria-describedby="wizard-protocol-error"{{end}}>
+              {{range .ConnectionWizard.Protocols}}
+              <option value="{{.Value}}"{{if eq .Value $.ConnectionWizard.Protocol}} selected{{end}}>{{.Label}}</option>
+              {{end}}
+            </select>
+            {{if .ConnectionWizard.ProtocolError}}<p class="wizard-field-error" role="alert" id="wizard-protocol-error">{{.ConnectionWizard.ProtocolError}}</p>{{end}}
+          </div>
+          <button class="btn soft wizard-select-submit" type="submit">{{.Text.wizard_choose}}</button>
+        </fieldset>
+      </form>
+{{end}}
+
+{{define "wizard-field"}}
+      <div class="fld{{if .Wide}} wizard-wide{{end}}" data-wizard-field="{{.Key}}">
+        <label for="wizard-{{.Key}}">{{.Label}}</label>
+        {{if .Options}}
+        <select id="wizard-{{.Key}}" name="{{.Key}}"{{if .Error}} aria-invalid="true" aria-describedby="wizard-{{.Key}}-error"{{end}}>
+          {{range .Options}}<option value="{{.Value}}"{{if eq .Value $.Value}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+        {{else}}
+        <input id="wizard-{{.Key}}" name="{{.Key}}" type="{{.Type}}" spellcheck="false"
+          {{if .Mode}}inputmode="{{.Mode}}"{{end}}{{if .Value}} value="{{.Value}}"{{end}}{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}
+          {{if .Error}}aria-invalid="true" aria-describedby="wizard-{{.Key}}-error"{{end}}>
+        {{end}}
+        {{if .Error}}<p class="wizard-field-error" role="alert" id="wizard-{{.Key}}-error">{{.Error}}</p>{{end}}
+      </div>
+{{end}}
+
+{{define "wizard-choices"}}
+      <form class="wizard-input" method="post" action="{{.ConnectionWizard.CheckAction}}" data-guard>
+        {{template "wizard-context" .ConnectionWizard}}
+        <input type="hidden" name="preview" value="{{.ConnectionWizard.ChoiceToken}}">
+        <fieldset class="wizard-fields"{{if .ViewOnly}} disabled{{end}}>
+          <div class="fld">
+            <label for="wizard-choice">{{.Text.wizard_choice}}</label>
+            <select id="wizard-choice" name="choice" required>
+              <option value="" disabled selected>{{.Text.wizard_choose_required}}</option>
+              {{range .ConnectionWizard.Choices}}<option value="{{.Index}}">{{.Name}}</option>{{end}}
+            </select>
+          </div>
+          <div class="row-btns wizard-buttons">
+            <button class="btn" type="submit">{{.Text.setup_check}}</button>
+            <a class="btn soft" href="/connections">{{.Text.setup_cancel}}</a>
+          </div>
+        </fieldset>
+      </form>
+{{end}}
+
+{{define "wizard-review"}}
+      <section class="wizard-review" aria-labelledby="wizard-heading">
+        {{$replace := .ConnectionWizard.Replace}}
+        {{with .ConnectionWizard.Review}}
+        <div class="prov">
+          <h2 id="wizard-heading" class="clip">{{if .Name}}{{.Name}}{{else}}{{.Summary.Protocol}}{{end}}</h2>
+          <span class="chip ok">{{$.Text.wizard_checked}}</span>
+        </div>
+        <dl class="facts">
+          <dt>{{$.Text.wizard_type}}</dt>
+          <dd>{{if .Summary.TypeHidden}}{{$.Text.wizard_summary_hidden}}{{else}}{{.Summary.Protocol}}{{if .Summary.Security}} · {{.Summary.Security}}{{end}}{{end}}</dd>
+          <dt>{{$.Text.wizard_field_server}}</dt><dd class="clip">{{if .Summary.ServerHidden}}{{$.Text.wizard_summary_hidden}}{{else if .Summary.Server}}{{.Summary.Server}}{{else}}—{{end}}</dd>
+          <dt>SNI</dt><dd class="clip">{{if .Summary.SNIHidden}}{{$.Text.wizard_summary_hidden}}{{else if .Summary.SNI}}{{.Summary.SNI}}{{else}}—{{end}}</dd>
+        </dl>
+        <form method="post" action="/connections/new/save" autocomplete="off" data-guard novalidate>
+          {{template "wizard-context" $.ConnectionWizard}}
+          <input type="hidden" name="preview" value="{{.Token}}">
+          <fieldset class="wizard-fields"{{if $.ViewOnly}} disabled{{end}}>
+            <div class="wizard-grid">
+              <div class="fld">
+                <label for="wizard-name">{{$.Text.wizard_name}}</label>
+                <input id="wizard-name" name="name" value="{{.Name}}" required
+                  {{if .NameError}}aria-invalid="true" aria-describedby="wizard-name-error"{{end}}>
+                {{if .NameError}}<p class="wizard-field-error" id="wizard-name-error" role="alert">{{index $.Text .NameError}}</p>{{end}}
+              </div>
+              <div class="fld">
+                <label for="wizard-id">{{$.Text.wizard_id}}</label>
+                {{if $replace}}
+                <input id="wizard-id" value="{{.ID}}" readonly>
+                {{else}}
+                <input id="wizard-id" name="id" value="{{.ID}}" pattern="[a-z0-9][a-z0-9_\-]{0,31}" maxlength="32"
+                  aria-describedby="wizard-id-hint{{if .IDError}} wizard-id-error{{end}}" spellcheck="false" required{{if .IDError}} aria-invalid="true"{{end}}>
+                {{if .IDError}}<p class="wizard-field-error" id="wizard-id-error" role="alert">{{index $.Text .IDError}}</p>{{end}}
+                {{end}}
+              </div>
+            </div>
+            {{if not $replace}}<p class="hint" id="wizard-id-hint">{{$.Text.wizard_id_hint}}</p>{{end}}
+            <div class="actions">
+              <button class="btn" type="submit">{{$.Text.overview_save}}</button>
+              <a class="btn soft" href="/connections">{{$.Text.setup_cancel}}</a>
+            </div>
+          </fieldset>
+        </form>
+        {{end}}
+      </section>
+{{end}}

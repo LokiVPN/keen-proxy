@@ -3,10 +3,12 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -19,98 +21,136 @@ import (
 	"github.com/ordo-systems/keen-proxy/internal/model"
 )
 
-// DomainStatus reports cached DNS routes and file-write status, without certifying
-// that the engine has reloaded those files.
-type DomainStatus struct {
-	Records     []domaincache.Record `json:"records"`
-	Conflicts   map[string][]string  `json:"conflicts"`
-	Limited     bool                 `json:"limited"`
-	Error       string               `json:"error,omitempty"`
-	WrittenAt   time.Time            `json:"written_at"`
-	Application string               `json:"application"`
-	Demo        bool                 `json:"demo,omitempty"`
-}
-
-// observeDomain retains device DNS answers only for currently configured domains.
+// observeDomain keeps device DNS answers for names that fill a DNS fallback
+// set of the applied configuration: own lists and enabled provider domain
+// rules. Provider names are learned only this way, never resolved by the
+// daemon (see refreshDomainNames), so their records are spare: they give way
+// to own-list records in a full cache and leave once their answers expire.
+// It runs on DNS goroutines without d.mu. The cache uses its installed
+// matcher even when the decision to observe used an older publication.
 func (d *Daemon) observeDomain(name string, m *dns.Msg) {
-	cfg := d.live.Load()
 	name = domaincache.Normalize(name)
-	if cfg != nil && compile.MatchesDomain(cfg, name) {
+	if names := d.publishedDNSNames(); names != nil && names.Observed(name) {
 		d.domains.Observe(name, m, "observed")
 	}
 }
 
-// domainRecords filters fresh cache records against the current configuration.
-func (d *Daemon) domainRecords() []domaincache.Record {
-	cfg := d.live.Load()
-	out := []domaincache.Record{}
-	if cfg == nil {
-		return out
+// holdsAddress selects the cache records with ip among their addresses.
+func holdsAddress(ip string) func(domaincache.Record) bool {
+	return func(r domaincache.Record) bool {
+		return slices.ContainsFunc(r.Addresses, func(a domaincache.Address) bool { return a.IP == ip })
 	}
-	matcher := compile.NewDomainMatcher(cfg)
-	for _, r := range d.domains.Snapshot(nil) {
-		if matcher.Match(r.Name) {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
-// Domains returns cache records, shared-IP conflicts, and the latest write status.
-func (d *Daemon) Domains() DomainStatus {
-	records := d.domainRecords()
-	st := DomainStatus{Records: records, Conflicts: map[string][]string{}, Limited: d.domains.Limited(), Application: "files_written_reload_pending"}
-	st.Conflicts = domainConflicts(d.live.Load(), records)
-	for _, r := range records {
-		st.Limited = st.Limited || r.Limited
-	}
-	d.domainMu.Lock()
-	st.WrittenAt = d.domainWritten
-	st.Error = d.domainError
-	d.domainMu.Unlock()
-	return st
-}
-func recordsMap(records []domaincache.Record) map[string][]string {
-	out := map[string][]string{}
-	for _, r := range records {
-		for _, a := range r.Addresses {
-			out[r.Name] = append(out[r.Name], a.IP)
-		}
-	}
-	return out
+// dnsNamesState is the DNS names published during compilation, with the
+// configuration and provider rules they were built from.
+type dnsNamesState struct {
+	cfg   *model.Config
+	rules *compile.ProviderRules
+	names *compile.DNSNames
 }
 
-// flushDomains serializes with Apply, preventing stale writes after group edits.
+// dnsNamesLocked returns the DNS names of the configuration being compiled and
+// provider rules, building and publishing them only when either changed.
+// Both are replaced on change and never modified, so pointers identify them.
+func (d *Daemon) dnsNamesLocked() *compile.DNSNames {
+	var rules *compile.ProviderRules
+	if applied := d.subscriptions.states[providerRulesSource(d.cfg)].snapshot.Rules; applied != nil {
+		rules = applied.Built
+	}
+	if s := d.dnsNames.Load(); s != nil && s.cfg == d.cfg && s.rules == rules {
+		return s.names
+	}
+	names := compile.NewDNSNames(d.cfg, d.providerRulesLocked())
+	state := &dnsNamesState{cfg: d.cfg, rules: rules, names: names}
+	accepted := d.acceptedDNSNames
+	// Keep accepted own names until Apply succeeds, including during rollback.
+	d.domains.SetRetentionPolicy(func(name string) bool {
+		return names.InGroups(name) || (accepted != nil && accepted.InGroups(name))
+	}, func() { d.dnsNames.Store(state) })
+	return names
+}
+
+// commitDomainCacheLocked keeps only the accepted own lists in the policy
+// after activation, releasing any addressless records demoted by Apply.
+func (d *Daemon) commitDomainCacheLocked() {
+	names := d.publishedDNSNames()
+	if names == nil || d.acceptedDNSNames == names {
+		return
+	}
+	d.domains.SetRetentionPolicy(names.InGroups, nil)
+	d.acceptedDNSNames = names
+}
+
+// publishedDNSNames returns the DNS names for readers without d.mu, or nil
+// before the first compilation.
+func (d *Daemon) publishedDNSNames() *compile.DNSNames {
+	if s := d.dnsNames.Load(); s != nil {
+		return s.names
+	}
+	return nil
+}
+
+// providerBlocked reports whether a provider block rule answers name locally
+// for the device at client. Provider rules route only split policies, so
+// other devices get the real answer. It runs on DNS goroutines and reads
+// only published state, which changes without a DNS restart.
+func (d *Daemon) providerBlocked(name string, client netip.Addr) bool {
+	split, names := d.split.Load(), d.publishedDNSNames()
+	return split != nil && names != nil && split.Contains(client) && names.ProviderBlocked(name)
+}
+
+// dnsFiles records the dns-* rule-set files as the daemon last wrote them,
+// so it writes them only when an answer or the DNS names changed and
+// rewrites only the files whose contents changed, without reading them back.
+type dnsFiles struct {
+	names    *compile.DNSNames // the names of the last complete write
+	answers  uint64            // the cache generation of the last complete write
+	contents map[string][]byte // by file name, as written
+	cleaned  *compile.DNSNames // the names whose stale files were removed
+}
+
+// flushDomains brings the DNS fallback sets up to date once a second. It
+// serializes with Apply, preventing stale writes after group edits.
 func (d *Daemon) flushDomains() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.cfg == nil {
 		return
 	}
-	d.writeDNSLocked()
-	if d.domainError == "" {
+	names := d.dnsNamesLocked()
+	d.commitDomainCacheLocked()
+	d.writeDNSLocked(names)
+	if d.domainError == "" && d.dnsFiles.cleaned != d.dnsFiles.names {
 		d.cleanDNSFilesLocked()
 	}
 }
 
-// writeDNSLocked writes changed DNS fallback sets while d.mu is held, and records
-// write progress under domainMu.
-func (d *Daemon) writeDNSLocked() {
-	sets := compile.DNSRuleSets(d.cfg, recordsMap(d.domainRecords()))
-	fingerprint, _ := json.Marshal(sets)
-	d.domainMu.Lock()
-	defer d.domainMu.Unlock()
-	if bytes.Equal(fingerprint, d.domainFingerprint) && d.domainError == "" {
+// writeDNSLocked writes the DNS fallback sets of the published names from
+// the cache's answers while d.mu is held. Nothing is built while neither
+// changed since the last complete write, and only changed files are written.
+func (d *Daemon) writeDNSLocked(names *compile.DNSNames) {
+	f := &d.dnsFiles
+	if d.domainError == "" && f.names == names && f.answers == d.domains.Generation() {
 		return
 	}
+	answers, generation := d.domains.Addresses()
+	sets := names.RuleSets(answers)
+	if f.contents == nil {
+		f.contents = make(map[string][]byte, len(sets))
+	}
 	for name, raw := range sets {
-		if err := writeFile(filepath.Join(d.opt.RuleSetDir, name), raw, 0o644); err != nil {
+		if bytes.Equal(f.contents[name], raw) {
+			continue
+		}
+		if err := replaceFile(filepath.Join(d.opt.RuleSetDir, name), raw, 0o644); err != nil {
 			d.domainError = err.Error()
 			return
 		}
+		f.contents[name] = raw
 	}
-	d.domainFingerprint = fingerprint
-	d.domainWritten = time.Now()
+	maps.DeleteFunc(f.contents, func(name string, _ []byte) bool { return sets[name] == nil })
+	f.names, f.answers = names, generation
 	d.domainError = ""
 }
 
@@ -129,9 +169,9 @@ func (d *Daemon) resetDomainGeneration() {
 	}
 }
 
-// RefreshDomains resolves up to 100 names with bounded concurrency. Preview uses
-// an isolated cache; applied refreshes require names in the live configuration.
-func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview bool) (DomainStatus, error) {
+// RefreshDomains resolves up to 100 names with bounded concurrency and writes
+// the changed DNS rule sets. Names must belong to the live configuration.
+func (d *Daemon) RefreshDomains(ctx context.Context, names []string) error {
 	if g := d.domainGeneration.Load(); g != nil {
 		cctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -141,11 +181,11 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 	}
 
 	if len(names) == 0 || len(names) > 100 {
-		return DomainStatus{}, fmt.Errorf("between 1 and 100 domains required")
+		return fmt.Errorf("between 1 and 100 domains required")
 	}
 	cfg := d.live.Load()
 	if cfg == nil {
-		return DomainStatus{}, fmt.Errorf("daemon is not running")
+		return fmt.Errorf("daemon is not running")
 	}
 	matcher := compile.NewDomainMatcher(cfg)
 	clean := make([]string, 0, len(names))
@@ -153,10 +193,10 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 	for _, name := range names {
 		e, err := model.ParseEntry(name)
 		if err != nil || e.Kind != model.EntryDomain {
-			return DomainStatus{}, fmt.Errorf("invalid domain: %s", name)
+			return fmt.Errorf("invalid domain: %s", name)
 		}
-		if !preview && !matcher.Match(e.Domain) {
-			return DomainStatus{}, fmt.Errorf("domain is not in the applied list: %s", e.Domain)
+		if !matcher.Match(e.Domain) {
+			return fmt.Errorf("domain is not in the applied list: %s", e.Domain)
 		}
 		if !seen[e.Domain] {
 			clean = append(clean, e.Domain)
@@ -164,9 +204,6 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 		}
 	}
 	cache := d.domains
-	if preview {
-		cache = domaincache.New(time.Now)
-	}
 	dnsCfg := d.dnsConfig(cfg.DNS)
 	dnsCfg.Timeout = 3 * time.Second
 	resolver := dnsfront.New(dnsCfg)
@@ -175,13 +212,13 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 	for _, name := range clean {
 		if d.live.Load() != cfg {
 			wg.Wait()
-			return DomainStatus{}, fmt.Errorf("configuration changed")
+			return fmt.Errorf("configuration changed")
 		}
 		select {
 		case d.domainSlots <- struct{}{}:
 		case <-ctx.Done():
 			wg.Wait()
-			return DomainStatus{}, ctx.Err()
+			return ctx.Err()
 		}
 		wg.Add(1)
 		go func(name string) {
@@ -201,13 +238,10 @@ func (d *Daemon) RefreshDomains(ctx context.Context, names []string, preview boo
 	}
 	wg.Wait()
 	if ctx.Err() != nil {
-		return DomainStatus{}, ctx.Err()
-	}
-	if preview {
-		return DomainStatus{Records: cache.Snapshot(nil), Conflicts: map[string][]string{}, Application: "preview"}, nil
+		return ctx.Err()
 	}
 	d.flushDomains()
-	return d.Domains(), nil
+	return nil
 }
 
 // runDomains flushes cache expiry each second and schedules nonoverlapping refresh
@@ -231,17 +265,21 @@ func (d *Daemon) runDomains(ctx context.Context) {
 		go func() {
 			defer func() { <-busy }()
 			cfg := d.live.Load()
-			if cfg == nil {
+			state := d.dnsNames.Load()
+			if state == nil || state.cfg != cfg {
 				return
 			}
-			names := refreshDomainNames(cfg, d.domainRecords(), time.Now())
-			existing := map[string]domaincache.Record{}
-			for _, r := range d.domainRecords() {
+			// Schedule only names in the current own lists.
+			records := d.domains.Snapshot(func(r domaincache.Record) bool {
+				return state.names.InGroups(r.Name)
+			})
+			now := time.Now()
+			names := refreshDomainNames(cfg, records, now)
+			existing := make(map[string]domaincache.Record, len(records))
+			for _, r := range records {
 				existing[r.Name] = r
-
 			}
 			due := []string{}
-			now := time.Now()
 			for _, name := range names {
 				r := existing[name]
 				if now.Sub(r.AttemptedAt) < 30*time.Second {
@@ -262,7 +300,7 @@ func (d *Daemon) runDomains(ctx context.Context) {
 				}
 			}
 			if len(due) > 0 {
-				_, _ = d.RefreshDomains(ctx, due, false)
+				_ = d.RefreshDomains(ctx, due)
 			}
 		}()
 	}
@@ -276,8 +314,10 @@ func containsName(names []string, name string) bool {
 	return false
 }
 
-// refreshDomainNames keeps configured roots and recently observed subdomains warm;
-// service refreshes do not count as device use.
+// refreshDomainNames keeps the configured roots of own lists and their recently
+// observed subdomains warm; service refreshes do not count as device use.
+// Provider names are never resolved here: they fill DNS fallback sets only
+// from answers devices received.
 func refreshDomainNames(cfg *model.Config, records []domaincache.Record, now time.Time) []string {
 	names := compile.DomainNames(cfg)
 	matcher := compile.NewDomainMatcher(cfg)
@@ -338,30 +378,37 @@ func appendUnique(ss []string, s string) []string {
 	return append(ss, s)
 }
 
-// dnsRouteNote explains potential DNS-derived routing for connection journal entries.
-func dnsRouteNote(cfg *model.Config, records []domaincache.Record, raw, ip string) string {
+// dnsRouteNote names, for a connection journal entry, the observed names
+// behind a DNS fallback route of an own list: the names of the groups raw
+// matched whose answers held ip. holding returns the cache records that hold
+// ip; it is called only for such routes, so provider DNS sets, whose names
+// the journal does not explain, never read the cache. Without names there
+// is no note.
+func dnsRouteNote(cfg *model.Config, raw, ip string, holding func() []domaincache.Record) string {
 	if cfg == nil || !strings.Contains(raw, "dns-") {
 		return ""
 	}
-	names := []string{}
+	var groups []model.Group
 	for _, g := range cfg.Groups {
-		if g.Disabled {
-			continue
+		if !g.Disabled && strings.Contains(raw, compile.DomainTag(g)) {
+			groups = append(groups, g)
 		}
-		if !strings.Contains(raw, compile.DomainTag(g)) {
-			continue
-		}
+	}
+	if len(groups) == 0 {
+		return ""
+	}
+	records, holds := holding(), holdsAddress(ip)
+	names := []string{}
+	for _, g := range groups {
 		m := compile.NewDomainMatcher(&model.Config{Groups: []model.Group{g}})
 		for _, r := range records {
-			if !m.Match(r.Name) {
-				continue
-			}
-			for _, a := range r.Addresses {
-				if a.IP == ip {
-					names = appendUnique(names, r.Name)
-				}
+			if m.Match(r.Name) && holds(r) {
+				names = appendUnique(names, r.Name)
 			}
 		}
+	}
+	if len(names) == 0 {
+		return ""
 	}
 	sort.Strings(names)
 	if len(names) > 4 {
@@ -374,21 +421,27 @@ func dnsRouteNote(cfg *model.Config, records []domaincache.Record, raw, ip strin
 	return note
 }
 
-// Called after Apply/rollback is finished, never while the old engine still uses its files.
+// cleanDNSFilesLocked removes the dns-* files the last complete write did not
+// produce. It runs after Apply or rollback is finished and leaves cleanup
+// pending if removal fails, so a later flush can retry.
 func (d *Daemon) cleanDNSFilesLocked() {
-	keep := compile.DNSRuleSets(d.cfg, nil)
 	entries, err := os.ReadDir(d.opt.RuleSetDir)
 	if err != nil {
 		return
 	}
+	var failed bool
 	for _, e := range entries {
 		name := e.Name()
 		if !e.IsDir() && strings.HasPrefix(name, "dns-") && strings.HasSuffix(name, ".json") {
-			if _, ok := keep[name]; !ok {
+			if _, ok := d.dnsFiles.contents[name]; !ok {
 				if err := os.Remove(filepath.Join(d.opt.RuleSetDir, name)); err != nil && !os.IsNotExist(err) {
 					d.log.Warn("failed to remove stale DNS rule set", "err", err)
+					failed = true
 				}
 			}
 		}
+	}
+	if !failed {
+		d.dnsFiles.cleaned = d.dnsFiles.names
 	}
 }

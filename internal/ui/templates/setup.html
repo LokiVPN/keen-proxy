@@ -1,0 +1,92 @@
+{{define "setup"}}{{template "page-start" .}}
+      <div class="title-row">
+        <h1>{{.Title}}</h1>
+        {{template "page-help" .}}
+      </div>
+      {{if .Setup.Managing}}{{template "tabs" .}}{{end}}
+      {{if .Setup.SourceID}}
+      <div class="lead">
+        <span class="clip" title="{{.Setup.SourceTitle}}">{{.Setup.SourceTitle}}</span>
+        <span id="setup-source-id" class="muted small subscription-id">{{printf .Text.subscription_id .Setup.SourceID}}</span>
+      </div>
+      {{end}}
+      <p class="lead">{{if .Setup.Replacing}}{{.Text.setup_replace_intro}}{{else if .Setup.KeepRouting}}{{.Text.setup_add_intro}}{{else}}{{.Text.setup_intro}}{{end}}</p>
+      {{$checked := or .Setup.Result .Setup.Input}}
+      {{$disabled := or .ViewOnly (not .Setup.Rev)}}
+      <form method="post" action="{{.Setup.CheckPath}}" class="setup-check{{if $checked}} setup-recheck{{end}}" novalidate>
+        <input type="hidden" name="rev" value="{{.Setup.Rev}}">
+        <div class="fld">
+          <label for="setup-url">{{.Text.setup_url}}</label>
+          <input id="setup-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+            placeholder="{{if and .Setup.Result .Setup.Result.Active}}••••••••{{else}}https://{{end}}"{{if and .Setup.Input (not .ViewOnly)}} value="{{.Setup.Input}}"{{end}}
+            aria-describedby="setup-hwid{{if .Setup.Error}} setup-error{{end}}" required{{if $disabled}} disabled{{end}}>
+        </div>
+        {{if not $checked}}<p class="hint">{{.Text.setup_link_hint}}</p>{{end}}
+        <button class="btn{{if $checked}} soft{{end}} setup-submit" type="submit"{{if $disabled}} disabled{{end}}>{{.Text.setup_check}}</button>
+      </form>
+      {{if .Setup.Error}}<p id="setup-error" class="setup-error" role="alert">{{.Setup.Error}}</p>{{end}}
+      {{if .Setup.Warning}}<p class="note" role="alert">{{.Setup.Warning}}</p>{{end}}
+      <p id="setup-hwid" class="hint setup-hwid">{{.Text.setup_hwid_hint}}</p>
+      {{with .Setup.Result}}
+      <section class="setup-result" aria-labelledby="setup-provider">
+        <div class="prov">
+          <h2 id="setup-provider" class="clip">{{or .Title $.Text.setup_untitled}}</h2>
+          <span class="chip {{if .Active}}ok{{else}}warn{{end}}">{{.Chip}}</span>
+        </div>
+        {{if .SourceID}}<span id="setup-preview-id" class="muted small subscription-id">{{printf $.Text.subscription_id .SourceID}}</span>{{end}}
+        {{if .Active}}
+        <dl class="facts">
+          {{if .Expiry}}<dt>{{$.Text.setup_expiry}}</dt><dd>{{.Expiry}}</dd>{{end}}
+          {{if .Traffic}}<dt>{{$.Text.setup_traffic}}</dt><dd>{{.Traffic}}</dd>{{end}}
+          <dt>{{$.Text.setup_servers}}</dt><dd class="setup-servers">{{.Servers}}</dd>
+          <dt>{{$.Text.setup_routing}}</dt>
+          <dd>
+            {{if .RouteName}}<strong class="clip">{{.RouteName}}</strong>{{end}}
+            {{if .RouteHint}}<p>{{.RouteHint}}</p>{{end}}
+            {{if .RulesState}}<p>{{.RulesState}}</p>{{end}}
+            {{if $.Setup.Replacing}}<p>{{$.Text.setup_mode_kept}}</p>{{else if $.Setup.KeepRouting}}<p>{{$.Text.setup_add_mode_kept}}</p>{{end}}
+            {{if and .HasRouting $.Setup.EvaluateRules}}
+            <p>{{if $.Setup.Replacing}}{{$.Text.setup_rules_on_replace}}{{else}}{{$.Text.setup_rules_on_enable}}{{end}}</p>
+            {{end}}
+            {{if not $.Setup.KeepRouting}}<p>{{$.Text.setup_remaining_direct}}</p>{{end}}
+            {{if .Actions}}
+            <ul class="setup-rules">
+              {{range .Actions}}
+              <li>
+                <strong>{{.Name}}</strong>
+                <span class="clip">{{.Sites}}</span>
+                <span class="clip">{{.IP}}</span>
+              </li>
+              {{end}}
+            </ul>
+            {{end}}
+          </dd>
+          <dt>{{$.Text.setup_devices}}</dt>
+          <dd>{{if $.Setup.KeepRouting}}{{$.Text.setup_devices_kept}}{{else}}{{$.Text.setup_home_devices}}{{end}}</dd>
+        </dl>
+        {{if .Announce}}
+        <div class="note setup-announce">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5m0-8h.01"/></svg>
+          <div><strong>{{if .Title}}{{printf $.Text.setup_announce .Title}}{{else}}{{$.Text.setup_announce_generic}}{{end}}</strong><p>{{.Announce}}</p></div>
+        </div>
+        {{end}}
+        <form method="post" action="{{$.Setup.ConfirmPath}}" class="actions">
+          <input type="hidden" name="rev" value="{{$.Setup.Rev}}">
+          <input type="hidden" name="preview" value="{{.Token}}">
+          <button class="btn"{{if $.Setup.SourceID}} aria-describedby="setup-source-id"{{else if .SourceID}} aria-describedby="setup-preview-id"{{end}} type="submit"{{if $disabled}} disabled{{end}}>{{if $.Setup.Replacing}}{{$.Text.setup_replace}}{{else if $.Setup.KeepRouting}}{{$.Text.setup_add}}{{else}}{{$.Text.setup_enable}}{{end}}</button>
+          <a class="btn soft" href="{{$.Setup.CancelPath}}">{{$.Text.setup_cancel}}</a>
+        </form>
+        {{else}}
+        <p class="lead setup-result-message">{{.Message}}</p>
+        {{if .AccountURL}}
+        <div class="actions">
+          <a class="btn out" href="{{.AccountURL}}" rel="noreferrer">
+            {{$.Text.setup_account}}
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5m0-5l-8 8M11 6H6v12h12v-5"/></svg>
+          </a>
+        </div>
+        {{end}}
+        {{end}}
+      </section>
+      {{end}}
+{{template "page-end" .}}{{end}}

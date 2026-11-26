@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.11.0
+
+This release replaces the Vue panel. A 0.10.x configuration that no longer loads is reset at startup, keeping the LAN settings and the first valid subscription. The first save keeps the original as `config.v1.yaml`. Re-create other connections and rules afterwards. Presets, resource exchange, ad filter lists and YAML import/export are removed.
+
+- Replace the Vue panel with server-rendered pages that look native in the KeeneticOS web UI: Overview, Routing, Devices, Connections, Diagnostics and first-run setup, in English and Russian, without inline scripts or styles.
+- Sign in with KeeneticOS accounts. The `manage` role edits settings, and the `view` role is read-only. Stale or cross-origin submissions are refused.
+- Read routing rules from the subscription's routing profile, including geosite and geoip categories. Each category is one switch that stays off across updates. The rules come from one selected subscription.
+- Choose where the remaining traffic goes: directly (the default for new setups), through the VPN, or as the subscription says.
+- Add, replace and remove several subscriptions. Interface texts carry no provider name.
+- Show device names from the KeeneticOS host list.
+- Use the full page width up to 1440 px and show units on the traffic chart axis.
+- Keep a failed firewall rollback behind the drop guard until interception is restored, and mask both parts of a combined user and password.
+- Add network tests for subscription reserve switching and failed provider rule downloads, and a candidate-only provider-rules memory phase.
+
 ## 0.10.1
 
 - Select the latest published release in the bootstrap and keep explicit version selection.

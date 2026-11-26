@@ -12,7 +12,7 @@ A useful private report includes the affected commit, build tags, router archite
 
 - Treat configuration GET/export and raw connection profiles as sensitive even after authentication.
 - Prefer the [diagnostic ZIP](docs/en/troubleshooting.md#download-the-diagnostic-zip) for support. Follow the guide's privacy checklist before sharing any export.
-- Keep the management API on a trusted private network. Trusted-network access without a token is an explicit administrator policy, not an authentication mechanism for untrusted clients.
+- The control API under `/api` answers only processes on the router (loopback); browsers sign in through KeeneticOS. Keep the panel port on the LAN, and do not run proxies on the router that relay other clients' requests to `127.0.0.1` (see the [control API](docs/en/development.md#control-api)).
 - Preserve SSH access and a recovery path before changing interception or DNS settings.
 - Diagnose individual HTTP, HTTPS, data-transfer, and DNS paths separately. A green health badge is not a general security or connectivity guarantee.
 

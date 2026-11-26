@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/ordo-systems/keen-proxy/internal/journal"
@@ -13,14 +14,87 @@ import (
 
 const firewallVerifyRetryDelay = 250 * time.Millisecond
 
-// installFirewall installs the current plan and makes shutdown responsible for its cleanup.
-// A failed update stays pending even when the previous entry jumps remain installed.
-func (d *Daemon) installFirewall(ctx context.Context) error {
-	if err := d.opt.Firewall.Apply(ctx, d.plan); err != nil {
-		d.planPending = true
-		return err
+// setFirewallPlan uses the live DNS binding for redirection and recovery.
+func (d *Daemon) setFirewallPlan(plan netfilter.Plan) {
+	if d.dns != nil {
+		plan.DNSListen = netip.MustParseAddrPort(d.dns.Addr())
 	}
-	d.planOn, d.planPending = true, false
+	d.plan = plan
+}
+
+// installFirewall installs a plan during Apply or a neighbor update. Guarded
+// installs always verify their handoff before reporting success.
+func (d *Daemon) installFirewall(ctx context.Context) error {
+	after, err := d.applyFirewall(ctx, false)
+	if after != nil {
+		return errors.Join(fmt.Errorf("verify guarded interception: %s", after.Error), err)
+	}
+	return err
+}
+
+// applyFirewall keeps the guard plan until final verification succeeds. A
+// failed install stays pending even when residual entry jumps pass checks.
+func (d *Daemon) applyFirewall(ctx context.Context, verify bool) (*netfilter.CheckFailure, error) {
+	f := d.opt.Firewall
+	guarded := d.planGuard != nil
+	var after *netfilter.CheckFailure
+	var err error
+	if !guarded {
+		err = f.Apply(ctx, d.plan)
+	} else if err = d.armFirewallGuard(ctx, d.plan.DNSListen); err == nil {
+		after, err = f.ApplyProtected(ctx, d.plan)
+	}
+	if err != nil {
+		d.planPending = true
+		return after, err
+	}
+	if after == nil && (verify || guarded) {
+		after = f.Check(ctx, d.plan)
+	}
+	if guarded {
+		if after == nil {
+			after, err = f.ReleaseProtection(ctx, d.plan)
+		}
+		if after != nil || err != nil {
+			d.planOn, d.planPending = false, true
+			return after, errors.Join(err, d.armFirewallGuard(ctx, d.plan.DNSListen))
+		}
+	}
+	d.planOn, d.planPending, d.planGuard = true, false, nil
+	return after, nil
+}
+
+// protectPreviousPlan uses the last known protected sources when a normal
+// rollback cannot restore its runtime dependencies or interception rules.
+func (d *Daemon) protectPreviousPlan(previous netfilter.Plan) error {
+	if !d.requestFirewallGuard(previous) {
+		return nil
+	}
+	return d.armFirewallGuard(context.Background(), netip.AddrPort{})
+}
+
+// requestFirewallGuard retains the last protected sources until verification.
+func (d *Daemon) requestFirewallGuard(previous netfilter.Plan) bool {
+	if d.planGuard == nil {
+		if len(previous.Sources) == 0 {
+			return false
+		}
+		d.planGuard = &previous
+	}
+	d.planOn = false
+	return true
+}
+
+// armFirewallGuard installs the actual drops. The desired plan and shared
+// filter jumps alone cannot prove that a previous guard write succeeded.
+func (d *Daemon) armFirewallGuard(ctx context.Context, frontend netip.AddrPort) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	guard := *d.planGuard
+	guard.DNSListen = frontend
+	if err := d.opt.Firewall.Protect(ctx, guard); err != nil {
+		return fmt.Errorf("install firewall guard: %w", err)
+	}
 	return nil
 }
 
@@ -32,16 +106,29 @@ func (d *Daemon) detachStartupJumps() error {
 	return d.opt.Firewall.Detach(ctx, netfilter.Plan{Mode: model.InterceptTProxy})
 }
 
-// checkFirewall runs under d.mu. An installed or pending plan can be repaired;
-// a pending plan must be applied even if residual entry jumps pass inspection.
+// checkFirewall runs under d.mu. A guard can be maintained even when the
+// saved interception plan is waiting on its runtime dependencies.
 func (d *Daemon) checkFirewall(ctx context.Context, trigger string) {
-	if ctx.Err() != nil || (!d.planOn && !d.planPending) {
+	if ctx.Err() != nil {
+		return
+	}
+	if !d.planOn && !d.planPending {
+		if d.planGuard != nil {
+			if err := d.armFirewallGuard(ctx, netip.AddrPort{}); err != nil && ctx.Err() == nil {
+				d.log.Error("maintain firewall guard", "trigger", trigger, "err", err)
+			}
+		}
 		return
 	}
 	started := time.Now()
 	before := d.opt.Firewall.Check(ctx, d.plan)
 	if ctx.Err() != nil || (before == nil && !d.planPending) {
 		return
+	}
+	if d.planGuard == nil && before != nil && before.Table == "nat" && before.Target == netfilter.ChainDNS {
+		if d.requestFirewallGuard(d.plan) {
+			d.planPending = true
+		}
 	}
 
 	event := &journal.FirewallEvent{Trigger: trigger, Before: journalFirewallCheck(before)}
@@ -76,16 +163,14 @@ func (d *Daemon) repairFirewall(ctx context.Context, event *journal.FirewallEven
 }
 
 func (d *Daemon) applyAndVerifyFirewall(ctx context.Context, event *journal.FirewallEvent) {
-	// Evidence describes the final attempt, which may fail before verification.
-	event.After = nil
-	if err := d.installFirewall(ctx); err != nil {
+	after, err := d.applyFirewall(ctx, true)
+	event.After, event.ApplyError, event.Restore = journalFirewallCheck(after), "", nil
+	event.Outcome = "restored"
+	if err != nil {
 		event.Outcome, event.ApplyError = "apply_failed", err.Error()
 		event.Restore = journalRestoreFailure(err)
-		return
 	}
-	event.After = journalFirewallCheck(d.opt.Firewall.Check(ctx, d.plan))
-	event.Outcome = "restored"
-	if event.After != nil {
+	if after != nil {
 		event.Outcome = "verify_failed"
 	}
 }

@@ -14,16 +14,14 @@ hide:
 
 # Ваша сеть — ваши маршруты
 
-Выборочная маршрутизация трафика для роутеров Keenetic и Netcraze с Entware. Выбирайте, какие устройства, домены, адреса и страны идут через туннель, напрямую или блокируются, — в одной веб-панели.
+Выборочная маршрутизация трафика для роутеров Keenetic и Netcraze с Entware. Управляйте подключениями, доступом устройств и правилами для сайтов в браузере. Расширенные политики, например правила по странам, задавайте в YAML.
 
 <div class="kp-actions" markdown>
-[:material-play: Открыть демо](../demo/){ .md-button .md-button--primary }
-[Начать работу](getting-started.md){ .md-button }
+[Начать работу](getting-started.md){ .md-button .md-button--primary }
 </div>
 
 </div>
 
-[![Обзор веб-панели KeenProxy с синтетическим трафиком](../assets/screenshots/ru-landing-overview.png){ .kp-hero__shot }](../demo/)
 
 </section>
 
@@ -54,7 +52,7 @@ hide:
 
 ### Разные типы соединений
 
-WireGuard, ссылки подключения sing-box, outbound-объекты sing-box и необязательный клиент TrustTunnel.
+WireGuard, ссылки подключения sing-box, outbound-объекты sing-box и встроенный TrustTunnel.
 </div>
 
 <div class="kp-card" markdown>
@@ -68,17 +66,17 @@ WireGuard, ссылки подключения sing-box, outbound-объекты
 <div class="kp-card" markdown>
 :material-dns:{ .kp-card__icon }
 
-### DNS и блок-листы
+### DNS
 
-Локальный DNS-фронтенд с резолверами DoH/DoT, выбором маршрута для DNS и блок-листами на уровне DNS.
+Локальный DNS-фронтенд с резолверами DoH/DoT и выбором маршрута для DNS.
 </div>
 
 <div class="kp-card" markdown>
 :material-file-document-check-outline:{ .kp-card__icon }
 
-### Проверка перед применением
+### Сохранение на каждой вкладке
 
-Все изменения попадают в общий черновик. Примените его, когда готовы, или отмените; журналы объясняют результат.
+Сохраняйте изменения подключений, правил и устройств на их страницах. В **Обзоре** можно посмотреть и изменить активное подключение.
 </div>
 
 </div>
@@ -98,15 +96,15 @@ WireGuard, ссылки подключения sing-box, outbound-объекты
 </div>
 
 <div class="kp-step" markdown>
-### Создайте группы
+### Выберите маршрутизацию
 
-Соберите домены, адреса или страны и выберите, куда их направить.
+В **Маршрутизации** выберите правила подписки или укажите сайты и адреса для туннеля и прямого выхода.
 </div>
 
 <div class="kp-step" markdown>
-### Выберите устройства и примените
+### Выберите устройства
 
-Укажите, какие сети и клиенты следуют правилам, и примените черновик.
+На вкладке **Устройства** выберите, какие домашние устройства используют KeenProxy, и сохраните изменения.
 </div>
 
 </div>
@@ -115,40 +113,12 @@ KeenProxy также следит за своими правилами пере�
 
 </section>
 
-<section class="kp-section" markdown>
-
-## Как выглядит панель
-
-<div class="kp-gallery" markdown>
-
-<figure markdown>
-[![Группы доменов, маршруты и наблюдаемые адреса](../assets/screenshots/ru-rules.png)](user-guide.md)
-<figcaption>Правила</figcaption>
-</figure>
-
-<figure markdown>
-[![Профили соединений и маршруты](../assets/screenshots/ru-connections.png)](user-guide.md)
-<figcaption>Соединения</figcaption>
-</figure>
-
-<figure markdown>
-[![Диагностика выбранного соединения](../assets/screenshots/ru-diagnostics.png)](user-guide.md)
-<figcaption markdown>Диагностика. [Как скачать ZIP на роутере](troubleshooting.md#download-the-diagnostic-zip).</figcaption>
-</figure>
-
-</div>
-
-</section>
-
 <section class="kp-cta" markdown>
 
-## Попробуйте в браузере
-
-Демо запускает настоящую веб-панель с синтетическими данными. Роутер и учётные данные не нужны.
+## Подробнее
 
 <div class="kp-actions" markdown>
-[:material-play: Открыть демо](../demo/){ .md-button .md-button--primary }
-[Читать обзор](overview.md){ .md-button }
+[Читать обзор](overview.md){ .md-button .md-button--primary }
 </div>
 
 <p class="kp-note">KeenProxy — экспериментальный проект. Совместимость зависит от архитектуры роутера, прошивки, возможностей ядра и состава сборки.</p>

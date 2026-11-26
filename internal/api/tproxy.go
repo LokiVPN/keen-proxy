@@ -29,10 +29,6 @@ func (s *Server) tproxyReadiness(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) retryTProxy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if err := browserOrigin.Check(r); err != nil {
-		writeError(w, http.StatusForbidden, "cross-origin TPROXY retry denied")
-		return
-	}
 	d, ok := s.D.(tproxyRecoveryDaemon)
 	if !ok {
 		writeError(w, http.StatusConflict, daemon.ErrStartupNotBlocked.Error())

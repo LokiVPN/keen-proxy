@@ -10,8 +10,8 @@ import (
 // Release builds link the tag and commit from the same checked-out source.
 var releaseVersion, releaseRevision string
 
-// buildIdentity contains only public metadata about the running executable.
-type buildIdentity struct {
+// BuildIdentity contains only public metadata about the running executable.
+type BuildIdentity struct {
 	Version  string `json:"version,omitempty"`
 	Variant  string `json:"variant"`
 	Arch     string `json:"arch"`
@@ -19,13 +19,16 @@ type buildIdentity struct {
 	Dirty    bool   `json:"dirty,omitempty"`
 }
 
-var runningBuild = func() buildIdentity {
+var runningBuild = func() BuildIdentity {
 	info, _ := debug.ReadBuildInfo()
 	return readRunningBuild(info)
 }()
 
-func readRunningBuild(info *debug.BuildInfo) buildIdentity {
-	build := buildIdentity{Version: releaseVersion, Variant: engine.BuildVariant, Arch: runtime.GOARCH, Revision: releaseRevision}
+// RunningBuild also supplies the build identity displayed by the operator UI.
+func RunningBuild() BuildIdentity { return runningBuild }
+
+func readRunningBuild(info *debug.BuildInfo) BuildIdentity {
+	build := BuildIdentity{Version: releaseVersion, Variant: engine.BuildVariant, Arch: runtime.GOARCH, Revision: releaseRevision}
 	if info != nil && build.Revision == "" {
 		for _, setting := range info.Settings {
 			switch setting.Key {

@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"time"
 
@@ -45,12 +48,33 @@ type SubscriptionStatus struct {
 	Error           string                     `json:"error,omitempty"`
 	LastAttempt     *time.Time                 `json:"last_attempt,omitempty"`
 	LastSuccess     *time.Time                 `json:"last_success,omitempty"`
+	NextRefresh     *time.Time                 `json:"next_refresh,omitempty"`
+	Refreshing      bool                       `json:"refreshing,omitempty"`
 	ActiveNode      string                     `json:"active_node,omitempty"`
 	LastSwitch      *time.Time                 `json:"last_switch,omitempty"`
 	SwitchReason    string                     `json:"switch_reason,omitempty"`
 	Unavailable     bool                       `json:"unavailable,omitempty"`
 	CheckProgress   *SubscriptionCheckProgress `json:"check_progress,omitempty"`
 	BalanceEligible *int                       `json:"balance_eligible,omitempty"`
+	// Fallback echoes the configured reserve used while no node answers.
+	Fallback string `json:"fallback,omitempty"`
+	// RulesError tells why the latest provider-rules update of the configured
+	// source failed, as a fixed English message.
+	RulesError string `json:"rules_error,omitempty"`
+	// RulesState is the provider-rules state of the configured source, as
+	// ProviderRules reports it; empty for other sources.
+	RulesState ProviderRulesState `json:"rules_state,omitempty"`
+	// RulesWithheld records the last successful fetch's rule availability,
+	// including while rule evaluation is disabled.
+	RulesWithheld bool `json:"-"`
+}
+
+// SubscriptionPreviewDetails adds the parsed routing summary for setup. It
+// describes what the provider sent before geodata or rules are evaluated.
+type SubscriptionPreviewDetails struct {
+	Status    SubscriptionStatus
+	Routing   *subscription.RoutingSummary
+	PreviewID uint64 `json:"-"`
 }
 
 // subscriptionRuntime separates downloads from the state committed under d.mu.
@@ -62,8 +86,14 @@ type subscriptionRuntime struct {
 	probeWake          chan struct{}
 	preferCatalogCheck bool
 
+	// geoDestination tells whether a geo file download may connect to an
+	// address: publicDestination, which tests serving geo files on loopback
+	// replace.
+	geoDestination func(netip.AddrPort) bool
+
 	states     map[string]appliedSubscription
 	previews   map[subscription.Source]subscriptionAttempt
+	previewSeq uint64
 	selectors  []compile.SubscriptionSelector
 	balances   []compile.SubscriptionBalance
 	members    []string
@@ -83,17 +113,31 @@ type appliedSubscription struct {
 	// A probe started against an older catalog can finish after a refresh or
 	// Apply, including when the core stayed in place.
 	probeEpoch *byte
+	// rulesRetry is when the worker downloads the geo files that partial
+	// provider rules lack; rulesFailures counts the retries for backoff.
+	rulesRetry    time.Time
+	rulesFailures int
 }
 
 type subscriptionAttempt struct {
-	result subscription.Result
-	at     time.Time
+	result    subscription.Result
+	at        time.Time
+	previewID uint64 // zero for an attempt that cannot be confirmed by setup
+	// rules is the provider-rules state built from result for the configured
+	// source; nil when this attempt did not evaluate rules.
+	rules *rulesSnapshot
+	// rulesBase is the snapshot an Apply used while evaluating this attempt.
+	rulesBase *rulesSnapshot
 }
 
 // subscriptionRefresh identifies one in-flight download even if an Apply
 // removes and re-adds the same source settings before the request returns.
 type subscriptionRefresh struct {
 	source subscription.Source
+	// rules asks the download to evaluate provider rules from previous;
+	// rulesOnly downloads only the geo files that previous lacks.
+	rules, rulesOnly bool
+	previous         *rulesSnapshot
 }
 
 func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
@@ -105,16 +149,49 @@ func newSubscriptionRuntime(ruleSetDir string) subscriptionRuntime {
 		wake:      make(chan struct{}, 1),
 		probeWake: make(chan struct{}, 1),
 		previews:  make(map[subscription.Source]subscriptionAttempt),
+
+		geoDestination: publicDestination,
 	}
 }
 
-// PreviewSubscription validates provider data against the running build and
-// caches usable previews for Apply. It never modifies applied sources.
-func (d *Daemon) PreviewSubscription(ctx context.Context, source subscription.Source) SubscriptionStatus {
-	attempt := d.fetchSubscription(ctx, source)
-	if attempt.result.State == subscription.StateReady {
-		d.mu.Lock()
-		d.expireSubscriptionPreviewsLocked(attempt.at)
+// PreviewSubscriptionDetails checks provider data and caches usable previews
+// for Apply without modifying applied sources.
+func (d *Daemon) PreviewSubscriptionDetails(ctx context.Context, source subscription.Source) SubscriptionPreviewDetails {
+	attempt := d.fetchSubscription(ctx, source, true)
+	status := attempt.previewStatus(source.ID)
+	if status.State == subscription.StateReady {
+		switch {
+		case attempt.result.RoutingError != "":
+			status.RulesState = ProviderRulesFailed
+		case attempt.result.Routing != nil:
+			status.RulesState = ProviderRulesPending
+		default:
+			status.RulesState = ProviderRulesWithheld
+		}
+	}
+	return SubscriptionPreviewDetails{
+		Status: status, Routing: attempt.result.RoutingSummary, PreviewID: attempt.previewID,
+	}
+}
+
+// cacheSubscriptionPreview publishes the check before releasing the fetch
+// slot, so a later check cannot be overwritten by an older response.
+func (d *Daemon) cacheSubscriptionPreview(source subscription.Source, attempt subscriptionAttempt) subscriptionAttempt {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.expireSubscriptionPreviewsLocked(attempt.at)
+	identity := subscriptionIdentity(source)
+	old, exists := d.subscriptions.previews[identity]
+	if attempt.result.State != subscription.StateReady {
+		if exists {
+			// A failed check revokes setup confirmation. Ordinary Apply can
+			// still use a previously validated catalog as before.
+			old.previewID = 0
+			d.subscriptions.previews[identity] = old
+		}
+		return attempt
+	}
+	if !exists && len(d.subscriptions.previews) >= subscriptionPreviewLimit {
 		var oldest subscription.Source
 		var first time.Time
 		for key, preview := range d.subscriptions.previews {
@@ -122,14 +199,19 @@ func (d *Daemon) PreviewSubscription(ctx context.Context, source subscription.So
 				oldest, first = key, preview.at
 			}
 		}
-		if _, exists := d.subscriptions.previews[source]; !exists && len(d.subscriptions.previews) >= subscriptionPreviewLimit {
-			delete(d.subscriptions.previews, oldest)
-		}
-		d.subscriptions.previews[source] = attempt
-		d.mu.Unlock()
+		delete(d.subscriptions.previews, oldest)
 	}
+	d.subscriptions.previewSeq++
+	attempt.previewID = d.subscriptions.previewSeq
+	cached := attempt
+	cached.result.RoutingSummary = nil
+	d.subscriptions.previews[identity] = cached
+	return attempt
+}
+
+func (attempt subscriptionAttempt) previewStatus(id string) SubscriptionStatus {
 	status := SubscriptionStatus{
-		ID: source.ID, State: attempt.result.State, Metadata: subscriptionMetadata(attempt.result.Metadata),
+		ID: id, State: attempt.result.State, Metadata: subscriptionMetadata(attempt.result.Metadata),
 		Nodes: make([]SubscriptionNodeStatus, 0, len(attempt.result.Nodes)), Error: attempt.result.Error,
 		Skipped: attempt.result.Skipped, LastAttempt: &attempt.at,
 	}
@@ -148,24 +230,35 @@ func (d *Daemon) Subscriptions() []SubscriptionStatus {
 		return out
 	}
 	for _, source := range d.cfg.Subscriptions {
-		state := d.subscriptions.states[source.ID]
+		state, exists := d.subscriptions.states[source.ID]
 		snapshot, latest := state.snapshot, state.attempt
 		status := SubscriptionStatus{
-			ID: source.ID, State: subscriptionPending, Metadata: subscriptionMetadata(snapshot.Metadata),
+			ID: source.ID, State: subscriptionPending, Metadata: statusMetadata(snapshot.Metadata, latest.result.Metadata),
 			Nodes: make([]SubscriptionNodeStatus, 0, len(snapshot.Nodes)), Skipped: snapshot.Skipped,
-			Unavailable: len(snapshot.Nodes) == 0,
+			Unavailable: len(snapshot.Nodes) == 0, Fallback: source.Fallback,
+			RulesWithheld: snapshot.RulesWithheld,
 		}
 		if !latest.at.IsZero() {
 			status.State, status.Error, status.LastAttempt = latest.result.State, latest.result.Error, &latest.at
-			if latest.result.Metadata != (subscription.Metadata{}) {
-				status.Metadata = subscriptionMetadata(latest.result.Metadata)
-			}
 			if latest.result.Skipped != 0 {
 				status.Skipped = latest.result.Skipped
 			}
 		}
 		if !snapshot.LastSuccess.IsZero() {
 			status.LastSuccess = &snapshot.LastSuccess
+		}
+		status.Refreshing = exists && (state.next.IsZero() || state.request != nil && !state.request.rulesOnly)
+		if next := state.next; !status.Refreshing && !next.IsZero() {
+			status.NextRefresh = &next
+		}
+		if source.ID == providerRulesSource(d.cfg) {
+			if snapshot.Rules != nil {
+				status.RulesError = snapshot.Rules.Error
+			}
+			status.RulesState = snapshot.Rules.state()
+			if status.RulesState == ProviderRulesFailed && status.RulesError == "" {
+				status.RulesError = "No provider rules are available"
+			}
 		}
 		if !snapshot.Selection.At.IsZero() {
 			status.LastSwitch = &snapshot.Selection.At
@@ -207,6 +300,24 @@ func subscriptionMetadata(metadata subscription.Metadata) subscription.Metadata 
 	return metadata
 }
 
+// statusMetadata retains the last accepted facts whenever an unsuccessful
+// refresh omits them. A failure can supply an expiry, but it does not replace
+// the accepted byte counters and quota with a possibly partial report.
+func statusMetadata(saved, latest subscription.Metadata) subscription.Metadata {
+	metadata := subscriptionMetadata(subscription.Metadata{
+		Title:               cmp.Or(latest.Title, saved.Title),
+		Announce:            cmp.Or(latest.Announce, saved.Announce),
+		SupportURL:          cmp.Or(latest.SupportURL, saved.SupportURL),
+		ProfileURL:          cmp.Or(latest.ProfileURL, saved.ProfileURL),
+		UpdateIntervalHours: cmp.Or(latest.UpdateIntervalHours, saved.UpdateIntervalHours),
+		Usage:               cmp.Or(saved.Usage, latest.Usage),
+	})
+	if latest.Usage != nil && latest.Usage.Expire > 0 {
+		metadata.Usage.Expire = latest.Usage.Expire
+	}
+	return metadata
+}
+
 func subscriptionNodeHealth(h *health) string {
 	switch {
 	case h == nil || !h.known:
@@ -218,16 +329,28 @@ func subscriptionNodeHealth(h *health) string {
 	}
 }
 
-// RefreshSubscription asks the download worker to check a saved source now.
+// RefreshSubscriptionIfCurrent queues a browser request against the exact
+// configuration it displayed, including the subscription link for the ID.
 // Requests for the same source coalesce while a download is in flight.
-func (d *Daemon) RefreshSubscription(id string) bool {
+func (d *Daemon) RefreshSubscriptionIfCurrent(id, revision string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if !d.matchesConfigRevisionLocked(revision) {
+		return model.ErrConfigChanged
+	}
+	if !d.refreshSubscriptionLocked(id) {
+		return errors.New("subscription is not applied")
+	}
+	return nil
+}
+
+func (d *Daemon) refreshSubscriptionLocked(id string) bool {
 	state, exists := d.subscriptions.states[id]
 	if !exists || d.closed {
 		return false
 	}
-	if state.request == nil {
+	// A geo file retry in flight does not fetch the subscription.
+	if state.request == nil || state.request.rulesOnly {
 		state.next = time.Time{}
 		d.subscriptions.states[id] = state
 		wakeSubscriptionWorker(d.subscriptions.wake)
@@ -250,25 +373,79 @@ func (d *Daemon) expireSubscriptionPreviewsLocked(now time.Time) {
 	}
 }
 
-// applyWithSubscriptions obtains missing candidates outside the Apply lock and
+// checkedPreviewLocked validates both cache identity and provider expiry at
+// the point of use. A usable node catalog alone does not imply eligibility.
+func (d *Daemon) checkedPreviewLocked(check subscription.PreviewRef, now time.Time) (subscriptionAttempt, error) {
+	attempt, ok := d.subscriptions.previews[check.Source]
+	if !ok || attempt.previewID != check.ID || now.Sub(attempt.at) >= subscriptionPreviewTTL {
+		return subscriptionAttempt{}, subscription.ErrPreviewChanged
+	}
+	if usage := attempt.result.Metadata.Usage; usage != nil && usage.Expire > 0 && usage.Expire <= now.Unix() {
+		return subscriptionAttempt{}, subscription.ErrPreviewChanged
+	}
+	return attempt, nil
+}
+
+// applyWithSubscriptions obtains missing candidates, and the provider rules of
+// a new candidate for the configured source, outside the Apply lock and
 // rechecks them against the configuration that is active when Apply acquires it.
-func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config) error {
+func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config, conditions applyConditions) error {
 	candidates := make(map[subscription.Source]subscriptionAttempt)
+	checked := conditions.checked
+	var checkedSource subscription.Source
+	if checked != nil {
+		checkedSource = checked.Source
+	}
 	for {
 		d.mu.Lock()
 		if err := d.applyAdmissionLocked(ctx); err != nil {
 			d.mu.Unlock()
 			return err
 		}
-		d.expireSubscriptionPreviewsLocked(time.Now())
-		source, missing := d.missingSubscriptionLocked(cfg, candidates)
-		if !missing {
-			err := d.applyConfigLocked(ctx, cfg, true, candidates)
+		// Hash the same configuration representation returned by Config.
+		if conditions.revision != "" && !d.matchesConfigRevisionLocked(conditions.revision) {
 			d.mu.Unlock()
-			return err
+			return model.ErrConfigChanged
+		}
+		now := time.Now()
+		d.expireSubscriptionPreviewsLocked(now)
+		if checked != nil {
+			attempt, err := d.checkedPreviewLocked(*checked, now)
+			if err != nil {
+				d.mu.Unlock()
+				return err
+			}
+			if _, exists := candidates[checkedSource]; !exists {
+				candidates[checkedSource] = attempt
+			}
+		}
+		source, missing := d.missingSubscriptionLocked(cfg, candidates)
+		if id := conditions.requireRulesFrom; id != "" && d.providerRulesWithheldLocked(id, candidates) {
+			d.mu.Unlock()
+			return subscription.ErrRulesWithheld
+		}
+		if !missing {
+			identity, pending := d.pendingProviderRulesLocked(cfg, candidates, checkedSource)
+			if !pending {
+				err := d.applyConfigLocked(ctx, cfg, true, candidates, checked)
+				d.mu.Unlock()
+				return err
+			}
+			var previous *rulesSnapshot
+			if state := d.subscriptions.states[identity.ID]; subscriptionIdentity(state.source) == identity {
+				previous = state.snapshot.Rules
+			}
+			d.mu.Unlock()
+			candidate := candidates[identity]
+			geoCtx, cancel := applyGeoContext(ctx)
+			candidate.rules = d.evaluateProviderRules(geoCtx, candidate.result, previous)
+			cancel()
+			candidate.rulesBase = previous
+			candidates[identity] = candidate
+			continue
 		}
 		d.mu.Unlock()
-		attempt := d.fetchSubscription(ctx, source)
+		attempt := d.fetchSubscription(ctx, source, false)
 		if attempt.result.State != subscription.StateReady {
 			message := attempt.result.Error
 			if message == "" {
@@ -279,18 +456,34 @@ func (d *Daemon) applyWithSubscriptions(ctx context.Context, cfg *model.Config) 
 			d.audit(by, "Configuration rejected", "config", "error", err.Error()+from)
 			return err
 		}
-		candidates[source] = attempt
+		candidates[subscriptionIdentity(source)] = attempt
 	}
+}
+
+// providerRulesWithheldLocked checks the applied snapshot and any candidate
+// fetched during Apply before committing a selection or switch edit.
+func (d *Daemon) providerRulesWithheldLocked(id string, candidates map[subscription.Source]subscriptionAttempt) bool {
+	snapshot := d.subscriptions.states[id].snapshot
+	if snapshot.RulesWithheld || snapshot.Rules.state() == ProviderRulesWithheld {
+		return true
+	}
+	for source, candidate := range candidates {
+		if source.ID == id && candidate.result.Routing == nil && candidate.result.RoutingError == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Daemon) missingSubscriptionLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) (subscription.Source, bool) {
 	for _, source := range cfg.Subscriptions {
-		if d.subscriptions.states[source.ID].source == source {
+		identity := subscriptionIdentity(source)
+		if subscriptionIdentity(d.subscriptions.states[source.ID].source) == identity {
 			continue
 		}
-		if _, exists := candidates[source]; !exists {
-			if preview, ok := d.subscriptions.previews[source]; ok {
-				candidates[source] = preview
+		if _, exists := candidates[identity]; !exists {
+			if preview, ok := d.subscriptions.previews[identity]; ok {
+				candidates[identity] = preview
 			} else {
 				return source, true
 			}
@@ -299,22 +492,61 @@ func (d *Daemon) missingSubscriptionLocked(cfg *model.Config, candidates map[sub
 	return subscription.Source{}, false
 }
 
-func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt) map[string]appliedSubscription {
+// pendingProviderRulesLocked finds the candidate of the configured rules source
+// whose rules this Apply has not evaluated yet. Reconfirming the same link
+// evaluates the checked candidate. Other unchanged sources use the worker.
+func (d *Daemon) pendingProviderRulesLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt, checked subscription.Source) (subscription.Source, bool) {
+	id := providerRulesSource(cfg)
+	for _, source := range cfg.Subscriptions {
+		identity := subscriptionIdentity(source)
+		if source.ID != id || (subscriptionIdentity(d.subscriptions.states[id].source) == identity && identity != checked) {
+			continue
+		}
+		if candidate, ok := candidates[identity]; ok && candidate.rules == nil {
+			return identity, true
+		}
+	}
+	return subscription.Source{}, false
+}
+
+func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subscription.Source]subscriptionAttempt, checked subscription.Source) map[string]appliedSubscription {
 	if len(cfg.Subscriptions) == 0 {
 		return nil
 	}
 	states := make(map[string]appliedSubscription, len(cfg.Subscriptions))
 	for _, source := range cfg.Subscriptions {
-		previous := d.subscriptions.states[source.ID]
-		if previous.source == source {
-			states[source.ID] = previous
-			continue
+		state := d.subscriptions.states[source.ID]
+		identity := subscriptionIdentity(source)
+		replaced := subscriptionIdentity(state.source) != identity
+		if replaced {
+			state = appliedSubscription{snapshot: subscriptionSnapshot{Selection: state.snapshot.Selection}}
 		}
-		state := appliedSubscription{source: source}
-		state.snapshot.Selection = previous.snapshot.Selection
-		if candidate, ok := candidates[source]; ok {
+		state.source = source
+		if candidate, ok := candidates[identity]; ok && (replaced || identity == checked) {
+			// A retry can complete the rules while confirmation evaluates
+			// an older snapshot. Keep that success if the lookup failed.
+			current := state.snapshot.Rules
+			if !replaced && candidate.rules != nil && candidate.rules.Error != "" &&
+				current != candidate.rulesBase && current.complete() && current.HWIDFingerprint == candidate.result.HWIDFingerprint {
+				// A different profile's failure remains relevant to this check.
+				if !reflect.DeepEqual(current.Profile, candidate.result.Routing) {
+					current = keptRules(current, candidate.rules.Error)
+				}
+				candidate.rules = current
+			}
+			previousEpoch := state.probeEpoch
+			state.request = nil
 			state.recordAttempt(candidate)
 			state.accept(candidate)
+			if state.probeEpoch != previousEpoch {
+				// Keep the running queue available to a rollback.
+				state.checks.pending = maps.Clone(state.checks.pending)
+				state.checks.retain(state.snapshot.Nodes)
+			}
+		}
+		syncProviderRules(cfg, &state)
+		if replaced || identity == checked {
+			state.scheduleRulesRetry(time.Now())
 		}
 		states[source.ID] = state
 	}
@@ -322,7 +554,7 @@ func (d *Daemon) subscriptionDraftLocked(cfg *model.Config, candidates map[subsc
 }
 
 // fetchSubscription serializes direct downloads and bounds concurrent validation.
-func (d *Daemon) fetchSubscription(ctx context.Context, source subscription.Source) subscriptionAttempt {
+func (d *Daemon) fetchSubscription(ctx context.Context, source subscription.Source, preview bool) subscriptionAttempt {
 	select {
 	case d.subscriptions.slot <- struct{}{}:
 	case <-ctx.Done():
@@ -338,7 +570,11 @@ func (d *Daemon) fetchSubscription(ctx context.Context, source subscription.Sour
 			result.State, result.Error = subscription.StateUnsupported, "no subscription nodes are supported by this build"
 		}
 	}
-	return subscriptionAttempt{result: result, at: time.Now()}
+	attempt := subscriptionAttempt{result: result, at: time.Now()}
+	if preview {
+		return d.cacheSubscriptionPreview(source, attempt)
+	}
+	return attempt
 }
 
 // supportedSubscriptionNodes validates the common case in one engine instance.
@@ -381,12 +617,7 @@ func (d *Daemon) runSubscriptions(ctx context.Context) {
 		request := d.nextSubscriptionRefreshLocked(now)
 		d.mu.Unlock()
 		if request != nil {
-			attempt := d.fetchSubscription(ctx, request.source)
-			d.mu.Lock()
-			if d.applyAdmissionLocked(ctx) == nil {
-				d.finishSubscriptionRefreshLocked(request, attempt)
-			}
-			d.mu.Unlock()
+			d.runSubscriptionRequest(ctx, request)
 			continue
 		}
 		select {
@@ -398,18 +629,58 @@ func (d *Daemon) runSubscriptions(ctx context.Context) {
 	}
 }
 
+// runSubscriptionRequest performs one claimed request: downloads run without
+// d.mu and the result is committed under it.
+func (d *Daemon) runSubscriptionRequest(ctx context.Context, request *subscriptionRefresh) {
+	if request.rulesOnly {
+		rules := d.evaluateProviderRules(ctx, subscription.Result{
+			Routing: request.previous.Profile, HWIDFingerprint: request.previous.HWIDFingerprint,
+		}, request.previous)
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.applyAdmissionLocked(ctx) == nil {
+			d.finishProviderRulesRetryLocked(request, rules)
+		}
+		return
+	}
+	attempt := d.fetchSubscription(ctx, request.source, false)
+	if request.rules && attempt.result.State == subscription.StateReady {
+		attempt.rules = d.evaluateProviderRules(ctx, attempt.result, request.previous)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.applyAdmissionLocked(ctx) == nil {
+		d.finishSubscriptionRefreshLocked(request, attempt)
+	}
+}
+
+// nextSubscriptionRefreshLocked claims the first due request: a scheduled
+// refresh, or a geo file retry for partial provider rules.
 func (d *Daemon) nextSubscriptionRefreshLocked(now time.Time) *subscriptionRefresh {
 	if d.cfg == nil || d.closed || d.startupBlocked != nil {
 		return nil
 	}
 	for _, source := range d.cfg.Subscriptions {
 		state := d.subscriptions.states[source.ID]
-		if state.request == nil && !now.Before(state.next) {
-			request := &subscriptionRefresh{source: source}
-			state.request = request
-			d.subscriptions.states[source.ID] = state
-			return request
+		if state.request != nil {
+			continue
 		}
+		rulesSource := source.ID == providerRulesSource(d.cfg)
+		var request *subscriptionRefresh
+		switch {
+		case !now.Before(state.next):
+			request = &subscriptionRefresh{source: source}
+			if rulesSource {
+				request.rules, request.previous = true, state.snapshot.Rules
+			}
+		case rulesSource && state.snapshot.Rules.retryable() && !now.Before(state.rulesRetry):
+			request = &subscriptionRefresh{source: source, rulesOnly: true, previous: state.snapshot.Rules}
+		default:
+			continue
+		}
+		state.request = request
+		d.subscriptions.states[source.ID] = state
+		return request
 	}
 	return nil
 }
@@ -432,28 +703,16 @@ func (d *Daemon) finishSubscriptionRefreshLocked(request *subscriptionRefresh, a
 	}
 
 	state.accept(attempt)
-	before := maps.Clone(d.subscriptions.states)
-	previousHealth := maps.Clone(d.health)
-	d.subscriptions.states[id] = state
+	// Apply may have turned provider rules off or on during the download.
+	syncProviderRules(d.cfg, &state)
+	if attempt.rules != nil {
+		state.scheduleRulesRetry(time.Now())
+	}
 	sameNodes := previous.probeEpoch == state.probeEpoch
-	var err error
-	var restoreBalanceSessions func()
-	if !sameNodes {
-		restoreBalanceSessions = d.eng.SubscriptionBalanceCheckpoint()
-		err = d.applySubscriptionCoreLocked()
-	}
-	if err == nil {
-		err = d.saveSubscriptionSnapshotsLocked(d.cfg)
-	}
+	// Rule changes reach the core through the same path as node changes.
+	coreChanged := !sameNodes || !sameProviderRules(previous.snapshot.Rules, state.snapshot.Rules)
+	before, err := d.activateSubscriptionStateLocked(id, state, coreChanged)
 	if err != nil {
-		d.subscriptions.states = before
-		d.health = previousHealth
-		if !sameNodes {
-			restoreBalanceSessions()
-			if rollback := d.applySubscriptionCoreLocked(); rollback != nil {
-				d.audit("system", "Subscription rollback failed", id, "error", "previous subscription runtime could not be restored")
-			}
-		}
 		state = d.subscriptions.states[id]
 		state.request = nil
 		state.recordAttempt(subscriptionAttempt{at: attempt.at, result: subscription.Result{
@@ -476,13 +735,46 @@ func (d *Daemon) finishSubscriptionRefreshLocked(request *subscriptionRefresh, a
 	d.audit("system", "Subscription refreshed", id, "ok", fmt.Sprintf("%d usable nodes", len(state.snapshot.Nodes)))
 }
 
-// applySubscriptionCoreLocked only reconciles the core. Managed nodes do not
-// change firewall exemptions, DNS, or the contents of watched rule-set files.
+// activateSubscriptionStateLocked publishes state for id, reconciles the core
+// when coreChanged and saves the snapshots. On failure it restores the
+// previous states, health and balance sessions and returns the error; before
+// holds the states as they were.
+func (d *Daemon) activateSubscriptionStateLocked(id string, state appliedSubscription, coreChanged bool) (before map[string]appliedSubscription, err error) {
+	before = maps.Clone(d.subscriptions.states)
+	previousHealth := maps.Clone(d.health)
+	d.subscriptions.states[id] = state
+	var restoreBalanceSessions func()
+	if coreChanged {
+		restoreBalanceSessions = d.eng.SubscriptionBalanceCheckpoint()
+		err = d.applySubscriptionCoreLocked()
+	}
+	if err == nil {
+		err = d.saveSubscriptionSnapshotsLocked(d.cfg)
+	}
+	if err != nil {
+		d.subscriptions.states = before
+		d.health = previousHealth
+		if coreChanged {
+			restoreBalanceSessions()
+			if rollback := d.applySubscriptionCoreLocked(); rollback != nil {
+				d.audit("system", "Subscription rollback failed", id, "error", "previous subscription runtime could not be restored")
+			}
+		}
+	} else if coreChanged {
+		d.commitDomainCacheLocked()
+	}
+	return before, err
+}
+
+// applySubscriptionCoreLocked reconciles the core with the subscription
+// state. Managed nodes do not change firewall exemptions or DNS, but provider
+// rules live in rule-set files, which are written before the core reads them.
 func (d *Daemon) applySubscriptionCoreLocked() error {
-	out, err := d.compileRuntimeLocked()
+	out, err := d.compileLocked()
 	if err != nil {
 		return err
 	}
+	d.warnDroppedProviderEntries(out)
 	_, err = d.applyCoreLocked(out)
 	return err
 }
@@ -506,7 +798,7 @@ func equalSubscriptionNodes(a, b []subscription.Node) bool {
 }
 
 func (s *appliedSubscription) recordAttempt(attempt subscriptionAttempt) {
-	attempt.result.Nodes = nil
+	attempt.result.Nodes, attempt.rules, attempt.rulesBase = nil, nil, nil
 	s.attempt = attempt
 	interval := subscriptionRefreshInterval(attempt.result.Metadata)
 	if attempt.result.Metadata.UpdateIntervalHours == 0 {
@@ -529,9 +821,28 @@ func (s *appliedSubscription) accept(attempt subscriptionAttempt) {
 	}
 	s.snapshot.Nodes = result.Nodes
 	s.snapshot.Metadata = result.Metadata
+	s.snapshot.LinksChecked = true
+	s.snapshot.HWIDFingerprint = result.HWIDFingerprint
+	s.snapshot.RulesWithheld = result.Routing == nil && result.RoutingError == ""
 	s.snapshot.Skipped = result.Skipped
 	s.snapshot.LastSuccess = attempt.at
+	if attempt.rules != nil {
+		s.snapshot.Rules = attempt.rules
+	}
 	s.next = attempt.at.Add(subscriptionRefreshInterval(result.Metadata))
+}
+
+// sameProviderRules compares the rules in use, ignoring download records and
+// failures that do not change routing.
+func sameProviderRules(a, b *rulesSnapshot) bool {
+	var x, y *compile.ProviderRules
+	if a != nil {
+		x = a.Built
+	}
+	if b != nil {
+		y = b.Built
+	}
+	return reflect.DeepEqual(x, y)
 }
 
 func subscriptionRefreshInterval(metadata subscription.Metadata) time.Duration {
