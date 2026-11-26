@@ -4,7 +4,7 @@
 
 ## 0.11.0
 
-This release replaces the Vue panel. Upgrading from 0.10.x is a clean install: back up anything you need first.
+This release replaces the Vue panel. A 0.10.x configuration that no longer loads is reset at startup, keeping the LAN settings and the first valid subscription. The first save keeps the original as `config.v1.yaml`. Re-create other connections and rules afterwards. Presets, resource exchange, ad filter lists and YAML import/export are removed.
 
 - Replace the Vue panel with server-rendered pages that look native in the KeeneticOS web UI: Overview, Routing, Devices, Connections, Diagnostics and first-run setup, in English and Russian, without inline scripts or styles.
 - Sign in with KeeneticOS accounts. The `manage` role edits settings, and the `view` role is read-only. Stale or cross-origin submissions are refused.
