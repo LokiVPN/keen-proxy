@@ -522,6 +522,63 @@ func TestRoutingRetainsSavedProviderModeWhileRulesAreWithheld(t *testing.T) {
 	}
 }
 
+func TestRoutingRetainsProviderModeWhenTheMainPinIsRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		reserve, problem string
+		class            stats.TargetClass
+	}{
+		{model.TargetBlock, "The main connection blocks traffic.", stats.TargetBlock},
+		{model.TargetDirect, "The main connection for the home network routes directly.", stats.TargetDirect},
+	} {
+		t.Run(tc.reserve, func(t *testing.T) {
+			f := newRoutingFixture()
+			const source, rule = "sample", "proxy:geosite:youtube"
+			pin := model.ManagedTarget(source, overviewNodeID)
+			f.cfg.Networks[0].Target, f.cfg.Networks[0].Default = pin, pin
+			f.cfg.Groups[0].Target = pin
+			f.cfg.ProviderRules.Disabled = []string{rule}
+			f.cfg.Subscriptions[0].Fallback = tc.reserve
+			f.subs[0].Nodes[0].ID = strings.Repeat("b", 32)
+			f.subs[0].ActiveNode = f.subs[0].Nodes[0].ID
+			f.subs[0].RulesState, f.rules.State = "ready", "ready"
+			f.status.Connections[pin] = ConnectionStatus{Class: tc.class}
+			h := New(f, setupTestOptions(RoleManage))
+
+			body := setupRequest(h, "/routing", nil).Body.String()
+			const checkedProvider = `id="routing-mode-provider" required checked disabled`
+			if !strings.Contains(body, checkedProvider) {
+				t.Error("the saved provider mode is not checked after the pin is removed")
+			}
+			assertContains(t, body, `<option value="vpn" selected disabled>Through VPN</option>`,
+				`name="rule" value="`+rule+`"`, tc.problem)
+
+			want := f.Config()
+			want.Networks[0].Default = model.TargetDirect
+			// The disabled mode radio is omitted from a native submission.
+			form := url.Values{
+				"rev": {formField(t, body, "rev")}, "source": {source},
+				"remaining": {"direct"}, "rule": {rule},
+			}
+			saved := setupRequest(h, "/routing", form)
+			if saved.Code != http.StatusSeeOther || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
+				t.Fatalf("saving Directly returned HTTP %d with %d applies or changed other settings", saved.Code, f.applies)
+			}
+			body = setupRequest(h, "/routing", nil).Body.String()
+			if !strings.Contains(body, checkedProvider) {
+				t.Error("saving Directly hid the applied provider mode")
+			}
+			assertRemainingOption(t, body, "direct", "Directly", true)
+
+			form.Set("rev", formField(t, body, "rev"))
+			form.Set("remaining", "vpn")
+			rejected := setupRequest(h, "/routing", form)
+			if rejected.Code != http.StatusUnprocessableEntity || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
+				t.Fatalf("saving Through VPN after the pin was removed returned HTTP %d with %d applies", rejected.Code, f.applies)
+			}
+		})
+	}
+}
+
 func TestRoutingRejectsNonVPNMainTargets(t *testing.T) {
 	for _, tc := range []struct {
 		kind, explanation string

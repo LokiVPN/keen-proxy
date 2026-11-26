@@ -98,6 +98,38 @@ func TestOverviewDescribesProviderRemainingTraffic(t *testing.T) {
 	}
 }
 
+func TestOverviewDescribesRemainingTrafficOnABlockingReserve(t *testing.T) {
+	for _, tc := range []struct {
+		name, def   string
+		globalProxy bool
+		want        string
+	}{
+		{"through VPN", model.ManagedTarget("sample", "auto"), false, "blocked"},
+		{"profile through VPN", model.DefaultProfile, true, "blocked"},
+		{"directly", model.TargetDirect, true, "direct"},
+		{"profile direct", model.DefaultProfile, false, "direct"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOverviewFixture()
+			f.cfg.Networks[0].Default = tc.def
+			f.cfg.Subscriptions[0].Fallback = model.TargetBlock
+			f.subs[0].Unavailable, f.subs[0].SwitchReason = true, "fallback"
+			f.subs[0].ActiveNode = ""
+			f.subs[0].Nodes[0].Health = connectionUnavailable
+			f.status.RulesHasProfile, f.status.RulesGlobalProxy = true, tc.globalProxy
+
+			body := setupRequest(New(f, setupTestOptions(RoleManage)), "/", nil).Body.String()
+			banner, _, _ := strings.Cut(body, `aria-label="KeenProxy sections"`)
+			assertContains(t, banner, `>No connection</span>`)
+			_, summary, _ := strings.Cut(body, `aria-labelledby="routing-title">`)
+			summary, _, _ = strings.Cut(summary, "</section>")
+			if !strings.Contains(summary, "Remaining traffic: "+tc.want) {
+				t.Errorf("remaining traffic should be %s while the main connection uses a blocking reserve", tc.want)
+			}
+		})
+	}
+}
+
 func TestOverviewStatusPrecedence(t *testing.T) {
 	emptyCatalog := func(f *overviewFixture, fallback string) {
 		f.cfg.Subscriptions[0].Fallback = fallback

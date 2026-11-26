@@ -332,18 +332,19 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	return mode, strings.Join(details, " · ")
 }
 
-// providerRemainingDetail describes the applied split default, following the
-// main connection when the profile calls for it or no profile applies.
+// providerRemainingDetail gives independent direct defaults precedence over
+// the main connection's selected path.
 func providerRemainingDetail(choice string, main connectionSelection, profileDirect bool, text map[string]string) string {
 	key := "routing_rest_main"
 	switch {
-	case choice == model.TargetDirect, choice == model.DefaultProfile && profileDirect,
-		main.ReserveDirect, main.Class == stats.TargetDirect:
+	case choice == model.TargetDirect, choice == model.DefaultProfile && profileDirect:
+		key = "routing_rest_direct"
+	case main.Blocked:
+		key = "routing_rest_blocked"
+	case main.ReserveDirect, main.Class == stats.TargetDirect:
 		key = "routing_rest_direct"
 	case main.Class == stats.TargetVPN:
 		key = "routing_rest_vpn"
-	case main.Class == stats.TargetBlock:
-		key = "routing_rest_blocked"
 	}
 	return fmt.Sprintf(text["overview_route_remaining"], text[key])
 }

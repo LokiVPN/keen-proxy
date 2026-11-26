@@ -97,9 +97,6 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 	providerProblem := state.providerProblem()
 	keepsProvider := retainsProviderMode(network, settings, page.Source)
 	page.CanProvider = providerProblem == ""
-	if keepsProvider && state.withholdsRules() {
-		page.Mode, page.CustomMode = routingProvider, ""
-	}
 	page.ProviderHint = text[cmp.Or(providerProblem, "routing_provider_hint")]
 	page.ProviderMode, page.ProviderHeading = text["routing_mode_provider"], text["routing_provider_rules"]
 	if state.sub.ID != "" {
@@ -167,11 +164,12 @@ func (l ownRoutingGroups) field(text map[string]string) *routingList {
 	return field
 }
 
-// routingMode recognizes the defaults written by this page. A custom
-// configuration is left unselected until an administrator chooses a mode.
+// routingMode recognizes the saved modes this page can edit. An applied
+// provider mode stays selected during a main connection outage so its
+// remaining-traffic choice can still be edited.
 func routingMode(network *model.Network, settings *model.ProviderRulesSettings, canUseVPN bool) string {
 	switch {
-	case settings != nil && routingRemainingChoice(network) != "" && canUseVPN:
+	case settings != nil && routingRemainingChoice(network) != "":
 		return routingProvider
 	case settings != nil:
 		return ""
