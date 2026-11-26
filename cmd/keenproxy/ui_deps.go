@@ -364,10 +364,28 @@ func (uiDeps) ConnectionProfileReferences(ctx context.Context, cfg *model.Config
 	for i, tag := range tags {
 		encoded[i], _ = json.Marshal(tag)
 	}
+	return savedProfileReferences(ctx, cfg, id, func(raw []byte) bool {
+		return slices.ContainsFunc(encoded, func(tag []byte) bool { return bytes.Contains(raw, tag) })
+	}, func(tag string) bool { return slices.Contains(tags, tag) })
+}
+
+// SubscriptionProfileReferences recognizes selectors and pinned targets even
+// in saved profiles whose connections are currently disabled.
+func (uiDeps) SubscriptionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error) {
+	prefix := []byte(`"` + model.ManagedTarget(id, ""))
+	return savedProfileReferences(ctx, cfg, "", func(raw []byte) bool {
+		return bytes.Contains(raw, prefix)
+	}, func(tag string) bool {
+		source, _, ok := model.ParseManagedTarget(tag)
+		return ok && source == id
+	})
+}
+
+func savedProfileReferences(ctx context.Context, cfg *model.Config, skipID string, mayReference func([]byte) bool, matches func(string) bool) ([]string, error) {
 	var refs []string
 	var inspectionErr error
 	for _, conn := range cfg.Connections {
-		if conn.Type != model.ConnSingBox || conn.ID == id {
+		if conn.Type != model.ConnSingBox || conn.ID == skipID {
 			continue
 		}
 		conn.Disabled = false
@@ -377,11 +395,11 @@ func (uiDeps) ConnectionProfileReferences(ctx context.Context, cfg *model.Config
 			continue
 		}
 		// An unrelated dormant profile can require a different build.
-		// Decode only profiles with an exact string that could be a reference.
-		if !slices.ContainsFunc(encoded, func(tag []byte) bool { return bytes.Contains(raw, tag) }) {
+		// Decode only profiles that contain a possible reference.
+		if !mayReference(raw) {
 			continue
 		}
-		found, err := engine.ProfileReferencesOutbound(ctx, raw, tags)
+		found, err := engine.ProfileReferencesOutbound(ctx, raw, matches)
 		if err != nil {
 			inspectionErr = errors.New("could not inspect a saved raw profile")
 			continue

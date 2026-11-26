@@ -16,13 +16,7 @@
       {{if .Message}}
       <div class="note detail-error" role="alert">
         <p>{{.Message}}</p>
-        {{if $detail.References}}
-        <ul>
-          {{range $detail.References}}
-          <li>{{if .URL}}<a href="{{.URL}}">{{.Label}}</a>{{else}}{{.Label}}{{end}}</li>
-          {{end}}
-        </ul>
-        {{end}}
+        {{template "connection-references" $detail.References}}
       </div>
       {{end}}
       <div class="prov detail-status">

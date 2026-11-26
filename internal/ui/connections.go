@@ -175,7 +175,7 @@ func (p pages) connectionsFragment(w http.ResponseWriter, r *http.Request) {
 	render(w, r, http.StatusOK, "connections-nodes-fragment", data)
 }
 
-func (p pages) renderConnections(w http.ResponseWriter, r *http.Request, status int, cfg, draft *model.Config, message string) {
+func (p pages) renderConnections(w http.ResponseWriter, r *http.Request, status int, cfg, draft *model.Config, message string, refs ...connectionReference) {
 	data := p.opts.pageData(r)
 	data.SignedIn = true
 	data.ViewOnly = p.role(r) == RoleView
@@ -189,6 +189,7 @@ func (p pages) renderConnections(w http.ResponseWriter, r *http.Request, status 
 	}
 	if cfg != nil {
 		data.Connections = connectionsView(cfg, draft, p.deps.Subscriptions(), p.deps.OverviewStatus().Connections, data.ViewOnly, data.Text)
+		data.Connections.References = refs
 	}
 	render(w, r, status, "connections", data)
 }

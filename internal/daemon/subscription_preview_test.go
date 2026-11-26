@@ -320,6 +320,50 @@ func TestApplySubscriptionPreviewUsesCheckedCatalogForSameLink(t *testing.T) {
 	}
 }
 
+func TestApplySubscriptionRemovalDropsCurrentSnapshot(t *testing.T) {
+	d, cfg, provider := newRulesTestDaemon(t)
+	if err := d.Apply(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	keep := cfg.Subscriptions[0]
+	remove := subscription.Source{ID: "sub2", URL: keep.URL, SendHWID: true}
+	preview := d.PreviewSubscriptionDetails(t.Context(), remove)
+	withExtra := d.Config()
+	revision := model.ConfigRevision(withExtra)
+	withExtra.Subscriptions = append(withExtra.Subscriptions, remove)
+	if err := d.ApplySubscriptionPreview(t.Context(), withExtra, revision, subscription.PreviewRef{Source: remove, ID: preview.PreviewID}); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Subscriptions(); len(got) != 2 || got[1].ID != remove.ID || len(got[1].Nodes) == 0 || provider.count("/sub") != 2 {
+		t.Fatal("Apply did not install the extra checked catalog without downloading it again")
+	}
+	draft := d.Config()
+	previous := d.subscriptionSnapshotPath(draft)
+	revision = model.ConfigRevision(draft)
+	draft.Subscriptions = draft.Subscriptions[:1]
+	if err := d.ApplyIfCurrent(t.Context(), draft, revision); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Subscriptions(); len(got) != 1 || got[0].ID != keep.ID || provider.count("/sub") != 2 {
+		t.Fatal("removal retained the removed source or fetched another catalog")
+	}
+	requireAppliedProviderRules(t, d)
+	raw, err := os.ReadFile(d.subscriptionSnapshotPath(d.Config()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]subscriptionSnapshot
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 1 || !saved[subscriptionFingerprint(keep)].Rules.complete() {
+		t.Fatal("the current snapshot did not retain exactly the remaining source and its rules")
+	}
+	if _, err := os.Stat(previous); err != nil {
+		t.Fatalf("the immediately previous snapshot should remain recoverable: %v", err)
+	}
+}
+
 func TestApplyCheckedSubscriptionRejectsSupersededPreview(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

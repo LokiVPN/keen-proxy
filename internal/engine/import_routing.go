@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"reflect"
-	"slices"
 
 	"github.com/sagernet/sing-box/option"
 
@@ -26,9 +25,9 @@ func ValidateImportedProfileRouting(ctx context.Context, config []byte) error {
 
 // ProfileReferencesOutbound recognizes concrete outbound references in saved
 // raw profiles, including selectors and dialers nested within other options.
-func ProfileReferencesOutbound(ctx context.Context, config []byte, tags []string) (bool, error) {
+func ProfileReferencesOutbound(ctx context.Context, config []byte, matches func(tag string) bool) (bool, error) {
 	return anyProfileField(ctx, config, func(value reflect.Value) bool {
-		return visitOutboundReferences(value, func(tag string) bool { return slices.Contains(tags, tag) })
+		return visitOutboundReferences(value, matches)
 	})
 }
 

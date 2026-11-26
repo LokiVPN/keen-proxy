@@ -12,16 +12,16 @@ import (
 const setupDraftLifetime = 5 * time.Minute
 
 // setupDrafts keeps checked URLs server-side. Only an expiring, single-use
-// token tied to the managing user and revision travels in the enable form.
+// token tied to the managing user, revision and action travels in the form.
 type setupDrafts struct {
 	mu      sync.Mutex
 	entries []setupDraft
 }
 
 type setupDraft struct {
-	token, user, rev string
-	expires          time.Time
-	preview          subscription.PreviewRef
+	token, user, rev, path string
+	expires                time.Time
+	preview                subscription.PreviewRef
 }
 
 func (d *setupDrafts) save(draft setupDraft, now time.Time) string {
@@ -37,12 +37,12 @@ func (d *setupDrafts) save(draft setupDraft, now time.Time) string {
 	return draft.token
 }
 
-func (d *setupDrafts) take(token, rev, user string, now time.Time) subscription.PreviewRef {
+func (d *setupDrafts) take(token, rev, user, path string, now time.Time) subscription.PreviewRef {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.expire(now)
 	for i, draft := range d.entries {
-		if draft.token == token && draft.rev == rev && draft.user == user {
+		if draft.token == token && draft.rev == rev && draft.user == user && draft.path == path {
 			d.entries = slices.Delete(d.entries, i, i+1)
 			return draft.preview
 		}

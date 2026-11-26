@@ -152,7 +152,7 @@ func (p pages) reviewWizardProfile(w http.ResponseWriter, r *http.Request, cfg *
 		}
 		review = wizardReview{ID: id, Name: cmp.Or(cfg.Connections[i].Name, id)}
 	} else {
-		reserved, err := p.wizardReservedIDs(cfg)
+		reserved, err := p.occupiedRoutingIDs(cfg)
 		if err != nil {
 			p.wizardError(w, r, http.StatusUnprocessableEntity, cfg, draft.location, wizardValidationKey(err))
 			return
@@ -331,7 +331,8 @@ func wizardIDTaken(cfg *model.Config, id string) bool {
 		connectionIndex(cfg, id) >= 0 || slices.ContainsFunc(cfg.Subscriptions, func(source subscription.Source) bool { return source.ID == id })
 }
 
-func (p pages) wizardReservedIDs(cfg *model.Config) (map[string]bool, error) {
+// occupiedRoutingIDs covers saved IDs and the outbounds generated from them.
+func (p pages) occupiedRoutingIDs(cfg *model.Config) (map[string]bool, error) {
 	tags, err := p.deps.ConnectionRuntimeTags(cfg)
 	if err != nil {
 		return nil, err

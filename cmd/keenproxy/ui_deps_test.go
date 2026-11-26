@@ -73,6 +73,35 @@ func TestConnectionDeletionRecognizesSavedProfileReferences(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRemovalRecognizesSavedProfileReferences(t *testing.T) {
+	tag := model.ManagedTarget("sub2", "auto")
+	d := &wizardRuntimeDaemon{cfg: &model.Config{
+		Subscriptions: []subscription.Source{{ID: "sub2", URL: "https://provider.example/synthetic"}},
+		Connections: []model.Connection{
+			{ID: "detour", Name: "Saved detour", Type: model.ConnSingBox, Disabled: true, Outbound: map[string]any{
+				"type": "socks", "server": "server.example", "server_port": 1080, "DETOUR": tag,
+			}},
+			{ID: "credential", Name: "Credential fixture", Type: model.ConnSingBox, Outbound: map[string]any{
+				"type": "socks", "server": "server.example", "server_port": 1080, "password": tag,
+			}},
+			{ID: "other", Name: "Other detour", Type: model.ConnSingBox, Disabled: true, Outbound: map[string]any{
+				"type": "socks", "server": "server.example", "server_port": 1080, "detour": model.ManagedTarget("sub20", "auto"),
+			}},
+		},
+	}}
+	h := ui.New(uiDeps{daemon: d}, ui.Options{Role: func(*http.Request) ui.Role { return ui.RoleManage }})
+	form := url.Values{"rev": {ui.Revision(d.Config())}}
+	r := httptest.NewRequest(http.MethodPost, "/connections/subscriptions/sub2/remove", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	body := w.Body.String()
+	if w.Code != http.StatusConflict || d.applies != 0 || !strings.Contains(body, "Sing-box profile Saved detour") ||
+		strings.Contains(body, "Sing-box profile Credential fixture") || strings.Contains(body, "Sing-box profile Other detour") {
+		t.Fatalf("removal returned HTTP %d or did not list exactly the dependent profile", w.Code)
+	}
+}
+
 func TestConnectionDetailUsesStaticChoicesForBothSwitchStates(t *testing.T) {
 	d := &detailRuntimeDaemon{wizardRuntimeDaemon: wizardRuntimeDaemon{cfg: &model.Config{Connections: []model.Connection{
 		{ID: "primary", Type: model.ConnLink, Link: "socks5://primary.example:1080", Disabled: true, Fallback: model.TargetDirect},
@@ -348,6 +377,13 @@ type wizardRuntimeDaemon struct {
 }
 
 func (d *wizardRuntimeDaemon) Config() *model.Config { return d.cfg.Clone() }
+
+func (*wizardRuntimeDaemon) RoutingStatus() daemon.RoutingStatus        { return daemon.RoutingStatus{} }
+func (*wizardRuntimeDaemon) Subscriptions() []daemon.SubscriptionStatus { return nil }
+
+func (*wizardRuntimeDaemon) ProviderRules() (compile.ProviderRules, *model.ProviderRulesSettings, daemon.ProviderRulesState) {
+	return compile.ProviderRules{}, nil, daemon.ProviderRulesOff
+}
 
 func (d *wizardRuntimeDaemon) ApplyIfCurrent(_ context.Context, cfg *model.Config, rev string) error {
 	if rev != ui.Revision(d.Config()) {

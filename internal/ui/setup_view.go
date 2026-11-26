@@ -14,6 +14,9 @@ import (
 // setupPage carries the link only for a retry in the failed check response.
 type setupPage struct {
 	Rev, Input, Error, Warning string
+	CheckPath, ConfirmPath     string
+	CancelPath, SourceTitle    string
+	Managing                   bool
 	Replacing, KeepRouting     bool
 	EvaluateRules              bool
 	Result                     *setupResult
@@ -36,10 +39,31 @@ func (p pages) renderSetup(w http.ResponseWriter, r *http.Request, status int, c
 	data.Title = "KeenProxy"
 	data.SignedIn = true
 	data.ViewOnly = p.role(r) == RoleView
+	flow := setupFlowFor(r)
+	page.CheckPath, page.ConfirmPath, page.CancelPath = flow.path+"/check", flow.path+"/confirm", "/connections"
+	page.Managing = flow.path != setupPath
+	page.Replacing = flow.replaceID != ""
+	page.KeepRouting = page.Managing
+	if page.Managing {
+		data.ActiveTab = "/connections"
+	} else {
+		page.ConfirmPath = setupPath + "/enable"
+		page.CancelPath = setupPath
+	}
 	if cfg != nil {
-		page.Rev = Revision(cfg)
-		page.Replacing = len(cfg.Subscriptions) > 0
-		page.KeepRouting = !setupInitialRouting(cfg)
+		i := flow.replacement(cfg)
+		if flow.replaceID == "" || i >= 0 {
+			page.Rev = Revision(cfg)
+		}
+		page.Replacing = page.Replacing || i >= 0
+		page.KeepRouting = !flow.initialRouting(cfg)
+		if page.Managing && i >= 0 {
+			source := appliedSubscriptionFor(p.deps.Subscriptions(), cfg.Subscriptions[i].ID)
+			page.SourceTitle = fmt.Sprintf(data.Text["connections_subscription"], source.title(data.Text))
+		}
+		if !page.Managing && page.KeepRouting {
+			page.CancelPath = "/"
+		}
 	}
 	switch {
 	case page.Replacing:

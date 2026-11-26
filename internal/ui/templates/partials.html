@@ -11,6 +11,16 @@
 </a>
 {{end}}
 
+{{define "connection-references"}}
+{{if .}}
+<ul>
+  {{range .}}
+  <li>{{if .URL}}<a href="{{.URL}}">{{.Label}}</a>{{else}}{{.Label}}{{end}}</li>
+  {{end}}
+</ul>
+{{end}}
+{{end}}
+
 {{define "view-note"}}
 <div class="note view-note">
   <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="10.5" width="13" height="9.5" rx="1.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>

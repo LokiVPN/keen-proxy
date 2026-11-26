@@ -2,8 +2,24 @@
       <div class="title-row"><h1>KeenProxy</h1>{{template "page-help" .}}</div>
       {{template "tabs" .}}
       {{if .Flash}}<p class="note" role="status">{{.Flash}}</p>{{end}}
-      {{if .Message}}<p class="note" role="alert">{{.Message}}</p>{{end}}
+      {{if .Message}}
+      <div class="note detail-error" role="alert">
+        <p>{{.Message}}</p>
+        {{with .Connections}}{{template "connection-references" .References}}{{end}}
+      </div>
+      {{end}}
       {{if .Connections}}
+        {{if .Connections.Subscriptions}}
+        <div class="row-btns">
+          {{if .ViewOnly}}<button class="btn" type="button" disabled>{{.Text.setup_add}}</button>
+          {{else}}<a class="btn" href="{{.Connections.AddPath}}">{{.Text.setup_add}}</a>{{end}}
+        </div>
+        {{end}}
+        {{range .Connections.Subscriptions}}
+        <form id="subscription-remove-{{.Nodes.ID}}" method="post" action="{{.Path}}/remove">
+          <input type="hidden" name="rev" value="{{$.Connections.Revision}}">
+        </form>
+        {{end}}
         <form id="connections-settings" method="post" action="/connections" data-guard{{if .Connections.Draft}} data-dirty{{end}}>
           <input type="hidden" name="rev" value="{{.Connections.Revision}}">
           {{range .Connections.Subscriptions}}
@@ -20,12 +36,18 @@
                 {{range $.Connections.Reserve}}<option value="{{.Target}}"{{if eq .Target $current}} selected{{end}}>{{.Label}}</option>{{end}}
               </select>
             </div>
+            <div class="row-btns">
+              {{if $.ViewOnly}}<button class="btn soft" type="button" disabled>{{$.Text.setup_replace}}</button>
+              {{else}}<a class="btn soft" href="{{.Path}}/replace">{{$.Text.setup_replace}}</a>{{end}}
+              <button class="btn detail-delete" type="submit" form="subscription-remove-{{$id}}"{{if $.ViewOnly}} disabled{{end}}>{{$.Text.connections_remove_subscription}}</button>
+            </div>
           </section>
           {{else}}
           <section class="connections-section" aria-labelledby="subscription-empty">
             <div class="connections-head">
               <h2 id="subscription-empty">{{.Text.overview_subscription}}</h2>
-              {{if not .ViewOnly}}<a href="/setup">{{.Text.overview_add_subscription}}</a>{{end}}
+              {{if .ViewOnly}}<button class="btn soft" type="button" disabled>{{.Text.overview_add_subscription}}</button>
+              {{else}}<a href="/setup">{{.Text.overview_add_subscription}}</a>{{end}}
             </div>
             <p class="muted">{{.Text.overview_no_subscription}}</p>
           </section>

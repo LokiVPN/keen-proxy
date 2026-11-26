@@ -286,6 +286,11 @@ routing_geoip_direct: "Диапазоны IP-адресов для прямог�
 routing_geoip_ru: "IP-адреса в России"
 
 connections_subscription: "Подписка %s"
+connections_remove_subscription: "Удалить подписку"
+connections_remove_referenced: "Перед удалением подписки уберите эти ссылки на неё из настроек."
+connections_remove_reference_error: "Не удалось проверить все сохранённые ссылки на эту подписку."
+connections_ref_provider_rules: "Правила маршрутизации провайдера"
+flash_subscription_removed: "Подписка удалена"
 connections_ready: "Готова"
 connections_updated: "Обновлена %s"
 connections_node_count: "Узлов: %d"

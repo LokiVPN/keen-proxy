@@ -12,15 +12,18 @@ import (
 
 type connectionsPage struct {
 	Revision      string
+	AddPath       string
 	Draft         bool
 	Subscriptions []connectionSubscriptionView
 	Rows          []manualConnectionView
 	Reserve       []connectionOption
+	References    []connectionReference
 }
 
 type connectionSubscriptionView struct {
 	Fallback   string
 	AllowUnset bool
+	Path       string
 	Nodes      subscriptionNodesView
 }
 
@@ -48,14 +51,15 @@ type manualConnectionView struct {
 
 func connectionsView(cfg, draft *model.Config, subs []AppliedSubscription, health map[string]ConnectionStatus, viewOnly bool, text map[string]string) *connectionsPage {
 	settings := cmp.Or(draft, cfg)
-	view := &connectionsPage{Revision: Revision(cfg)}
+	view := &connectionsPage{Revision: Revision(cfg), AddPath: subscriptionNewPath}
 	now := time.Now()
 	for i, source := range cfg.Subscriptions {
 		nodes := connectionNodes(appliedSubscriptionFor(subs, source.ID), viewOnly, now, text)
 		fallback := settings.Subscriptions[i].Fallback
 		view.Draft = view.Draft || fallback != source.Fallback
 		view.Subscriptions = append(view.Subscriptions, connectionSubscriptionView{
-			Fallback: connectionIDSegment(fallback), AllowUnset: source.Fallback == "", Nodes: nodes,
+			Fallback: connectionIDSegment(fallback), AllowUnset: source.Fallback == "",
+			Path: subscriptionPath(source.ID), Nodes: nodes,
 		})
 	}
 	if len(settings.Subscriptions) > 0 {

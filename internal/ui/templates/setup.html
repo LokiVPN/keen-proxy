@@ -3,10 +3,12 @@
         <h1>{{.Title}}</h1>
         {{template "page-help" .}}
       </div>
+      {{if .Setup.Managing}}{{template "tabs" .}}{{end}}
+      {{if .Setup.SourceTitle}}<p class="lead clip" title="{{.Setup.SourceTitle}}">{{.Setup.SourceTitle}}</p>{{end}}
       <p class="lead">{{if .Setup.Replacing}}{{.Text.setup_replace_intro}}{{else if .Setup.KeepRouting}}{{.Text.setup_add_intro}}{{else}}{{.Text.setup_intro}}{{end}}</p>
       {{$checked := or .Setup.Result .Setup.Input}}
       {{$disabled := or .ViewOnly (not .Setup.Rev)}}
-      <form method="post" action="/setup/check" class="setup-check{{if $checked}} setup-recheck{{end}}" novalidate>
+      <form method="post" action="{{.Setup.CheckPath}}" class="setup-check{{if $checked}} setup-recheck{{end}}" novalidate>
         <input type="hidden" name="rev" value="{{.Setup.Rev}}">
         <div class="fld">
           <label for="setup-url">{{.Text.setup_url}}</label>
@@ -63,11 +65,11 @@
           <div><strong>{{if .Title}}{{printf $.Text.setup_announce .Title}}{{else}}{{$.Text.setup_announce_generic}}{{end}}</strong><p>{{.Announce}}</p></div>
         </div>
         {{end}}
-        <form method="post" action="/setup/enable" class="actions">
+        <form method="post" action="{{$.Setup.ConfirmPath}}" class="actions">
           <input type="hidden" name="rev" value="{{$.Setup.Rev}}">
           <input type="hidden" name="preview" value="{{.Token}}">
           <button class="btn" type="submit"{{if $disabled}} disabled{{end}}>{{if $.Setup.Replacing}}{{$.Text.setup_replace}}{{else if $.Setup.KeepRouting}}{{$.Text.setup_add}}{{else}}{{$.Text.setup_enable}}{{end}}</button>
-          <a class="btn soft" href="{{if $.Setup.KeepRouting}}/{{else}}/setup{{end}}">{{$.Text.setup_cancel}}</a>
+          <a class="btn soft" href="{{$.Setup.CancelPath}}">{{$.Text.setup_cancel}}</a>
         </form>
         {{else}}
         <p class="lead setup-result-message">{{.Message}}</p>

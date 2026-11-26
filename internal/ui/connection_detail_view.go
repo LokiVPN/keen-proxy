@@ -390,6 +390,12 @@ func (p pages) detailHosts(id string, all bool, lang string) connectionHostsView
 // connectionReferences covers every top-level connection consumer, including
 // settings that remain in older or hand-edited configurations.
 func connectionReferences(cfg *model.Config, id string, text map[string]string) []connectionReference {
+	return routingTargetReferences(cfg, text, id, func(target string) bool { return target == id })
+}
+
+// routingTargetReferences lists each persisted consumer of a matching target,
+// including settings that remain in older or hand-edited configurations.
+func routingTargetReferences(cfg *model.Config, text map[string]string, skipConnectionID string, matches func(string) bool) []connectionReference {
 	var refs []connectionReference
 	add := func(key, value, path string) {
 		label := text[key]
@@ -402,19 +408,19 @@ func connectionReferences(cfg *model.Config, id string, text map[string]string) 
 	for i := range cfg.Networks {
 		n := &cfg.Networks[i]
 		name := cmp.Or(n.Name, n.CIDR)
-		if n.Target == id {
+		if matches(n.Target) {
 			if n == home {
 				add("detail_ref_main", name, "/")
 			} else {
 				add("detail_ref_network", name, "")
 			}
 		}
-		if n.Default == id {
+		if matches(n.Default) {
 			add("detail_ref_default", name, "")
 		}
 	}
 	for _, group := range cfg.Groups {
-		if group.Target == id {
+		if matches(group.Target) {
 			path := ""
 			if group.Name == "own-vpn" {
 				path = "/routing"
@@ -423,21 +429,21 @@ func connectionReferences(cfg *model.Config, id string, text map[string]string) 
 		}
 	}
 	for _, conn := range cfg.Connections {
-		if conn.ID != id && conn.Fallback == id {
+		if conn.ID != skipConnectionID && matches(conn.Fallback) {
 			add("detail_ref_reserve", cmp.Or(conn.Name, conn.ID), connectionDetailPath(conn.ID))
 		}
 	}
 	for _, source := range cfg.Subscriptions {
-		if source.Fallback == id {
+		if matches(source.Fallback) {
 			add("detail_ref_subscription", source.ID, "/connections")
 		}
 	}
 	for _, client := range cfg.Clients {
-		if client.Target == id {
+		if matches(client.Target) {
 			add("detail_ref_client", cmp.Or(client.Name, client.MAC), "")
 		}
 	}
-	if cfg.DNS.Connection == id {
+	if matches(cfg.DNS.Connection) {
 		add("detail_ref_dns", "", "")
 	}
 	return refs

@@ -25,9 +25,7 @@ If the sign-in check is unavailable or your installation runs on OpenWrt, use [S
 3. Choose **Enable** to save the subscription and apply split routing to the detected home network. This saves `send_hwid: true`, so future refreshes send the identifier. KeenProxy uses the provider profile when available. Without one, unmatched traffic uses the subscription. This setup requires a private IPv4 address on the configured LAN interface.
 4. Open **Overview** to confirm the selected connection and **Devices** to choose which devices use it. Test an intended site from one of those devices.
 
-To add a subscription to an existing setup, choose **Overview → Set up subscription**, use **Check**, then choose **Add subscription**. To update the current link, choose **Overview → Replace link**, use **Check**, then confirm **Replace link**. In both flows, **Check** sends the stable HWID to the provider and may use a device slot before you save. Both confirmations save `send_hwid: true` for future refreshes. Replacing a link enables HWID transmission even when the previous setting was `false`. A replacement keeps the subscription ID, reserve, and existing routing and device settings.
-
-To replace a link while keeping HWID disabled, change its `url` in YAML and keep `send_hwid: false` on that subscription. [Edit and reload YAML](#edit-and-reload-yaml)
+If you already have a home network policy, **Overview → Set up subscription** adds the first subscription and keeps that policy. For additional subscriptions or link changes, see [Manage subscriptions](#manage-subscriptions).
 
 For a manual setup, open [Connections](#connections). From the initial setup screen, you can reach it by appending `/connections` to the panel address. Add a connection there. If the home network has no policy yet, configure it in [YAML](#configuration-and-backups). Then select the connection on **Overview**.
 
@@ -67,13 +65,21 @@ KeenProxy shows devices discovered on the LAN and configured devices, including 
 
 ### Native subscriptions { #native-subscriptions }
 
-The subscription section shows nodes, their most recent HTTPS check, and any rule notices. Use **Update now** for that subscription, **Check** for one node, or **Check all nodes** for the catalog. The checks verify the server certificate. These actions keep staged changes on the form. Select **Save** to apply a reserve or a manual connection switch.
+Each subscription has its own status, node list, and rule notices. Use **Update now** for that subscription, **Check** for one node, or **Check all nodes** for its catalog. The checks verify the server certificate. These actions keep staged changes on the form. Select **Save** to apply a reserve or a manual connection switch.
 
 In **Reserve if none of the nodes respond**, choose a manual connection, **Direct — without VPN**, or **None — block VPN traffic**. When a manual reserve is down or disabled, its own configured reserve chain decides where traffic goes. **No reserve configured** preserves an unset reserve. [Subscription reserves](routing.md#subscription-reserve)
 
 Under **Main connection** on **Overview**, **Auto — switch nodes on failure** follows the provider order and stays with a working node after failover. **Current** indicates the selected node and can appear alongside **Unavailable** after a failed check. A pinned node remains selected and uses its configured reserve if the node disappears. **Balancing by rotation**, **by site**, and **by session** distribute new connections across eligible nodes. [Selection and balancing](routing.md#subscription-reserve)
 
 KeenProxy accepts HTTPS Xray share lists in plain text or Base64, up to 2 MiB and 256 distinct nodes. If a refresh fails, it retains the last validated list and shows the refresh status. Keep subscription links private. A node name that repeats its own credentials is replaced with a numbered label.
+
+### Manage subscriptions { #manage-subscriptions }
+
+- Choose **Add subscription**, paste the HTTPS link, and use **Check**. Review the result and confirm with **Add subscription**. The new source becomes available in the connection list. Your saved network, device, and provider rules settings stay in place.
+- Choose **Replace link** in the subscription's block, use **Check** on the new link, then confirm **Replace link**. That subscription keeps its ID and reserve, and saved routing references still point to it.
+- Choose **Remove subscription** in its block. If a saved setting still uses the subscription, KeenProxy lists the references and keeps the subscription. Change or clear those references and try again. This includes a saved provider rules source even when its rules are turned off. Use [YAML](#edit-and-reload-yaml) for references outside the panel.
+
+Checking a subscription link sends the provider its stable device identifier (HWID) and may use a device slot before you save. Adding or replacing a link saves `send_hwid: true` for future refreshes, including when the old link had HWID disabled. To replace a link with HWID disabled, edit its `url` in YAML and keep `send_hwid: false`. [Edit and reload YAML](#edit-and-reload-yaml)
 
 ### Add or replace a manual connection { #manual-connections }
 

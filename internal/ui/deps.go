@@ -39,6 +39,7 @@ type Deps interface {
 	ConnectionHosts(id string, limit int) ([]stats.Host, int)
 	CheckConnection(ctx context.Context, id, revision string) error
 	ConnectionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error)
+	SubscriptionProfileReferences(ctx context.Context, cfg *model.Config, id string) ([]string, error)
 	DiagnosticStatus(context.Context) DiagnosticStatus
 	DiagnosticNode(target string) DiagnosticNode
 	CheckDiagnosticTarget(ctx context.Context, target, revision string) (DiagnosticCheckResult, error)
