@@ -87,7 +87,7 @@ func TestSetupCheckStates(t *testing.T) {
 					Direct: subscription.RoutingActionSummary{Sites: subscription.RoutingListSummary{Count: 2, Categories: []string{"ru"}}},
 				},
 			},
-			want: []string{"Test provider", "Active", "0 of 200 GB", "2: Node A, Node B", "Example routing", "Sites: 2", "ru", "Scheduled maintenance",
+			want: []string{"Test provider", "Active", "0 of 200 GB", "2: Node A, Node B", "Example routing", "Sites: 2", "ru", "Message from Test provider", "Scheduled maintenance",
 				"Provider profile default: through the VPN.", "Provider rules are pending evaluation.", "KeenProxy evaluates these rules when you enable the subscription."},
 		},
 		{
@@ -164,6 +164,38 @@ func TestSetupCheckStates(t *testing.T) {
 			if deps.applies != 0 || len(deps.cfg.Subscriptions) != 0 {
 				t.Error("check applied a configuration")
 			}
+		})
+	}
+}
+
+func TestSetupPreviewUntitledSubscription(t *testing.T) {
+	for _, tc := range []struct {
+		lang, title, announcement string
+	}{
+		{"en", "Subscription", "Message from your provider"},
+		{"ru", "\u041f\u043e\u0434\u043f\u0438\u0441\u043a\u0430",
+			"\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u043e\u0442 \u043f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440\u0430"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			deps := &setupFixture{
+				cfg: &model.Config{},
+				preview: SetupPreview{
+					State: subscription.StateReady, NodeCount: 1,
+					Metadata: subscription.Metadata{Announce: "Scheduled maintenance"},
+				},
+			}
+			h := New(deps, setupTestOptions(RoleManage))
+			form := url.Values{"rev": {setupFormRevision(t, h)}, "url": {setupTestURL}}
+			r := httptest.NewRequest(http.MethodPost, "/setup/check", strings.NewReader(form.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			r.Header.Set("Accept-Language", tc.lang)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("check HTTP %d, want 200", w.Code)
+			}
+			assertContains(t, w.Body.String(), "<h2 id=\"setup-provider\" class=\"clip\">"+tc.title+"</h2>",
+				"<strong>"+tc.announcement+"</strong>", "Scheduled maintenance")
 		})
 	}
 }

@@ -23,7 +23,7 @@
       {{with .Setup.Result}}
       <section class="setup-result" aria-labelledby="setup-provider">
         <div class="prov">
-          <h2 id="setup-provider" class="clip">{{.Title}}</h2>
+          <h2 id="setup-provider" class="clip">{{or .Title $.Text.setup_untitled}}</h2>
           <span class="chip {{if .Active}}ok{{else}}warn{{end}}">{{.Chip}}</span>
         </div>
         {{if .Active}}
@@ -60,7 +60,7 @@
         {{if .Announce}}
         <div class="note setup-announce">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5m0-8h.01"/></svg>
-          <div><strong>{{printf $.Text.setup_announce .Title}}</strong><p>{{.Announce}}</p></div>
+          <div><strong>{{if .Title}}{{printf $.Text.setup_announce .Title}}{{else}}{{$.Text.setup_announce_generic}}{{end}}</strong><p>{{.Announce}}</p></div>
         </div>
         {{end}}
         <form method="post" action="/setup/enable" class="actions">

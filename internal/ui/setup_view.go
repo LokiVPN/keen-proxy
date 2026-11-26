@@ -60,9 +60,6 @@ func setupResultFor(preview SetupPreview, now, expiry time.Time, lang string) *s
 	text := translations[lang]
 	metadata := preview.Metadata
 	result := &setupResult{Title: metadata.Title, AccountURL: metadata.ProfileURL}
-	if result.Title == "" {
-		result.Title = "LokiVPN"
-	}
 	switch {
 	case preview.State == subscription.StateHWIDLimit:
 		result.Chip = text["setup_limit"]

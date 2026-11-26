@@ -115,13 +115,15 @@ Local `make build`, `make build-router`, and `make build-router-lite` run this g
 
 For tagged source outside historical recovery, the release asset job runs `make memory-stress` and `make memory-regression` as separate steps, then `make -o memory-stress -o memory-regression build-router build-router-lite` with the existing release identity arguments. Both `-o` flags are permitted only after the corresponding step has succeeded in that same job. GNU make `-o` marks those phony targets already satisfied so the public targets do not repeat the gates. Public targets are required because older AWG tags do not define the CI-only names. A missing gate target fails and never selects historical recovery. `-o` is not an environment bypass, a cache, or a local shortcut. Do not use it unless both separate steps have just succeeded in the same job.
 
-The LokiVPN Release workflow checks the exact version tag. The independent CI jobs run before the asset job, which also runs both memory gates before building binaries. Repository protection rules are configured separately. [Release procedure](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md#build-a-lokivpn-release)
+The Release workflow in this repository checks the exact version tag. The independent CI jobs run before the asset job, which also runs both memory gates before building binaries. Repository protection rules are configured separately. [Release procedure](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md#build-a-lokivpn-release)
 
 Historical release-asset recovery from `main` is explicitly limited by Git ancestry to commits at or before the fixed pre-AWG boundary `9d398fb3754036cbe35df1cf07098164ff62a9d5`, including `v0.8.0`. Current workflow CI is still required, and the tagged version is checked before expensive work. Recovery leaves tagged source unchanged and runs its original Makefile/protocol flags for Go tests, vet, network integration, frontend tests, and full/lite router builds with the requested release identity. A visible notice and uploaded `.agents-work/release-legacy/<run>-<attempt>/` manifest, command log, and exit code record this separate verification contract, including failures; they are not memory measurements or AWG certification, because that source does not support AWG. Commits outside this ancestry must pass both memory gates; missing targets fail rather than selecting recovery. Existing assets must remain byte-identical before missing assets are published. See [RELEASING](https://github.com/ordo-systems/keen-proxy/blob/main/RELEASING.md#github-setup-and-recovery).
 
 ## Edit and translate
 
 Maintain matching Markdown filenames under `docs/en/` and `docs/ru/`. Navigation is configured in `mkdocs.yml`; the i18n plugin creates language switching and localized search/navigation. Add screenshots under `docs/assets/screenshots/` in both UI languages. Capture only synthetic sessions and update related captions when screens change.
+
+Run `make check-language` to check localization boundaries and provider-neutral wording.
 
 ## KeeneticOS WebUI prototype
 
@@ -364,6 +366,6 @@ New configurations are written with `schema_version: 2`.
 
 The **Documentation** workflow builds and checks both outputs on relevant PRs and pushes. It uploads only `site/`, containing generated documentation. Internal reports, local memories, application source maps, credentials, and Go runtime state are not part of that directory.
 
-Use `make docs-preview` to build and preview the source documentation for LokiVPN. The hosted documentation is maintained by Ordo Systems. The checked-in Pages workflow deploys from the upstream `main` branch. [Hosted documentation](https://ordo-systems.github.io/keen-proxy/)
+Use `make docs-preview` to build and preview this repository's documentation. The hosted documentation is maintained by Ordo Systems. The checked-in Pages workflow deploys from the upstream `main` branch. [Hosted documentation](https://ordo-systems.github.io/keen-proxy/)
 
-Binary releases use the tagged LokiVPN Release workflow. [Release guide](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md)
+The Release workflow builds binaries from the version tag. [Release guide](https://github.com/LokiVPN/keen-proxy/blob/master/RELEASING.md)

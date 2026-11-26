@@ -44,9 +44,9 @@ filters:
 subscriptions:
   - id: Not Valid
     url: https://sub.example.net/s/bad
-  - id: lokivpn
+  - id: provider
     url: https://sub.example.net/s/x
-    name: LokiVPN
+    name: Example provider
 groups:
   - name: Video
     target: direct
@@ -93,13 +93,13 @@ func TestLoadOrResetCarriesSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []subscription.Source{{ID: "lokivpn", URL: "https://sub.example.net/s/x"}}
+	want := []subscription.Source{{ID: "provider", URL: "https://sub.example.net/s/x"}}
 	if cfg.SchemaVersion != 2 || !slices.Equal(cfg.Subscriptions, want) || cfg.API.Listen != "192.0.2.1:8086" ||
 		cfg.LAN != (model.LAN{Interface: "br1", WAN: "eth3"}) || len(cfg.Groups) != 0 {
 		t.Fatalf("reset config = %+v", cfg)
 	}
 	out := logs.String()
-	if strings.Count(out, "configuration reset after upgrade") != 1 || !strings.Contains(out, "lokivpn") {
+	if strings.Count(out, "configuration reset after upgrade") != 1 || !strings.Contains(out, "subscription_kept=provider") {
 		t.Fatalf("reset log = %s", out)
 	}
 	if strings.Contains(out, "example.net") {
@@ -269,7 +269,7 @@ connections:
     type: link
     link: vless://fixture-secret@[bad
 subscriptions:
-  - id: lokivpn
+  - id: provider
     url: https://sub.example.net/s/x
 `
 
@@ -325,7 +325,7 @@ func TestDryRunAcceptsV010ConfigWithoutWriting(t *testing.T) {
 			notices = append(notices, line)
 		}
 	}
-	if len(notices) != 1 || !strings.Contains(notices[0], "lokivpn") || strings.Contains(notices[0], "example.net") {
+	if len(notices) != 1 || !strings.Contains(notices[0], "subscription_kept=provider") || strings.Contains(notices[0], "example.net") {
 		t.Fatalf("reset notices = %q", notices)
 	}
 	assertFileBytes(t, path, v010Config)
@@ -540,8 +540,8 @@ func TestResetRoutesLANThroughSubscription(t *testing.T) {
 	if asked != "br1" {
 		t.Fatalf("looked up interface %q, want the LAN interface br1", asked)
 	}
-	want := []model.Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit, Target: "subscription:lokivpn:auto", Default: model.DefaultProfile}}
-	if !slices.Equal(cfg.Networks, want) || cfg.ProviderRules == nil || cfg.ProviderRules.Source != "lokivpn" {
+	want := []model.Network{{Name: "Home", CIDR: "192.168.7.0/24", Mode: model.ModeSplit, Target: "subscription:provider:auto", Default: model.DefaultProfile}}
+	if !slices.Equal(cfg.Networks, want) || cfg.ProviderRules == nil || cfg.ProviderRules.Source != "provider" {
 		t.Fatalf("networks %+v, provider rules %+v", cfg.Networks, cfg.ProviderRules)
 	}
 	if strings.Contains(logs.String(), "192.168.7") {
@@ -553,8 +553,8 @@ func TestResetRoutesLANThroughSubscription(t *testing.T) {
 		out, err := compile.Compile(compile.Input{
 			Config:        cfg,
 			RuleSetDir:    t.TempDir(),
-			Subscriptions: map[string][]subscription.Node{"lokivpn": {node}},
-			ProviderRules: map[string]compile.ProviderRules{"lokivpn": {Name: "Test", RouteOrder: "block-direct-proxy", GlobalProxy: global}},
+			Subscriptions: map[string][]subscription.Node{"provider": {node}},
+			ProviderRules: map[string]compile.ProviderRules{"provider": {Name: "Test", RouteOrder: "block-direct-proxy", GlobalProxy: global}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -575,7 +575,7 @@ func TestResetRoutesLANThroughSubscription(t *testing.T) {
 		}
 		wantFinal := "direct"
 		if global {
-			wantFinal = "subscription:lokivpn:auto"
+			wantFinal = "subscription:provider:auto"
 		}
 		if final != wantFinal {
 			t.Errorf("GlobalProxy %t: LAN default goes to %q, want %q\n%s", global, final, wantFinal, out.SingBox)

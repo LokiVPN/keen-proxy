@@ -1,6 +1,6 @@
 # Getting started
 
-The bootstrap installs the LokiVPN release for your router and checks each downloaded file against the release manifest. Use the GitHub source build instructions to build the `master` branch. [LokiVPN releases](https://github.com/LokiVPN/keen-proxy/releases) · [Source build](https://github.com/LokiVPN/keen-proxy#build-and-try-the-interface)
+The bootstrap installs the KeenProxy release for your router and checks each downloaded file against the release manifest. Use the GitHub source build instructions to build the `master` branch. [GitHub Releases](https://github.com/LokiVPN/keen-proxy/releases) · [Source build](https://github.com/LokiVPN/keen-proxy#build-and-try-the-interface)
 
 ## Experimental OpenWrt support
 
@@ -100,13 +100,13 @@ Install `curl` and the CA certificates in the Entware root shell if needed.
 opkg update && opkg install curl ca-bundle ca-certificates
 ```
 
-Stop competing traffic or DNS interception services before installation. KeenProxy intercepts DNS only for devices that a network or device policy includes; the starter configuration has none, so nothing is intercepted until you add one. Run the bootstrap once a LokiVPN release is available. [Releases](https://github.com/LokiVPN/keen-proxy/releases)
+Stop competing traffic or DNS interception services before installation. KeenProxy intercepts DNS only for devices that a network or device policy includes; the starter configuration has none, so nothing is intercepted until you add one. Run the bootstrap once a release is available. [Releases](https://github.com/LokiVPN/keen-proxy/releases)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LokiVPN/keen-proxy/master/tools/bootstrap.sh | /opt/bin/sh
 ```
 
-The installer reads `BUILD_INFO.txt` from the latest published LokiVPN release, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. See [panel access](user-guide.md#access-the-panel).
+The installer reads `BUILD_INFO.txt` from the latest published release, detects the CPU, and verifies the release files against `SHA256SUMS`. It installs missing Entware `iptables` tools, creates a starter configuration if needed, and registers and starts `S99keenproxy` through the Entware init mechanism. TrustTunnel runs inside sing-box-lx; no separate client is installed. After installation and command-line updates, it prints the panel URL when the installed binary can determine it. See [panel access](user-guide.md#access-the-panel).
 
 On a clean install, the bootstrap creates a starter `/opt/etc/keenproxy/config.yaml`. KeenProxy fills in defaults when it loads the file and writes new configurations with `schema_version: 2`. Use [First configuration](#first-configuration) to sign in and enable routing.
 
@@ -130,7 +130,7 @@ Update actions and schedule changes require [management access](user-guide.md#ac
 
 Automatic installation is off by default. The panel still checks for releases. Enable automatic installation and save a time to install available releases during that minute in the router's local time, once per day while the service is running. Installation briefly restarts KeenProxy.
 
-To move an Ordo Systems installation to LokiVPN, turn off automatic installation and save the current binary and configuration privately. Run the LokiVPN bootstrap over SSH with `--version vX.Y.Z`, using a published LokiVPN tag, and add `--lite` for an existing lite install. Subsequent panel updates use the LokiVPN release channel. Keep the matching configuration and upstream package for a rollback across release channels.
+To move an Ordo Systems installation to this repository's release channel, turn off automatic installation and save the current binary and configuration privately. Run the bootstrap above over SSH with `--version vX.Y.Z` and a tag published in this repository. Add `--lite` for an existing lite install. Subsequent panel updates use this repository's releases. Keep the matching configuration and upstream package for a rollback across release channels.
 
 The protected installer blocks forwarded traffic before stopping the old service. The router remains reachable from the LAN. Forwarding resumes once interception is active in the new release or in the restored release after a failed update. If neither restores interception, forwarding stays blocked. From the LAN, rerun the bootstrap with a working release and configuration to restore access. If IPv6 forwarding is enabled, the installer also needs working `ip6tables`. On OpenWrt, disable software and hardware flow offloading and reload the firewall before updating. The guard covers traffic that passes through the router's Netfilter forwarding chains.
 
@@ -151,7 +151,7 @@ If the service starts in `management-only` mode, the panel can open while traffi
 ## First configuration { #first-configuration }
 
 1. On KeeneticOS, sign in to the router with a management account. Open **Management → Applications → KeenProxy** or use the address printed by the installer. On OpenWrt, open the browser at `http://127.0.0.1:8086` while the SSH tunnel is running. [Panel access and roles](user-guide.md#access-the-panel)
-2. Paste your LokiVPN subscription link. **Check** sends a stable device identifier (HWID) specific to the provider's HTTPS origin and may use a device slot. Review the result, then choose **Enable** to apply the detected home-network policy and save `send_hwid: true` for future refreshes. A device-limit or expiry message links you to the account when the provider supplies an account page. [First run and manual setup](user-guide.md#first-run)
+2. Paste your subscription link. **Check** sends a stable device identifier (HWID) specific to the provider's HTTPS origin and may use a device slot. Review the result, then choose **Enable** to apply the detected home-network policy and save `send_hwid: true` for future refreshes. A device-limit or expiry message links you to the account when the provider supplies an account page. [First run and manual setup](user-guide.md#first-run)
 3. Use **Overview** to confirm the main connection. Use **Routing** for rules and **Devices** for device access. **Connections** shows the subscription nodes and manual profiles. **Diagnostics** shows service readiness and provides checks, support reports, and updates. [Management pages](user-guide.md#overview)
 4. Test the intended traffic from a participating device and use **Diagnostics** if results differ from what you expect. A successful HTTP check covers that request. Check HTTPS and DNS separately if they are part of the issue.
 

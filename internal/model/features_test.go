@@ -76,7 +76,7 @@ func TestFileIsPlaceholder(t *testing.T) {
 		"schema_version: 1\nfilters: []\n":                                                          false,
 		"connections: []\nsubscriptions: []\n":                                                      false,
 		"connections: [{id: vpn}]\n":                                                                false,
-		"subscriptions: [{id: lokivpn}]\n":                                                          false,
+		"subscriptions: [{id: provider}]\n":                                                         false,
 		"- not\n- a mapping\n":                                                                      false,
 		"\x00{{ not yaml":                                                                           false,
 	} {

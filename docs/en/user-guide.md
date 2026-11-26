@@ -21,7 +21,7 @@ If the sign-in check is unavailable or your installation runs on OpenWrt, use [S
 ## First run { #first-run }
 
 1. Open KeenProxy with a management account. On a fresh setup it asks for a subscription link.
-2. Paste the HTTPS link from your LokiVPN account and choose **Check**. The check sends a stable device identifier (HWID) specific to the provider's HTTPS origin and may use a device slot. Review the server list and any expiry, usage, rules, or provider message returned. If the device limit is reached, remove an unused device in your account. If the subscription has expired, renew it. Check the link again after either change.
+2. Paste the HTTPS subscription link from your provider's account page and choose **Check**. The check sends a stable device identifier (HWID) specific to the provider's HTTPS origin and may use a device slot. Review the server list and any expiry, usage, rules, or provider message returned. If the device limit is reached, remove an unused device in your account. If the subscription has expired, renew it. Check the link again after either change.
 3. Choose **Enable** to save the subscription and apply split routing to the detected home network. This saves `send_hwid: true`, so future refreshes send the identifier. KeenProxy uses the provider profile when available. Without one, unmatched traffic uses the subscription. This setup requires a private IPv4 address on the configured LAN interface.
 4. Open **Overview** to confirm the selected connection and **Devices** to choose which devices use it. Test an intended site from one of those devices.
 
