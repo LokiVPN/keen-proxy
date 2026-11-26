@@ -22,6 +22,7 @@ type diagnosticTicket struct {
 	expires        time.Time
 	revision       string
 	check          DiagnosticCheckResult
+	titles         subscriptionTitles
 	target         string
 }
 

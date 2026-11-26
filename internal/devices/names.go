@@ -28,8 +28,9 @@ type LeaseName struct {
 	Hostname string
 }
 
-// NameResolver injects local DHCP and PTR sources for bounded background discovery.
+// NameResolver injects local router and PTR sources for bounded background discovery.
 type NameResolver struct {
+	Hotspot func(context.Context) map[string]string // optional names keyed by canonical MAC
 	Leases  func(context.Context) []LeaseName
 	Reverse func(context.Context, netip.Addr) (string, error)
 	Next    *int // optional cursor; the owning background worker calls Lookup serially
@@ -37,8 +38,11 @@ type NameResolver struct {
 
 // cleanName rejects absent, oversized, or whitespace/control-bearing hostnames.
 func cleanName(s string) string {
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return ""
+	}
 	s = strings.TrimSuffix(strings.TrimSpace(s), ".")
-	if s == "" || s == "*" || len(s) > 253 || strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) >= 0 {
+	if s == "" || s == "*" || len(s) > 253 || strings.ContainsFunc(s, unicode.IsSpace) {
 		return ""
 	}
 	return s
@@ -75,20 +79,32 @@ func appendLeaseName(out []LeaseName, fields map[string]string) []LeaseName {
 	return append(out, LeaseName{MAC: mac.String(), IP: ip, Hostname: name})
 }
 
-// Lookup prefers a matching lease and then local PTR; cancellation stops further work.
+// Lookup prefers hotspot names, then matching leases, then local PTR.
 func (r NameResolver) Lookup(ctx context.Context, neighbors map[string]netip.Addr) map[string]Name {
 	out := map[string]Name{}
-	if ctx.Err() != nil {
+	if len(neighbors) == 0 || ctx.Err() != nil {
 		return out
 	}
-	addLeaseNames(out, r.Leases(ctx), neighbors)
-	r.addReverseNames(ctx, out, neighbors)
+	if r.Hotspot != nil {
+		for mac, name := range r.Hotspot(ctx) {
+			if _, ok := neighbors[mac]; ok {
+				out[mac] = Name{Hostname: name, Source: "rci"}
+			}
+		}
+	}
+	if len(out) < len(neighbors) && ctx.Err() == nil {
+		addLeaseNames(out, r.Leases(ctx), neighbors)
+		r.addReverseNames(ctx, out, neighbors)
+	}
 	return out
 }
 
-// addLeaseNames requires both identities to match the current neighbor snapshot.
+// addLeaseNames fills names missing from RCI when both lease identities match.
 func addLeaseNames(out map[string]Name, leases []LeaseName, neighbors map[string]netip.Addr) {
 	for _, lease := range leases {
+		if out[lease.MAC].Source == "rci" {
+			continue
+		}
 		if ip, ok := neighbors[lease.MAC]; ok && ip == lease.IP {
 			if name := cleanName(lease.Hostname); name != "" {
 				out[lease.MAC] = Name{Hostname: name, Source: "dhcp"}
@@ -140,15 +156,15 @@ func (r NameResolver) addReverseNames(ctx context.Context, out map[string]Name, 
 	}
 }
 
-// LocalNames uses only the local router CLI and its loopback DNS listener.
+// LocalNames uses the router's local RCI, CLI, and loopback DNS listeners.
 func LocalNames(ctx context.Context, neighbors map[string]netip.Addr) map[string]Name {
-	return (NameResolver{Leases: keeneticLeases, Reverse: localPTR}).Lookup(ctx, neighbors)
+	return NewNameLookup()(ctx, neighbors)
 }
 
 // NewNameLookup owns a cursor for one serial background discovery worker.
 func NewNameLookup() func(context.Context, map[string]netip.Addr) map[string]Name {
 	next := 0
-	resolver := NameResolver{Leases: keeneticLeases, Reverse: localPTR, Next: &next}
+	resolver := NameResolver{Hotspot: keeneticHotspot, Leases: keeneticLeases, Reverse: localPTR, Next: &next}
 	return resolver.Lookup
 }
 

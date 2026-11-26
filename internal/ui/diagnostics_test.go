@@ -170,7 +170,7 @@ func TestDiagnosticsPinnedLabelHidesCredentialsForBothRoles(t *testing.T) {
 		h := New(f, Options{Role: func(*http.Request) Role { return role }})
 		w := diagnosticRequest(h, http.MethodGet, "/diagnostics", "", nil)
 		body := w.Body.String()
-		if w.Code != http.StatusOK || strings.Contains(strings.ToLower(body), strings.ToLower(compact)) || !strings.Contains(body, `value="main · Node 2"`) {
+		if w.Code != http.StatusOK || strings.Contains(strings.ToLower(body), strings.ToLower(compact)) || !strings.Contains(body, `value="Subscription · Node 2"`) {
 			t.Errorf("role %d did not get a generic pinned label", role)
 		}
 	}
@@ -185,7 +185,7 @@ func TestDiagnosticsPinnedLabelHidesCredentialsForBothRoles(t *testing.T) {
 		result := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
 		body := result.Body.String()
 		if result.Code != http.StatusOK || strings.Contains(strings.ToLower(body), strings.ToLower(compact)) ||
-			!strings.Contains(body, "Tested main · Node 2") {
+			!strings.Contains(body, "Tested Subscription · Node 2") {
 			t.Error("diagnostics result did not mask the tested node name")
 		}
 	}
@@ -207,15 +207,15 @@ func TestDiagnosticsNamesThePinnedSubscriptionInItsSavedResult(t *testing.T) {
 	}
 	h := diagnosticsHandler(f)
 	page := diagnosticRequest(h, http.MethodGet, "/diagnostics", "owner", nil)
-	assertContains(t, page.Body.String(), `value="sub2 · Shared &lt;provider&gt; · North"`)
+	assertContains(t, page.Body.String(), `value="Shared &lt;provider&gt; · sub2 · North"`)
 	post := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", url.Values{"rev": {Revision(cfg)}})
 	if post.Code != http.StatusSeeOther {
 		t.Fatalf("pinned check returned HTTP %d", post.Code)
 	}
-	f.subs[1].Metadata.Title = "New provider title"
+	f.subs[0].Metadata.Title, f.subs[1].Metadata.Title = "Renamed first provider", "Renamed second provider"
 	fragment := strings.Replace(post.Header().Get("Location"), "/diagnostics?", "/fragments/diagnostics/check?", 1)
 	result := diagnosticRequest(h, http.MethodGet, fragment, "owner", nil)
-	assertContains(t, result.Body.String(), "Tested sub2 · Shared &lt;provider&gt; · North")
+	assertContains(t, result.Body.String(), "Tested Shared &lt;provider&gt; · sub2 · North")
 }
 
 func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
@@ -259,7 +259,7 @@ func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {
 		for _, path := range []string{location, fragment} {
 			w := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
 			body := w.Body.String()
-			if w.Code != http.StatusOK || !strings.Contains(body, "main · Office &lt;provider&gt; → "+check.want) || strings.Contains(body, check.other) ||
+			if w.Code != http.StatusOK || !strings.Contains(body, "Office &lt;provider&gt; → "+check.want) || strings.Contains(body, check.other) ||
 				!strings.Contains(body, check.time) {
 				t.Errorf("the result for %s lost the actual tested identity", check.want)
 			}
@@ -300,7 +300,7 @@ func TestDiagnosticsReportsAutomaticSubscriptionReserve(t *testing.T) {
 	for _, path := range []string{location, fragment} {
 		w := diagnosticRequest(h, http.MethodGet, path, "owner", nil)
 		body := w.Body.String()
-		if w.Code != http.StatusOK || !strings.Contains(body, "main · Office &lt;provider&gt; → reserve Office &lt;backup&gt;") ||
+		if w.Code != http.StatusOK || !strings.Contains(body, "Office &lt;provider&gt; → reserve Office &lt;backup&gt;") ||
 			!strings.Contains(body, "The main VPN path is not in use. No VPN check was run.") || strings.Contains(body, "38 ms") {
 			t.Error("the result did not identify the automatic subscription's reserve and skipped probes")
 		}

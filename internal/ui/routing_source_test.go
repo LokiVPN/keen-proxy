@@ -30,7 +30,7 @@ func TestRoutingChangesSourceAndResetsRuleSwitches(t *testing.T) {
 	if post.Code != http.StatusSeeOther || post.Header().Get("Location") != "/routing" || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
 		t.Fatalf("source save returned HTTP %d, %d applies, rules %+v", post.Code, f.applies, f.cfg.ProviderRules)
 	}
-	assertContains(t, page.Body.String(), "Rules from subscription", `value="sample" selected`, "sub2 · Example VPN")
+	assertContains(t, page.Body.String(), "Rules from subscription", `value="sample" selected`, "Example VPN · sub2")
 	get := httptest.NewRequest(http.MethodGet, "/routing", nil)
 	for _, cookie := range post.Result().Cookies() {
 		get.AddCookie(cookie)

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"cmp"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -35,7 +34,7 @@ type overviewSubscription struct {
 	ReplaceURL                            string
 	Status                                overviewChip
 	ExpiryReminder                        string
-	ShowRefreshFailure                    bool
+	DuplicateTitle, ShowRefreshFailure    bool
 	Traffic                               string
 	Used, Total                           int64
 	LastUpdated, NextUpdate               string
@@ -68,6 +67,7 @@ func (p pages) renderOverview(w http.ResponseWriter, r *http.Request, code int, 
 
 func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscription, now time.Time, lang string) *overviewPage {
 	text := translations[lang]
+	titles := subscriptionTitlesFor(cfg, subs)
 	page := &overviewPage{
 		Rev: Revision(cfg), Paused: cfg.Paused, Choices: connectionOptions(cfg, subs, status.Connections, text),
 	}
@@ -80,7 +80,7 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 	}
 	mainSource, _, _ := model.ParseManagedTarget(page.Main)
 	for _, source := range cfg.Subscriptions {
-		view := subscriptionView(appliedSubscriptionFor(subs, source.ID), now, lang)
+		view := subscriptionView(appliedSubscriptionFor(subs, source.ID), titles, now, lang)
 		if source.ID == mainSource {
 			page.Subscriptions = slices.Insert(page.Subscriptions, 0, view)
 		} else {
@@ -93,7 +93,7 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 		page.Devices = fmt.Sprintf(text["overview_device_count"], status.ManagedDevices, status.Devices)
 	}
 	target, activeHome, mixedHome := overviewHomePath(network, status.HomeTargets)
-	selection := selectedConnection(cfg, target, subs, status.Connections, text)
+	selection := selectedConnection(cfg, target, subs, titles, status.Connections, text)
 	if network != nil {
 		page.NewDevices = text["overview_new_devices_policy"]
 		if network.Mode == model.ModeOff || (network.Mode == model.ModeFull && selection.Class == stats.TargetDirect) {
@@ -113,9 +113,9 @@ func makeOverview(cfg *model.Config, status OverviewStatus, subs []AppliedSubscr
 	page.Status, page.StatusDetail = overviewStatus(cfg.Paused, status, network, target, activeHome, mixedHome, selection, now, text)
 	main := selection
 	if target != page.Main {
-		main = selectedConnection(cfg, page.Main, subs, status.Connections, text)
+		main = selectedConnection(cfg, page.Main, subs, titles, status.Connections, text)
 	}
-	page.Routing, page.RoutingDetail = routingSummary(cfg, network, main, status, subs, text)
+	page.Routing, page.RoutingDetail = routingSummary(cfg, network, main, status, subs, titles, text)
 	return page
 }
 
@@ -217,11 +217,12 @@ func expiring(expiry, now time.Time) bool {
 	return expiry.After(now) && !expiry.After(now.Add(expiryWarning))
 }
 
-func subscriptionView(sub AppliedSubscription, now time.Time, lang string) overviewSubscription {
+func subscriptionView(sub AppliedSubscription, titles subscriptionTitles, now time.Time, lang string) overviewSubscription {
 	text := translations[lang]
 	metadata := sub.Metadata
 	view := overviewSubscription{
-		ID: sub.ID, Title: cmp.Or(metadata.Title, text["overview_subscription"]), Notice: metadata.Announce, AccountURL: metadata.ProfileURL,
+		ID: sub.ID, Title: titles.title(sub.ID, text), DuplicateTitle: titles.duplicate(sub.ID, text),
+		Notice: metadata.Announce, AccountURL: metadata.ProfileURL,
 		ReplaceURL: subscriptionPath(sub.ID) + "/replace", Traffic: setupTraffic(metadata.Usage, lang),
 	}
 	expiry := setupExpiry(metadata.Usage)
@@ -270,7 +271,7 @@ func overviewTimestamp(at time.Time, text map[string]string) string {
 	return fmt.Sprintf(text["overview_date_time"], setupDate(at, text), at.Format("15:04"))
 }
 
-func routingSummary(cfg *model.Config, network *model.Network, main connectionSelection, status OverviewStatus, subs []AppliedSubscription, text map[string]string) (string, string) {
+func routingSummary(cfg *model.Config, network *model.Network, main connectionSelection, status OverviewStatus, subs []AppliedSubscription, titles subscriptionTitles, text map[string]string) (string, string) {
 	if network == nil {
 		return text["overview_no_home"], ""
 	}
@@ -285,7 +286,7 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	case network.Mode == model.ModeFull || (network.Default != "" && network.Default != model.TargetDirect && network.Default != model.DefaultProfile):
 		selection := main
 		if network.Mode != model.ModeFull && network.Default != network.Target {
-			selection = selectedConnection(cfg, network.Default, subs, status.Connections, text)
+			selection = selectedConnection(cfg, network.Default, subs, titles, status.Connections, text)
 		}
 		mode = text["overview_route_custom"]
 		switch selection.Class {
@@ -301,8 +302,7 @@ func routingSummary(cfg *model.Config, network *model.Network, main connectionSe
 	case network.Default == model.DefaultProfile:
 		mode = text["overview_route_profile"]
 		if rules != nil {
-			sub := appliedSubscriptionFor(subs, rules.Source)
-			mode = fmt.Sprintf(text["overview_route_provider"], sub.label(text))
+			mode = fmt.Sprintf(text["overview_route_provider"], titles.label(rules.Source, text))
 		}
 	case rules != nil:
 		mode = text["overview_route_custom"]

@@ -38,7 +38,7 @@ lease:
 }
 
 func TestNameValidationAndCancellation(t *testing.T) {
-	for _, name := range []string{"", "*", "bad name", "bad\x00name", "\x00bad", strings.Repeat("a", 254)} {
+	for _, name := range []string{"", "*", "bad name", "bad\x00name", "\x00bad", "bad\n", strings.Repeat("a", 254)} {
 		if cleanName(name) != "" {
 			t.Errorf("accepted %q", name)
 		}

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"net/url"
@@ -20,6 +21,53 @@ const (
 	testSubscriptionRemove  = "/connections/subscriptions/new/remove"
 )
 
+func TestSubscriptionLabelsUseUniqueDisplayTitles(t *testing.T) {
+	for _, tc := range []struct {
+		name, first, second, firstLabel, secondLabel string
+	}{
+		{name: "single", first: "Example VPN", firstLabel: "Example VPN"},
+		{name: "unique", first: "Example VPN", second: "Other provider", firstLabel: "Example VPN", secondLabel: "Other provider"},
+		{name: "untitled", first: "Example VPN", firstLabel: "Example VPN", secondLabel: "Subscription"},
+		{name: "matching fallback", first: "Subscription", firstLabel: "Subscription · sample", secondLabel: "Subscription · new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSubscriptionManagementFixture(t)
+			f.subs[0].Metadata.Title, f.subs[1].Metadata.Title = tc.first, tc.second
+			if tc.secondLabel == "" {
+				f.cfg.Subscriptions = f.cfg.Subscriptions[:1]
+				f.subs[1].Metadata.Title = tc.first // A stale observation should not add a suffix.
+			} else if tc.second == "" {
+				f.subs = f.subs[:1] // A configured source without status still has a fallback label.
+			}
+			h := New(f, setupTestOptions(RoleManage))
+			overview := setupRequest(h, "/", nil).Body.String()
+			assertContains(t, overview, `<optgroup label="`+tc.firstLabel+`">`)
+			if tc.secondLabel != "" {
+				assertContains(t, overview, `<optgroup label="`+tc.secondLabel+`">`)
+			}
+			routing := setupRequest(h, "/routing", nil).Body.String()
+			assertContains(t, routing, `<option value="sample" selected>`+tc.firstLabel+`</option>`)
+			if tc.secondLabel != "" {
+				assertContains(t, routing, `<option value="new">`+tc.secondLabel+`</option>`)
+			}
+			connections := setupRequest(h, "/connections", nil).Body.String()
+			assertContains(t, connections, `>`+tc.first+`</h2>`)
+			if tc.secondLabel != "" {
+				assertContains(t, connections, `id="subscription-title-new" title="`+cmp.Or(tc.second, "Subscription")+`"`)
+			}
+			wantCaptions := 0
+			if tc.name == "matching fallback" {
+				wantCaptions = 2
+			}
+			for _, body := range []string{overview, connections} {
+				if got := strings.Count(body, `>Subscription ID `); got != wantCaptions {
+					t.Errorf("subscription ID captions = %d, want %d", got, wantCaptions)
+				}
+			}
+		})
+	}
+}
+
 func TestSubscriptionManagementDistinguishesMatchingTitles(t *testing.T) {
 	f := newSubscriptionManagementFixture(t)
 	title := "Identical provider title"
@@ -30,13 +78,14 @@ func TestSubscriptionManagementDistinguishesMatchingTitles(t *testing.T) {
 
 	page := setupRequest(h, "/connections", nil)
 	body := page.Body.String()
-	if page.Code != http.StatusOK || strings.Count(body, ">Subscription "+title+"</h2>") != 2 {
+	if page.Code != http.StatusOK || strings.Count(body, ">"+title+"</h2>") != 2 {
 		t.Fatal("both matching subscription cards should render")
 	}
 	for _, id := range []string{"sample", "new"} {
 		base := "/connections/subscriptions/" + id
-		description := `aria-describedby="subscription-id-` + id + `"`
+		description := `aria-describedby="subscription-label-` + id + `"`
 		assertContains(t, body, `>Subscription ID `+id+`</span>`,
+			`id="subscription-label-`+id+`"`,
 			`href="`+base+`/replace" `+description, description+` type="submit" form="subscription-remove-`+id+`"`)
 
 		preview := setupRequest(h, base+"/replace", nil)
@@ -57,9 +106,18 @@ func TestSubscriptionManagementDistinguishesMatchingTitles(t *testing.T) {
 	}
 	overview := setupRequest(h, "/", nil)
 	assertContains(t, overview.Body.String(), `>Subscription ID sample</span>`,
-		`<optgroup label="sample · `+title+`">`, `<optgroup label="new · `+title+`">`)
+		`<optgroup label="`+title+` · sample">`, `<optgroup label="`+title+` · new">`)
 	routing := setupRequest(h, "/routing", nil)
-	assertContains(t, routing.Body.String(), "By new · "+title+" rules")
+	assertContains(t, routing.Body.String(), "By "+title+" · new rules")
+
+	fragment := setupRequest(h, "/fragments/connections/sample", nil)
+	assertContains(t, fragment.Body.String(), `>Subscription ID sample</span>`, `id="subscription-label-sample"`)
+	f.subs[1].Metadata.Title = "Renamed provider"
+	fragment = setupRequest(h, "/fragments/connections/sample", nil)
+	assertContains(t, fragment.Body.String(), `id="subscription-label-sample"`, `>`+title+`</h2>`)
+	if fragment.Code != http.StatusOK || strings.Contains(fragment.Body.String(), ">Subscription ID ") {
+		t.Fatal("the fragment kept an ID after the display title became unique")
+	}
 }
 
 func TestSubscriptionManagementRejectsCheckWithoutReturningLink(t *testing.T) {

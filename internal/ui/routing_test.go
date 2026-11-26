@@ -253,7 +253,7 @@ func TestRoutingProviderTable(t *testing.T) {
 	en := setupRequest(h, "/routing", nil)
 	assertPageHeaders(t, en.Result(), "en")
 	body := en.Body.String()
-	assertContains(t, body, "By sample · Example VPN rules", "sample · Example VPN rules", "Through VPN", "Direct", "Block",
+	assertContains(t, body, "By Example VPN rules", "Example VPN rules", "Through VPN", "Direct", "Block",
 		"YouTube", "Russian sites and services", "Other sites from the subscription (3)",
 		"Other IP addresses from the subscription (2)", "Could not download category data.",
 		"Rest of the traffic", "through VPN", "&lt;script&gt;", `value="proxy:geosite:youtube"`)
@@ -486,7 +486,7 @@ func TestRoutingOffersVPNModeForMixedTargetUsingDirectReserve(t *testing.T) {
 	f.status.Connections[target] = ConnectionStatus{Class: stats.TargetMixed, ActiveClass: stats.TargetDirect}
 	h := New(f, setupTestOptions(RoleManage))
 	page := setupRequest(h, "/routing", nil)
-	assertContains(t, page.Body.String(), "Traffic follows connection sample · Example VPN", "The main connection is using its direct reserve.",
+	assertContains(t, page.Body.String(), "Traffic follows connection Example VPN", "The main connection is using its direct reserve.",
 		`value="all" id="routing-mode-all" required>`)
 	if strings.Contains(page.Body.String(), "All traffic through VPN") {
 		t.Error("a mixed main target was advertised as VPN-only")

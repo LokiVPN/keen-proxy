@@ -46,7 +46,7 @@ func (p pages) renderDiagnostics(w http.ResponseWriter, r *http.Request, status 
 	if query != "" {
 		data.Diagnostics.FragmentURL = diagnosticsFragment + query
 	}
-	data.DiagnosticResult = diagnosticResult(result, cfg, data.Text)
+	data.DiagnosticResult = diagnosticResult(result.check, cfg, result.titles, data.Text)
 	render(w, r, status, "diagnostics", data)
 }
 
@@ -74,6 +74,7 @@ func (p pages) diagnosticsCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rev := r.PostForm.Get("rev")
+	titles := subscriptionTitlesFor(cfg, p.deps.Subscriptions())
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 	result, err := p.deps.CheckDiagnosticTarget(ctx, network.Target, rev)
@@ -87,9 +88,17 @@ func (p pages) diagnosticsCheck(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		p.renderDiagnostics(w, r, http.StatusServiceUnavailable, "diag_check_unavailable")
 	default:
+		// Retain the observed target titles across later subscription refreshes.
+		groupID := diagnosticSubscriptionID(cfg, result.Group)
+		if groupID != "" {
+			titles[groupID] = result.GroupName
+		}
+		if id := diagnosticSubscriptionID(cfg, result.Leaf); id != "" && id != groupID && result.Node.Position > 0 {
+			titles[id] = result.Node.SubscriptionTitle
+		}
 		token := p.diagnosticTickets.put(diagnosticTicket{
 			owner: p.diagnosticsOwner(r), purpose: diagnosticsFragment,
-			revision: rev, check: result,
+			revision: rev, check: result, titles: titles,
 		})
 		flash := "flash_diag_checked"
 		if result.SkippedVPN {
@@ -107,18 +116,18 @@ func (p pages) diagnosticsCheckFragment(w http.ResponseWriter, r *http.Request) 
 	data := p.opts.pageData(r)
 	cfg := p.deps.Config()
 	result, _ := p.lastDiagnosticCheck(r, Revision(cfg))
-	data.DiagnosticResult = diagnosticResult(result, cfg, data.Text)
+	data.DiagnosticResult = diagnosticResult(result.check, cfg, result.titles, data.Text)
 	render(w, r, http.StatusOK, "diagnostics-probes", data)
 }
 
-func (p pages) lastDiagnosticCheck(r *http.Request, revision string) (DiagnosticCheckResult, string) {
+func (p pages) lastDiagnosticCheck(r *http.Request, revision string) (diagnosticTicket, string) {
 	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && p.role(r) == RoleManage {
 		token := r.URL.Query().Get("result")
 		if ticket, ok := p.diagnosticTickets.get(token, diagnosticsFragment, p.diagnosticsOwner(r)); ok && ticket.revision == revision {
-			return ticket.check, "?result=" + ticket.token
+			return ticket, "?result=" + ticket.token
 		}
 	}
-	return DiagnosticCheckResult{}, ""
+	return diagnosticTicket{}, ""
 }
 
 func (p pages) diagnosticsBundle(w http.ResponseWriter, r *http.Request) {

@@ -23,13 +23,15 @@
       <section class="overview-section" aria-labelledby="subscription-title">
         <div class="overview-section-head"><h2 id="subscription-title">{{if gt (len .Overview.Subscriptions) 1}}{{.Text.overview_subscriptions}}{{else}}{{.Text.overview_subscription}}{{end}}</h2></div>
         {{range .Overview.Subscriptions}}
-        <article class="overview-subscription" aria-labelledby="overview-subscription-id-{{.ID}}">
+        <article class="overview-subscription" aria-labelledby="overview-subscription-label-{{.ID}}">
         <div class="prov">
-          <strong class="clip overview-provider" title="{{.Title}}">{{.Title}}</strong>
+          <div id="overview-subscription-label-{{.ID}}" class="overview-provider">
+            <span class="clip" title="{{.Title}}">{{.Title}}</span>
+            {{if .DuplicateTitle}}<span class="muted small subscription-id">{{printf $.Text.subscription_id .ID}}</span>{{end}}
+          </div>
           <span class="chip {{.Status.Class}}">{{.Status.Label}}</span>
           {{if .Expiry}}<span class="muted">{{.Expiry}}</span>{{end}}
         </div>
-        <span id="overview-subscription-id-{{.ID}}" class="muted small subscription-id">{{printf $.Text.subscription_id .ID}}</span>
         {{if .ExpiryReminder}}
         <div class="note overview-renewal">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 20h20L12 3ZM12 9v4m0 3v.2"/></svg>
@@ -57,10 +59,10 @@
           <form method="post" action="/overview/refresh">
             <input type="hidden" name="rev" value="{{$.Overview.Rev}}">
             <input type="hidden" name="source" value="{{.ID}}">
-            <button class="btn soft" aria-describedby="overview-subscription-id-{{.ID}}" type="submit"{{if $.ViewOnly}} disabled{{end}}>{{$.Text.overview_refresh}}</button>
+            <button class="btn soft" aria-describedby="overview-subscription-label-{{.ID}}" type="submit"{{if $.ViewOnly}} disabled{{end}}>{{$.Text.overview_refresh}}</button>
           </form>
-          {{if $.ViewOnly}}<button class="btn soft" aria-describedby="overview-subscription-id-{{.ID}}" type="button" disabled>{{$.Text.setup_replace}}</button>
-          {{else}}<a class="btn soft" href="{{.ReplaceURL}}" aria-describedby="overview-subscription-id-{{.ID}}">{{$.Text.setup_replace}}</a>{{end}}
+          {{if $.ViewOnly}}<button class="btn soft" aria-describedby="overview-subscription-label-{{.ID}}" type="button" disabled>{{$.Text.setup_replace}}</button>
+          {{else}}<a class="btn soft" href="{{.ReplaceURL}}" aria-describedby="overview-subscription-label-{{.ID}}">{{$.Text.setup_replace}}</a>{{end}}
         </div>
         </article>
         {{else}}

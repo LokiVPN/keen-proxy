@@ -31,6 +31,7 @@ type subscriptionNodesView struct {
 	ID, Title, Summary    string
 	RulesNotice           string
 	Status                overviewChip
+	DuplicateTitle        bool
 	ViewOnly, CheckingAll bool
 	Rows                  []connectionNodeView
 	Text                  map[string]string
@@ -53,8 +54,9 @@ func connectionsView(cfg, draft *model.Config, subs []AppliedSubscription, healt
 	settings := cmp.Or(draft, cfg)
 	view := &connectionsPage{Revision: Revision(cfg), AddPath: subscriptionNewPath}
 	now := time.Now()
+	titles := subscriptionTitlesFor(cfg, subs)
 	for i, source := range cfg.Subscriptions {
-		nodes := connectionNodes(appliedSubscriptionFor(subs, source.ID), viewOnly, now, text)
+		nodes := connectionNodes(appliedSubscriptionFor(subs, source.ID), titles, viewOnly, now, text)
 		fallback := settings.Subscriptions[i].Fallback
 		view.Draft = view.Draft || fallback != source.Fallback
 		view.Subscriptions = append(view.Subscriptions, connectionSubscriptionView{
@@ -121,13 +123,9 @@ func connectionReserveChain(cfg *model.Config, id string, text map[string]string
 	return strings.Join(names, " → ")
 }
 
-func connectionNodes(sub AppliedSubscription, viewOnly bool, now time.Time, text map[string]string) subscriptionNodesView {
-	title := text["overview_subscription"]
-	if sub.Metadata.Title != "" {
-		title = fmt.Sprintf(text["connections_subscription"], sub.Metadata.Title)
-	}
+func connectionNodes(sub AppliedSubscription, titles subscriptionTitles, viewOnly bool, now time.Time, text map[string]string) subscriptionNodesView {
 	view := subscriptionNodesView{
-		ID: sub.ID, Title: title,
+		ID: sub.ID, Title: titles.title(sub.ID, text), DuplicateTitle: titles.duplicate(sub.ID, text),
 		RulesNotice: providerRulesNotice(sub.RulesState, text),
 		Status:      connectionSubscriptionStatus(sub, now, text), CheckingAll: sub.CheckingAll,
 		ViewOnly: viewOnly, Text: text,

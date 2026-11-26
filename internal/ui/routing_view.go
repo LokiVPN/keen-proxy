@@ -69,9 +69,9 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 		page.Source, page.Draft = draft.Source, true
 	}
 	state := p.routingState(cfg, network, page.Source)
+	titles := subscriptionTitlesFor(cfg, state.subscriptions)
 	for _, source := range cfg.Subscriptions {
-		sub := appliedSubscriptionFor(state.subscriptions, source.ID)
-		page.Sources = append(page.Sources, connectionOption{Target: source.ID, Label: sub.label(text)})
+		page.Sources = append(page.Sources, connectionOption{Target: source.ID, Label: titles.label(source.ID, text)})
 	}
 	page.CanAll = state.canUseVPN()
 	page.Mode = routingMode(network, settings, page.CanAll)
@@ -87,7 +87,7 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 	page.ProviderHint = text[cmp.Or(providerProblem, "routing_provider_hint")]
 	page.ProviderMode, page.ProviderHeading = text["routing_mode_provider"], text["routing_provider_rules"]
 	if state.sub.ID != "" {
-		name := state.sub.label(text)
+		name := titles.label(state.sub.ID, text)
 		page.ProviderMode = fmt.Sprintf(text["routing_mode_named_provider"], name)
 		page.ProviderHeading = fmt.Sprintf(text["routing_named_provider_rules"], name)
 	}
@@ -104,7 +104,7 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 		page.OwnHint, page.VPNTitle = text["routing_own_direct_hint"], text["routing_own_via_main"]
 		page.VPN.ReadOnlyNote = cmp.Or(page.VPN.ReadOnlyNote, page.AllHint)
 	} else if state.class == stats.TargetMixed {
-		selection := selectedConnection(cfg, network.Target, state.subscriptions, state.health, text)
+		selection := selectedConnection(cfg, network.Target, state.subscriptions, titles, state.health, text)
 		page.AllMode = text["routing_main_mode"]
 		if selection.Name != "" {
 			page.AllMode = fmt.Sprintf(text["overview_follow_connection"], selection.Name)

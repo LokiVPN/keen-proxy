@@ -129,8 +129,8 @@ func (p pages) diagnosticTargetLabel(cfg *model.Config, text map[string]string) 
 		default:
 			label = cmp.Or(diagnosticNodeName(p.deps.DiagnosticNode(target), text), text["diag_subscription_node"])
 		}
-		sub := appliedSubscriptionFor(p.deps.Subscriptions(), id)
-		return sub.label(text) + " · " + label, true
+		titles := subscriptionTitlesFor(cfg, p.deps.Subscriptions())
+		return titles.label(id, text) + " · " + label, true
 	default:
 		for _, conn := range cfg.Connections {
 			if conn.ID == target {
@@ -157,20 +157,20 @@ type diagnosticResultView struct {
 	Rows                []diagnosticRow
 }
 
-func diagnosticResult(result DiagnosticCheckResult, cfg *model.Config, text map[string]string) diagnosticResultView {
+func diagnosticResult(result DiagnosticCheckResult, cfg *model.Config, titles subscriptionTitles, text map[string]string) diagnosticResultView {
 	view := diagnosticResultView{Node: diagnosticNodeName(result.Node, text), SkippedVPN: result.SkippedVPN}
 	groupID := diagnosticSubscriptionID(cfg, result.Group)
 	if leafID := diagnosticSubscriptionID(cfg, result.Leaf); view.Node != "" && leafID != "" && leafID != groupID {
-		view.Node = subscriptionLabel(leafID, result.Node.SubscriptionTitle) + " · " + view.Node
+		view.Node = titles.label(leafID, text) + " · " + view.Node
 	}
 	if result.Group != "" {
-		group := cmp.Or(result.GroupName, diagnosticPathName(cfg, result.Group, text))
+		group := cmp.Or(result.GroupName, diagnosticPathName(cfg, result.Group, titles, text))
 		if groupID != "" {
-			group = subscriptionLabel(groupID, result.GroupName)
+			group = titles.label(groupID, text)
 		}
-		leaf := cmp.Or(view.Node, diagnosticPathName(cfg, result.Leaf, text))
+		leaf := cmp.Or(view.Node, diagnosticPathName(cfg, result.Leaf, titles, text))
 		if result.Reserve != "" {
-			leaf = fmt.Sprintf(text["diag_reserve"], diagnosticPathName(cfg, result.Reserve, text))
+			leaf = fmt.Sprintf(text["diag_reserve"], diagnosticPathName(cfg, result.Reserve, titles, text))
 		}
 		view.Path = group + " → " + leaf
 	}
@@ -185,7 +185,7 @@ func diagnosticResult(result DiagnosticCheckResult, cfg *model.Config, text map[
 	return view
 }
 
-func diagnosticPathName(cfg *model.Config, tag string, text map[string]string) string {
+func diagnosticPathName(cfg *model.Config, tag string, titles subscriptionTitles, text map[string]string) string {
 	switch tag {
 	case model.TargetDirect:
 		return text["overview_direct"]
@@ -193,7 +193,7 @@ func diagnosticPathName(cfg *model.Config, tag string, text map[string]string) s
 		return text["detail_blocked"]
 	}
 	if id := diagnosticSubscriptionID(cfg, tag); id != "" {
-		return subscriptionLabel(id, text["diag_subscription_node"])
+		return titles.label(id, text) + " · " + text["diag_subscription_node"]
 	}
 	if cfg != nil {
 		return cmp.Or(connectionName(cfg, tag), tag)

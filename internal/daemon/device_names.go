@@ -30,7 +30,7 @@ func (d *Daemon) runDeviceNames(ctx context.Context) {
 	}
 }
 
-// Snapshot and publish under the lock; CLI/DNS work always runs outside it.
+// Snapshot and publish under the lock. Name lookups run outside it.
 func (d *Daemon) refreshDeviceNames(ctx context.Context, now time.Time) {
 	d.mu.Lock()
 	neighbors := maps.Clone(d.neighbors)

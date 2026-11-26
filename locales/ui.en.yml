@@ -292,7 +292,6 @@ routing_category_youtube: "YouTube"
 routing_geoip_direct: "Direct IP ranges"
 routing_geoip_ru: "IP addresses in Russia"
 
-connections_subscription: "Subscription %s"
 connections_remove_subscription: "Remove subscription"
 connections_remove_referenced: "Remove these references before removing subscription %s."
 connections_remove_reference_error: "Could not check all saved references to subscription %s."

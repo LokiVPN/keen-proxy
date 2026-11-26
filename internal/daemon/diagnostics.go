@@ -240,7 +240,7 @@ func (d *Daemon) diagnosticAutomaticLocked(source, target string) DiagnosticRepo
 
 func (d *Daemon) diagnosticGroupLocked(source, target string) DiagnosticReport {
 	return DiagnosticReport{
-		Group: target, GroupName: cmp.Or(diagnosticSubscriptionTitle(d.subscriptions.states[source]), source),
+		Group: target, GroupName: diagnosticSubscriptionTitle(d.subscriptions.states[source]),
 	}
 }
 

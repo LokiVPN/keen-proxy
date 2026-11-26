@@ -46,7 +46,7 @@ func TestOverviewStates(t *testing.T) {
 			banner, _, _ := strings.Cut(body, `aria-label="KeenProxy sections"`)
 			assertContains(t, banner, ">"+tc.status+"</span>", tc.detail)
 			assertContains(t, body, tc.renewal, "18 GB of 200 GB", `value="19327352832" max="214748364800"`,
-				"Last updated", "Next update", "Maintenance tonight", `href="/connections/subscriptions/sample/replace"`, "Routing by sample · Example VPN",
+				"Last updated", "Next update", "Maintenance tonight", `href="/connections/subscriptions/sample/replace"`, "Routing by Example VPN",
 				"1 of 2 rules enabled", "Own site entries: 1", "KeenProxy handles 2 of 3 devices")
 			if tc.renewal == "Renew" {
 				assertContains(t, body, `href="https://provider.example/account"`)
@@ -64,7 +64,7 @@ func TestOverviewIgnoresDormantProviderRules(t *testing.T) {
 	h := New(f, setupTestOptions(RoleManage))
 	page := setupRequest(h, "/", nil)
 	assertContains(t, page.Body.String(), "Follow the subscription profile")
-	if strings.Contains(page.Body.String(), "Routing by sample · Example VPN") || strings.Contains(page.Body.String(), "1 of 2 rules enabled") {
+	if strings.Contains(page.Body.String(), "Routing by Example VPN") || strings.Contains(page.Body.String(), "1 of 2 rules enabled") {
 		t.Error("overview presented dormant rules as active")
 	}
 }
@@ -221,7 +221,7 @@ func TestOverviewTargets(t *testing.T) {
 			}
 			h := New(f, setupTestOptions(RoleManage))
 			body := setupRequest(h, "/", nil).Body.String()
-			assertContains(t, body, `<optgroup label="sample · Example VPN">`, `<optgroup label="Manual connections">`,
+			assertContains(t, body, `<optgroup label="Example VPN">`, `<optgroup label="Manual connections">`,
 				"North · 42 ms", "Cabin · WireGuard · 35 ms", "Office · VLESS · No response", "Office SOCKS · SOCKS · Disabled",
 				`value="`+tc.target+`"`)
 			w := setupRequest(h, "/overview/connection", url.Values{"rev": {formField(t, body, "rev")}, "target": {tc.target}})
@@ -254,22 +254,22 @@ func TestOverviewShowsAndRefreshesEachSubscription(t *testing.T) {
 	_, cards, _ := strings.Cut(body, `aria-labelledby="subscription-title">`)
 	cards, _, _ = strings.Cut(cards, `aria-labelledby="connection-title">`)
 	for _, id := range []string{"sub2", "sample", third.ID} {
-		assertContains(t, cards, "Subscription ID "+id, `name="source" value="`+id+`"`,
+		assertContains(t, cards, `id="overview-subscription-label-`+id+`"`, `name="source" value="`+id+`"`,
 			`href="/connections/subscriptions/`+id+`/replace"`)
 	}
-	if strings.Index(cards, "Subscription ID sub2") > strings.Index(cards, "Subscription ID sample") ||
-		strings.Index(cards, "Subscription ID sample") > strings.Index(cards, "Subscription ID sub3") {
+	if strings.Index(cards, `id="overview-subscription-label-sub2"`) > strings.Index(cards, `id="overview-subscription-label-sample"`) ||
+		strings.Index(cards, `id="overview-subscription-label-sample"`) > strings.Index(cards, `id="overview-subscription-label-sub3"`) {
 		t.Error("cards did not put the main subscription first and keep the rest in configuration order")
 	}
 	assertContains(t, cards, "5 GB of 80 GB", "18 GB of 200 GB", ">Expired</span>", ">Active</span>", ">Pending</span>")
-	assertContains(t, body, "sub2 · Example VPN · South · 27 ms", `>Subscription expired</span>`)
-	_, options, _ := strings.Cut(body, `<optgroup label="sub2 · Example VPN">`)
+	assertContains(t, body, "Example VPN · sub2 · South · 27 ms", `>Subscription expired</span>`)
+	_, options, _ := strings.Cut(body, `<optgroup label="Example VPN · sub2">`)
 	options, _, _ = strings.Cut(options, `</optgroup>`)
 	for _, mode := range []string{"auto", model.SubscriptionRoundRobin, model.SubscriptionConsistentHash, model.SubscriptionStickySession, overviewNodeID} {
 		assertContains(t, options, `value="`+model.ManagedTarget("sub2", mode)+`"`)
 	}
 	assertContains(t, options, "South · 27 ms")
-	assertContains(t, body, `<optgroup label="sample · Example VPN">`, `<optgroup label="Manual connections">`)
+	assertContains(t, body, `<optgroup label="Example VPN · sample">`, `<optgroup label="Manual connections">`)
 
 	rev := formField(t, body, "rev")
 	refresh := setupRequest(h, "/overview/refresh", url.Values{"rev": {rev}, "source": {"sub2"}})
@@ -301,11 +301,11 @@ func TestOverviewNamesTheSubscriptionUsingAReserve(t *testing.T) {
 	f.subs[1].Unavailable, f.subs[1].SwitchReason = true, "fallback"
 	h := New(f, setupTestOptions(RoleManage))
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Reserve connection</span>`,
-		"sub2 · Example VPN · Using reserve Cabin.", "Current connection · sub2 · Example VPN · Cabin")
+		"Example VPN · sub2 · Using reserve Cabin.", "Current connection · Example VPN · sub2 · Cabin")
 
 	f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN, Checked: true}
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>No connection</span>`,
-		"sub2 · Example VPN · The reserve connection is unavailable.")
+		"Example VPN · sub2 · The reserve connection is unavailable.")
 }
 
 func TestOverviewLeavesReadOnlyOwnVPNGroupsInPlace(t *testing.T) {
@@ -470,7 +470,7 @@ func TestOverviewRejectsViewWritesAndStaleForms(t *testing.T) {
 				page := setupRequest(h, "/", nil)
 				rev = formField(t, page.Body.String(), "rev")
 				assertContains(t, page.Body.String(), "View only", `data-autosubmit disabled`, `type="submit" disabled`,
-					`<button class="btn soft" aria-describedby="overview-subscription-id-sample" type="button" disabled>Replace link</button>`)
+					`<button class="btn soft" aria-describedby="overview-subscription-label-sample" type="button" disabled>Replace link</button>`)
 			}
 			post := setupRequest(h, path, url.Values{"rev": {rev}, "target": {"backup"}})
 			if post.Code != tc.code || f.applies != 0 || len(f.refreshes) != 0 {

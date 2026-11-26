@@ -29,9 +29,10 @@ type connectionOption struct {
 // connectionOptions supplies both the select and the set of accepted writes.
 func connectionOptions(cfg *model.Config, subs []AppliedSubscription, health map[string]ConnectionStatus, text map[string]string) []connectionGroup {
 	groups := make([]connectionGroup, 0, len(cfg.Subscriptions)+1)
+	titles := subscriptionTitlesFor(cfg, subs)
 	for _, source := range cfg.Subscriptions {
 		sub := appliedSubscriptionFor(subs, source.ID)
-		group := connectionGroup{Label: sub.label(text)}
+		group := connectionGroup{Label: titles.label(source.ID, text)}
 		for _, mode := range []struct{ target, key string }{
 			{"auto", "overview_auto"},
 			{model.SubscriptionRoundRobin, "overview_round_robin"},
@@ -84,19 +85,6 @@ func appliedSubscriptionFor(subs []AppliedSubscription, id string) AppliedSubscr
 		}
 	}
 	return AppliedSubscription{ID: id}
-}
-
-func (sub AppliedSubscription) label(text map[string]string) string {
-	return cmp.Or(subscriptionLabel(sub.ID, sub.Metadata.Title), text["overview_subscription"])
-}
-
-// subscriptionLabel leads with the saved ID in compact labels so that titles
-// supplied by providers cannot make two subscriptions look identical.
-func subscriptionLabel(id, title string) string {
-	if id != "" && title != "" && title != id {
-		return id + " · " + title
-	}
-	return cmp.Or(id, title)
 }
 
 func nodeLabel(node SubscriptionNode, text map[string]string) string {
@@ -177,10 +165,10 @@ func (s connectionSelection) withSubscription(detail string) string {
 	return detail
 }
 
-func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscription, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
+func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscription, titles subscriptionTitles, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	if id, mode, managed := model.ParseManagedTarget(target); managed {
 		sub := appliedSubscriptionFor(subs, id)
-		selection := selectedSubscription(cfg, sub, mode, health, text)
+		selection := selectedSubscription(cfg, sub, mode, titles.label(id, text), health, text)
 		selection.Class = cmp.Or(health[target].Class, selection.Class)
 		selection.Blocked = selection.Blocked || selection.Class == stats.TargetBlock
 		return selection
@@ -188,9 +176,9 @@ func selectedConnection(cfg *model.Config, target string, subs []AppliedSubscrip
 	return selectedManualConnection(cfg, target, health, text)
 }
 
-func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
+func selectedSubscription(cfg *model.Config, sub AppliedSubscription, mode, label string, health map[string]ConnectionStatus, text map[string]string) connectionSelection {
 	selection := connectionSelection{
-		Name: sub.label(text), Expiry: setupExpiry(sub.Metadata.Usage), Subscription: true,
+		Name: label, Expiry: setupExpiry(sub.Metadata.Usage), Subscription: true,
 	}
 	selection.Detail = selection.Name
 	if model.IsSubscriptionBalance(mode) {

@@ -171,7 +171,8 @@ func (p pages) connectionsFragment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := p.opts.pageData(r)
-	data.SubscriptionNodes = connectionNodes(subs[i], role == RoleView, time.Now(), data.Text)
+	titles := subscriptionTitlesFor(nil, subs)
+	data.SubscriptionNodes = connectionNodes(subs[i], titles, role == RoleView, time.Now(), data.Text)
 	render(w, r, http.StatusOK, "connections-nodes-fragment", data)
 }
 
