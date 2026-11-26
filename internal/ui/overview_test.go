@@ -262,14 +262,14 @@ func TestOverviewShowsAndRefreshesEachSubscription(t *testing.T) {
 		t.Error("cards did not put the main subscription first and keep the rest in configuration order")
 	}
 	assertContains(t, cards, "5 GB of 80 GB", "18 GB of 200 GB", ">Expired</span>", ">Active</span>", ">Pending</span>")
-	assertContains(t, body, "Example VPN · sub2 · South · 27 ms", `>Subscription expired</span>`)
-	_, options, _ := strings.Cut(body, `<optgroup label="Example VPN · sub2">`)
+	assertContains(t, body, "sub2 · Example VPN · South · 27 ms", `>Subscription expired</span>`)
+	_, options, _ := strings.Cut(body, `<optgroup label="sub2 · Example VPN">`)
 	options, _, _ = strings.Cut(options, `</optgroup>`)
 	for _, mode := range []string{"auto", model.SubscriptionRoundRobin, model.SubscriptionConsistentHash, model.SubscriptionStickySession, overviewNodeID} {
 		assertContains(t, options, `value="`+model.ManagedTarget("sub2", mode)+`"`)
 	}
 	assertContains(t, options, "South · 27 ms")
-	assertContains(t, body, `<optgroup label="Example VPN · sample">`, `<optgroup label="Manual connections">`)
+	assertContains(t, body, `<optgroup label="sample · Example VPN">`, `<optgroup label="Manual connections">`)
 
 	rev := formField(t, body, "rev")
 	refresh := setupRequest(h, "/overview/refresh", url.Values{"rev": {rev}, "source": {"sub2"}})
@@ -301,11 +301,11 @@ func TestOverviewNamesTheSubscriptionUsingAReserve(t *testing.T) {
 	f.subs[1].Unavailable, f.subs[1].SwitchReason = true, "fallback"
 	h := New(f, setupTestOptions(RoleManage))
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>Reserve connection</span>`,
-		"Example VPN · sub2 · Using reserve Cabin.", "Current connection · Example VPN · sub2 · Cabin")
+		"sub2 · Example VPN · Using reserve Cabin.", "Current connection · sub2 · Example VPN · Cabin")
 
 	f.status.Connections["backup"] = ConnectionStatus{Class: stats.TargetVPN, Checked: true}
 	assertContains(t, setupRequest(h, "/", nil).Body.String(), `>No connection</span>`,
-		"Example VPN · sub2 · The reserve connection is unavailable.")
+		"sub2 · Example VPN · The reserve connection is unavailable.")
 }
 
 func TestOverviewLeavesReadOnlyOwnVPNGroupsInPlace(t *testing.T) {

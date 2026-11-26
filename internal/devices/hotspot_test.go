@@ -26,10 +26,10 @@ func TestNameLookupPrefersKeeneticHotspot(t *testing.T) {
 			t.Errorf("unexpected RCI request: %s %s", r.Method, r.URL.RequestURI())
 		}
 		_, _ = io.WriteString(w, `{"host":[
-			{"mac":"02:00:00:00:00:AA","ip":"192.0.2.9","name":"\u041d\u043e\u0443\u0442\u0431\u0443\u043a","hostname":"laptop","interface":{"id":"Bridge0"},"active":true},
+			{"mac":"02:00:00:00:00:AA","ip":"192.0.2.9","name":"  \u041d\u043e\u0443\u0442\u0431\u0443\u043a  \u2003\u0414\u043e\u043c\u0430  ","hostname":"laptop","interface":{"id":"Bridge0"},"active":true},
 			{"mac":"02:00:00:00:00:AA","hostname":"another-hostname"},
 			{"mac":"02:00:00:00:00:BB","name":"bad\n","hostname":"printer.local."},
-			{"mac":"02:00:00:00:00:CC","name":"bad\u0000name","hostname":"*"},
+			{"mac":"02:00:00:00:00:CC","name":"bad\u0000name","hostname":"two words"},
 			{"mac":"02:00:00:00:00:EE","ip":"192.0.2.4","name":"another-device"},
 			{"mac":"invalid","name":"invalid-device"}
 		]}`)
@@ -53,12 +53,29 @@ func TestNameLookupPrefersKeeneticHotspot(t *testing.T) {
 		},
 	}
 	want := map[string]Name{
-		"02:00:00:00:00:aa": {Hostname: "\u041d\u043e\u0443\u0442\u0431\u0443\u043a", Source: "rci"},
+		"02:00:00:00:00:aa": {Hostname: "\u041d\u043e\u0443\u0442\u0431\u0443\u043a \u0414\u043e\u043c\u0430", Source: "rci"},
 		"02:00:00:00:00:bb": {Hostname: "printer.local", Source: "rci"},
 		"02:00:00:00:00:cc": {Hostname: "dhcp-phone", Source: "dhcp"},
 		"02:00:00:00:00:dd": {Hostname: "speaker.local", Source: "dns"},
 	}
 	if got := source.Lookup(t.Context(), neighbors); !reflect.DeepEqual(got, want) {
+		t.Fatalf("names = %+v, want %+v", got, want)
+	}
+}
+
+func TestKeeneticHotspotBoundsAssignedNamesByRunes(t *testing.T) {
+	const validMAC, longMAC, placeholderMAC = "02:00:00:00:00:aa", "02:00:00:00:00:bb", "02:00:00:00:00:cc"
+	valid := strings.Repeat("\u0410", 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"host":[
+			{"mac":"`+validMAC+`","name":" `+valid+` "},
+			{"mac":"`+longMAC+`","name":"`+valid+`\u0410","hostname":"printer"},
+			{"mac":"`+placeholderMAC+`","name":" * ","hostname":"speaker"}
+		]}`)
+	}))
+	defer server.Close()
+	want := map[string]string{validMAC: valid, longMAC: "printer", placeholderMAC: "speaker"}
+	if got := readKeeneticHotspot(t.Context(), server.URL+hotspotTestPath); !reflect.DeepEqual(got, want) {
 		t.Fatalf("names = %+v, want %+v", got, want)
 	}
 }

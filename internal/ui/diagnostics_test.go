@@ -207,7 +207,7 @@ func TestDiagnosticsNamesThePinnedSubscriptionInItsSavedResult(t *testing.T) {
 	}
 	h := diagnosticsHandler(f)
 	page := diagnosticRequest(h, http.MethodGet, "/diagnostics", "owner", nil)
-	assertContains(t, page.Body.String(), `value="Shared &lt;provider&gt; · sub2 · North"`)
+	assertContains(t, page.Body.String(), `value="sub2 · Shared &lt;provider&gt; · North"`)
 	post := diagnosticRequest(h, http.MethodPost, "/diagnostics/check", "owner", url.Values{"rev": {Revision(cfg)}})
 	if post.Code != http.StatusSeeOther {
 		t.Fatalf("pinned check returned HTTP %d", post.Code)
@@ -215,7 +215,7 @@ func TestDiagnosticsNamesThePinnedSubscriptionInItsSavedResult(t *testing.T) {
 	f.subs[0].Metadata.Title, f.subs[1].Metadata.Title = "Renamed first provider", "Renamed second provider"
 	fragment := strings.Replace(post.Header().Get("Location"), "/diagnostics?", "/fragments/diagnostics/check?", 1)
 	result := diagnosticRequest(h, http.MethodGet, fragment, "owner", nil)
-	assertContains(t, result.Body.String(), "Tested Shared &lt;provider&gt; · sub2 · North")
+	assertContains(t, result.Body.String(), "Tested sub2 · Shared &lt;provider&gt; · North")
 }
 
 func TestDiagnosticsKeepsTestedNodeAcrossSelectionChanges(t *testing.T) {

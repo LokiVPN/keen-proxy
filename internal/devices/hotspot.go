@@ -6,7 +6,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -65,11 +68,24 @@ func readKeeneticHotspot(ctx context.Context, endpoint string) map[string]string
 			continue
 		}
 		key := mac.String()
-		if name := cleanName(host.Name); name != "" {
+		if name := cleanAssignedName(host.Name); name != "" {
 			names[key] = name
 		} else if hostname := cleanName(host.Hostname); hostname != "" && names[key] == "" {
 			names[key] = hostname
 		}
 	}
 	return names
+}
+
+// An assigned display name may contain spaces. Reject controls before
+// normalizing whitespace so a line break cannot become part of a name.
+func cleanAssignedName(name string) string {
+	if strings.ContainsFunc(name, unicode.IsControl) {
+		return ""
+	}
+	name = strings.Join(strings.Fields(name), " ")
+	if name == "" || name == "*" || utf8.RuneCountInString(name) > 64 {
+		return ""
+	}
+	return name
 }

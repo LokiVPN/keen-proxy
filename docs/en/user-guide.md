@@ -60,7 +60,7 @@ If the provider stops supplying rules before your switch edits are saved, KeenPr
 
 KeenProxy shows devices discovered on the LAN and configured devices, including saved devices that are offline. Switch VPN routing on or off for individual devices, or choose **Enable for all** or **Disable for all**. Review any notice beside a device that has no applicable VPN route. A device with a saved VPN switch and no known IP is waiting for an address. If an address change leaves a VPN-on row without a target, review the row before you save again.
 
-A name saved in KeenProxy takes priority. For discovered devices, KeenProxy looks up names by MAC address in the background. It prefers the name you assigned in KeeneticOS, then the hostname reported by KeeneticOS. It falls back to the router's DHCP bindings and local reverse DNS. If no name is available, the row shows **New device**.
+A name saved in KeenProxy takes priority. For discovered devices, KeenProxy looks up names by MAC address in the background. It prefers the name you assigned in KeeneticOS, which may contain spaces, then the hostname reported by KeeneticOS. It falls back to the router's DHCP bindings and local reverse DNS. If no name is available, the row shows **New device**.
 
 **New devices use the VPN right away** sets the default for new home-network devices. The switches displayed for existing devices keep their setting when you change this default. Choose **Save** to apply the list and default. **Cancel** returns to the saved settings.
 
@@ -80,7 +80,7 @@ KeenProxy accepts HTTPS Xray share lists in plain text or Base64, up to 2 MiB an
 
 ### Manage subscriptions { #manage-subscriptions }
 
-KeenProxy uses the provider title or **Subscription** if the title is missing. If several subscriptions have the same display title, KeenProxy also shows their IDs. The replacement form and the removal warning show the ID of the affected subscription.
+KeenProxy uses the provider title or **Subscription** if the title is missing. If several subscriptions have the same display title, KeenProxy also shows their IDs. The **Main connection** and **Rules from subscription** lists put these IDs first so you can distinguish the choices on a narrow screen. The replacement form and removal warning show the ID of the affected subscription.
 
 - Choose **Add subscription**, paste the HTTPS link, and use **Check**. Review the result and confirm with **Add subscription**. The new source becomes available in the connection list. Your saved network, device, and provider rules settings stay in place.
 - Choose **Replace link** in the subscription's block, use **Check** on the new link, then confirm **Replace link**. That subscription keeps its ID and reserve, and saved routing references still point to it.

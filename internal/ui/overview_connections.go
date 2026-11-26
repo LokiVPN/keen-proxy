@@ -33,17 +33,22 @@ func connectionOptions(cfg *model.Config, subs []AppliedSubscription, health map
 	for _, source := range cfg.Subscriptions {
 		sub := appliedSubscriptionFor(subs, source.ID)
 		group := connectionGroup{Label: titles.label(source.ID, text)}
+		prefix := ""
+		// The collapsed select displays the option without its group label.
+		if titles.duplicate(source.ID, text) {
+			prefix = source.ID + " · "
+		}
 		for _, mode := range []struct{ target, key string }{
 			{"auto", "overview_auto"},
 			{model.SubscriptionRoundRobin, "overview_round_robin"},
 			{model.SubscriptionConsistentHash, "overview_consistent_hash"},
 			{model.SubscriptionStickySession, "overview_sticky_session"},
 		} {
-			group.Options = append(group.Options, connectionOption{Target: model.ManagedTarget(source.ID, mode.target), Label: text[mode.key]})
+			group.Options = append(group.Options, connectionOption{Target: model.ManagedTarget(source.ID, mode.target), Label: prefix + text[mode.key]})
 		}
 		for _, node := range sub.Nodes {
 			group.Options = append(group.Options, connectionOption{
-				Target: model.ManagedTarget(source.ID, node.ID), Label: nodeLabel(node, text),
+				Target: model.ManagedTarget(source.ID, node.ID), Label: prefix + nodeLabel(node, text),
 				Disabled: node.Health == connectionUnavailable,
 			})
 		}

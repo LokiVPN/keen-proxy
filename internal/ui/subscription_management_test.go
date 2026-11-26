@@ -28,7 +28,7 @@ func TestSubscriptionLabelsUseUniqueDisplayTitles(t *testing.T) {
 		{name: "single", first: "Example VPN", firstLabel: "Example VPN"},
 		{name: "unique", first: "Example VPN", second: "Other provider", firstLabel: "Example VPN", secondLabel: "Other provider"},
 		{name: "untitled", first: "Example VPN", firstLabel: "Example VPN", secondLabel: "Subscription"},
-		{name: "matching fallback", first: "Subscription", firstLabel: "Subscription · sample", secondLabel: "Subscription · new"},
+		{name: "matching fallback", first: "Subscription", firstLabel: "sample · Subscription", secondLabel: "new · Subscription"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSubscriptionManagementFixture(t)
@@ -106,9 +106,15 @@ func TestSubscriptionManagementDistinguishesMatchingTitles(t *testing.T) {
 	}
 	overview := setupRequest(h, "/", nil)
 	assertContains(t, overview.Body.String(), `>Subscription ID sample</span>`,
-		`<optgroup label="`+title+` · sample">`, `<optgroup label="`+title+` · new">`)
+		`<optgroup label="sample · `+title+`">`, `<optgroup label="new · `+title+`">`)
+	for _, id := range []string{"sample", "new"} {
+		assertContains(t, overview.Body.String(),
+			`value="subscription:`+id+`:auto"`, `>`+id+` · Auto — switch nodes on failure</option>`,
+			`>`+id+` · North · 42 ms</option>`)
+	}
 	routing := setupRequest(h, "/routing", nil)
-	assertContains(t, routing.Body.String(), "By "+title+" · new rules")
+	assertContains(t, routing.Body.String(), "By new · "+title+" rules",
+		`<option value="sample">sample · `+title+`</option>`, `<option value="new" selected>new · `+title+`</option>`)
 
 	fragment := setupRequest(h, "/fragments/connections/sample", nil)
 	assertContains(t, fragment.Body.String(), `>Subscription ID sample</span>`, `id="subscription-label-sample"`)
@@ -117,6 +123,28 @@ func TestSubscriptionManagementDistinguishesMatchingTitles(t *testing.T) {
 	assertContains(t, fragment.Body.String(), `id="subscription-label-sample"`, `>`+title+`</h2>`)
 	if fragment.Code != http.StatusOK || strings.Contains(fragment.Body.String(), ">Subscription ID ") {
 		t.Fatal("the fragment kept an ID after the display title became unique")
+	}
+}
+
+func TestSubscriptionLabelsDistinguishLiteralAndGeneratedTitles(t *testing.T) {
+	f := newSubscriptionManagementFixture(t)
+	f.subs[0].Metadata.Title, f.subs[1].Metadata.Title = "Example VPN", "Example VPN"
+	for _, source := range []struct{ id, title string }{
+		{"literal-suffix", "Example VPN · new"},
+		{"literal-prefix", "new · Example VPN"},
+	} {
+		f.cfg.Subscriptions = append(f.cfg.Subscriptions, subscription.Source{ID: source.id, URL: "https://example.test/" + source.id})
+		f.subs = append(f.subs, AppliedSubscription{ID: source.id, Metadata: subscription.Metadata{Title: source.title}})
+	}
+	h := New(f, setupTestOptions(RoleManage))
+	overview := setupRequest(h, "/", nil).Body.String()
+	routing := setupRequest(h, "/routing", nil).Body.String()
+	assertContains(t, routing, `<option value="literal-suffix">Example VPN · new</option>`,
+		`<option value="literal-prefix">new · Example VPN</option>`)
+	for _, title := range []string{"Example VPN · new", "new · Example VPN"} {
+		if strings.Count(overview, `<optgroup label="`+title+`">`) != 1 || strings.Count(routing, `>`+title+`</option>`) != 1 {
+			t.Errorf("provider title %q does not identify exactly one subscription in both selectors", title)
+		}
 	}
 }
 

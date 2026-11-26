@@ -2,6 +2,7 @@ package ui
 
 import (
 	"cmp"
+	"fmt"
 	"strings"
 
 	"github.com/ordo-systems/keen-proxy/internal/model"
@@ -32,10 +33,11 @@ func (titles subscriptionTitles) title(id string, text map[string]string) string
 }
 
 func (titles subscriptionTitles) duplicate(id string, text map[string]string) bool {
-	if _, configured := titles[id]; !configured {
-		return false
-	}
-	title := titles.title(id, text)
+	_, configured := titles[id]
+	return configured && titles.otherHasTitle(id, titles.title(id, text), text)
+}
+
+func (titles subscriptionTitles) otherHasTitle(id, title string, text map[string]string) bool {
 	for other := range titles {
 		if other != id && titles.title(other, text) == title {
 			return true
@@ -46,8 +48,14 @@ func (titles subscriptionTitles) duplicate(id string, text map[string]string) bo
 
 func (titles subscriptionTitles) label(id string, text map[string]string) string {
 	title := titles.title(id, text)
-	if titles.duplicate(id, text) {
-		return title + " · " + id
+	if !titles.duplicate(id, text) {
+		return title
 	}
-	return title
+	// Native selects clip from the end. Lead with the stable ID and vary the
+	// separator if a provider title already matches the generated label.
+	label := id + " · " + title
+	for n := 2; titles.otherHasTitle(id, label, text); n++ {
+		label = fmt.Sprintf("%s [%d] · %s", id, n, title)
+	}
+	return label
 }
