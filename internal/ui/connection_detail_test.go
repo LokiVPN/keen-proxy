@@ -66,7 +66,7 @@ func TestConnectionDetailReveal(t *testing.T) {
 }
 
 func TestConnectionDetailMasksWireGuardKeyWithUnusedPadBits(t *testing.T) {
-	const keyBytes = "padbits-test-private-key-bytes01"
+	const keyBytes = "padbits-test-private-key-bytes01" // gitleaks:allow synthetic fixture
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	encoded := []byte(base64.StdEncoding.EncodeToString([]byte(keyBytes)))
 	last := len(encoded) - 2 // The final data character has two unused bits.

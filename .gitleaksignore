@@ -1,2 +1,5 @@
 # Historical OpenWrt smoke fixture: a synthetic token used only on container loopback.
 4bd4fb75fc2b8fbd2f2b9a5f10e3ef290d25929c:test/openwrt/smoke.sh:curl-auth-header:33
+# Synthetic UI test fixtures: a removed diagnostics masking value and WireGuard key bytes for the pad-bit masking test.
+8212101c2d621b54d165a3fb06eb0c1d6e41aac0:internal/ui/diagnostics_test.go:generic-api-key:145
+0e7f78e433287a6c1eeb36d38350b9e44f439840:internal/ui/connection_detail_test.go:generic-api-key:69
