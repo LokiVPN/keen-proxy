@@ -79,9 +79,9 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 		page.CustomMode = text["routing_custom_mode"]
 	}
 	providerProblem := state.providerProblem()
-	keepProvider := state.keepsWithheldProvider(network, settings)
+	keepsProvider := retainsProviderMode(network, settings, page.Source)
 	page.CanProvider = providerProblem == ""
-	if keepProvider {
+	if keepsProvider && state.withholdsRules() {
 		page.Mode, page.CustomMode = routingProvider, ""
 	}
 	page.ProviderHint = text[cmp.Or(providerProblem, "routing_provider_hint")]
@@ -124,7 +124,7 @@ func (p pages) routingView(cfg *model.Config, draft *routingDraft, text map[stri
 	}
 	if draft != nil {
 		page.Mode = draft.Mode
-		if page.Mode == routingProvider && !page.CanProvider && !keepProvider {
+		if page.Mode == routingProvider && !page.CanProvider && !keepsProvider {
 			page.Mode = ""
 		}
 		page.Overlap = draft.Overlap

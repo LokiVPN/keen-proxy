@@ -25,7 +25,7 @@ func TestSubscriptionManagementDistinguishesMatchingTitles(t *testing.T) {
 	title := "Identical provider title"
 	f.subs[0].Metadata.Title, f.subs[1].Metadata.Title = title, title
 	f.subs[1].Nodes = slices.Clone(f.subs[0].Nodes)
-	f.cfg.ProviderRules = &model.ProviderRulesSettings{Source: "new", Off: true}
+	f.cfg.ProviderRules = &model.ProviderRulesSettings{Source: "new"}
 	h := New(f, setupTestOptions(RoleManage))
 
 	page := setupRequest(h, "/connections", nil)
@@ -218,7 +218,7 @@ func TestSubscriptionManagementListsEveryRemovalReference(t *testing.T) {
 	f.cfg.Connections[0].Fallback = auto
 	f.cfg.Subscriptions[0].Fallback = auto
 	f.cfg.Clients = append(f.cfg.Clients, model.Client{Name: "Desktop", MAC: "02:00:00:00:00:05", Target: auto})
-	f.cfg.ProviderRules = &model.ProviderRulesSettings{Source: "new", Off: true}
+	f.cfg.ProviderRules = &model.ProviderRulesSettings{Source: "new"}
 	f.rawIDs = map[string][]string{"new": {f.cfg.Connections[1].ID}}
 	before := Revision(f.Config())
 	h := New(f, setupTestOptions(RoleManage))
@@ -269,6 +269,63 @@ func TestSubscriptionManagementRemovesOnlyUnreferencedSource(t *testing.T) {
 	r := setupRequest(h, "/connections", nil)
 	if strings.Contains(r.Body.String(), testSubscriptionReplace) || strings.Contains(r.Body.String(), "Alt &lt;subscription&gt;") {
 		t.Fatal("a removed source still renders a subscription block")
+	}
+}
+
+func TestSubscriptionManagementRemovesTrialAfterAnUnrelatedListSave(t *testing.T) {
+	f := newSubscriptionManagementFixture(t)
+	f.cfg.Subscriptions, f.subs, f.cfg.ProviderRules = nil, nil, nil
+	f.cfg.Networks[0].Target, f.cfg.Networks[0].Default = "old", model.TargetDirect
+	f.cfg.Groups[0].Target = "old"
+	want := f.Config()
+	want.Groups[1].Entries = []string{"exception.example"}
+	h := New(f, setupTestOptions(RoleManage))
+	start := setupRequest(h, "/connections", nil)
+	assertContains(t, start.Body.String(), `href="/setup"`)
+	if w := setupRequest(h, "/setup/enable", checkSetupLink(t, h)); w.Code != http.StatusSeeOther {
+		t.Fatalf("adding the trial returned HTTP %d", w.Code)
+	}
+	const trial = setupSourceID
+	if len(f.cfg.Subscriptions) != 1 || f.cfg.Subscriptions[0].ID != trial {
+		t.Fatal("the check and confirm flow did not add the trial subscription")
+	}
+	page := setupRequest(h, "/routing", nil)
+	assertContains(t, page.Body.String(), `value="`+trial+`" selected`, `name="mode" value="own" id="routing-mode-own" required checked`)
+	post := setupRequest(h, "/routing", url.Values{
+		"rev": {formField(t, page.Body.String(), "rev")}, "mode": {"own"}, "source": {trial},
+		"own-direct": {"exception.example"},
+	})
+	if post.Code != http.StatusSeeOther || f.cfg.ProviderRules != nil {
+		t.Fatalf("site-list save returned HTTP %d and rules %+v", post.Code, f.cfg.ProviderRules)
+	}
+	connections := setupRequest(h, "/connections", nil)
+	remove := subscriptionPath(trial) + "/remove"
+	assertContains(t, connections.Body.String(), `action="`+remove+`"`)
+	post = setupRequest(h, remove, url.Values{"rev": {formField(t, connections.Body.String(), "rev")}})
+	if post.Code != http.StatusSeeOther || f.applies != 3 || !reflect.DeepEqual(f.Config(), want) {
+		t.Fatalf("trial removal returned HTTP %d with %d applies or changed other settings", post.Code, f.applies)
+	}
+}
+
+func TestSubscriptionManagementClearsOnlyRemovedInactiveRules(t *testing.T) {
+	for _, source := range []string{"new", "sample"} {
+		t.Run(source, func(t *testing.T) {
+			f := newSubscriptionManagementFixture(t)
+			f.cfg.Networks[0].Default = model.TargetDirect
+			f.cfg.ProviderRules = &model.ProviderRulesSettings{Source: source, Off: true, Disabled: []string{"block:geosite:ads"}}
+			before := f.Config()
+			want := before.Clone()
+			want.Subscriptions = want.Subscriptions[:1]
+			if source == "new" {
+				want.ProviderRules = nil
+			}
+			h := New(f, setupTestOptions(RoleManage))
+			post := setupRequest(h, testSubscriptionRemove, url.Values{"rev": {Revision(before)}})
+			if post.Code != http.StatusSeeOther || post.Header().Get("Location") != "/connections" ||
+				f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
+				t.Fatalf("removal with rules off returned HTTP %d, %d applies, rules %+v", post.Code, f.applies, f.cfg.ProviderRules)
+			}
+		})
 	}
 }
 

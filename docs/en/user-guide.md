@@ -48,7 +48,7 @@ Choose one source under **Rules from subscription**. You can use rules from a di
 - **All traffic through VPN** uses the main connection for traffic beyond the home network, subject to your exceptions. For a mixed main connection, the label names the connection and the page shows a selected reserve when known.
 - **Only my sites** sends the listed sites through the main connection and sends unmatched traffic directly.
 
-Saving a different source resets all of the previous subscription's rule switches. When subscription rules are on, KeenProxy evaluates the new source after saving. In the other modes, it saves the source with rules off. Changing modes with the same source keeps its switches.
+Saving a different source resets all of the previous subscription's rule switches. When subscription rules are on, KeenProxy evaluates the new source after saving. In the other modes, choosing a different source saves it with rules off. If the page suggests a source because none is saved yet, editing your lists in those modes keeps the source unset. Changing modes with the same saved source keeps its switches.
 
 In **My sites**, enter one domain, IP address, or subnet per line. Domains include their subdomains. Use the direct list for exceptions and keep each entry in just one list. Advanced routing groups and DNS settings are managed in YAML. [Routing and DNS](routing.md)
 
@@ -82,7 +82,7 @@ Use the subscription ID shown beside the provider title to tell subscriptions ap
 
 - Choose **Add subscription**, paste the HTTPS link, and use **Check**. Review the result and confirm with **Add subscription**. The new source becomes available in the connection list. Your saved network, device, and provider rules settings stay in place.
 - Choose **Replace link** in the subscription's block, use **Check** on the new link, then confirm **Replace link**. That subscription keeps its ID and reserve, and saved routing references still point to it.
-- Choose **Remove subscription** in its block. If a saved setting still uses the subscription, KeenProxy lists the references and keeps the subscription. Change or clear those references and try again. This includes a saved provider rules source even when its rules are turned off. Use [YAML](#edit-and-reload-yaml) for references outside the panel.
+- Choose **Remove subscription** in its block. If a route or active provider rules use the subscription, KeenProxy lists the references and keeps it. Change or clear those references and try again. If rules from that subscription are off, removal also clears their saved source and switches. Use [YAML](#edit-and-reload-yaml) for references outside the panel.
 
 If a check fails while adding or replacing a subscription, paste the link again to retry. Checking a subscription link sends the provider its stable device identifier (HWID) and may use a device slot before you save. Adding or replacing a link saves `send_hwid: true` for future refreshes, including when the old link had HWID disabled. To replace a link with HWID disabled, edit its `url` in YAML and keep `send_hwid: false`. [Edit and reload YAML](#edit-and-reload-yaml)
 

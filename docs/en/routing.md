@@ -116,7 +116,7 @@ provider_rules:
   disabled: ["block:geosite:category-ads"]
 ```
 
-Set `off: true` inside `provider_rules` to turn all provider rules off while keeping `source` and `disabled`. Remove the flag or set `off: false` to use the saved switches again. A `profile` default uses the policy's target while the rules are off.
+Set `off: true` inside `provider_rules` to turn all provider rules off while keeping `source` and `disabled`. Remove the flag or set `off: false` to use the saved switches again. A `profile` default uses the policy's target while the rules are off. Removing the source subscription from **Connections** also clears its inactive `provider_rules` block, including `disabled`.
 
 The `disabled` keys belong to one source. When changing `source` in YAML, clear `disabled` to reset the previous subscription's switches. Saving a different source in the panel clears them automatically.
 

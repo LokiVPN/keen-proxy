@@ -91,7 +91,7 @@ func (p pages) subscriptionRemove(w http.ResponseWriter, r *http.Request) {
 		source, _, ok := model.ParseManagedTarget(target)
 		return ok && source == id
 	})
-	if cfg.ProviderRules != nil && cfg.ProviderRules.Source == id {
+	if active := cfg.ActiveProviderRules(); active != nil && active.Source == id {
 		refs = append(refs, connectionReference{Label: text["connections_ref_provider_rules"], URL: "/routing"})
 	}
 	profiles, err := p.deps.SubscriptionProfileReferences(ctx, cfg, id)
@@ -108,6 +108,11 @@ func (p pages) subscriptionRemove(w http.ResponseWriter, r *http.Request) {
 	// Apply handles the runtime catalog and snapshot for the reduced source set.
 	rev := r.PostForm.Get("rev")
 	cfg.Subscriptions = slices.Delete(cfg.Subscriptions, i, i+1)
+	// Any saved rules for the removed source are inactive. Their switch keys
+	// belonged to that source and have no meaning for a different one.
+	if settings := cfg.ProviderRules; settings != nil && settings.Source == id {
+		cfg.ProviderRules = nil
+	}
 	err = p.deps.Apply(ctx, cfg, rev)
 	if err == nil {
 		redirectWithFlash(w, r, "/connections", "flash_subscription_removed")

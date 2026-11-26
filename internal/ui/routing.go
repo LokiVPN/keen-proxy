@@ -84,8 +84,7 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	form := r.PostForm
 	savedSource := routingRulesSource(cfg, network)
 	draft := routingDraft{Mode: form.Get("mode"), Source: savedSource}
-	sources, sourceSubmitted := form["source"]
-	if sourceSubmitted {
+	if sources, submitted := form["source"]; submitted {
 		if len(sources) != 1 || subscriptionIndex(cfg, sources[0]) < 0 {
 			p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, nil, "subscription_choose_configured")
 			return
@@ -96,9 +95,10 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	review := form.Get("review_source") == "1"
 	state := p.routingState(cfg, network, draft.Source)
 	providerProblem := state.providerProblem()
-	active := cfg.ActiveProviderRules()
-	keepProvider := state.keepsWithheldProvider(network, active)
-	if keepProvider && !form.Has("mode") {
+	keepsProvider := retainsProviderMode(network, cfg.ActiveProviderRules(), draft.Source)
+	// A disabled radio is omitted from the form. The applied revision still
+	// identifies its mode if a refresh has made the source available again.
+	if keepsProvider && !form.Has("mode") {
 		draft.Mode = routingProvider
 	}
 	if len(form[ownVPNGroup]) > 1 || len(form[ownDirectGroup]) > 1 {
@@ -136,7 +136,7 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 	case len(form["mode"]) > 1 || (draft.Mode != routingProvider && draft.Mode != routingAll && draft.Mode != routingOwn):
 		p.renderRouting(w, r, http.StatusBadRequest, cfg, &draft, "routing_invalid_mode")
 		return
-	case draft.Mode == routingProvider && providerProblem != "" && !keepProvider:
+	case draft.Mode == routingProvider && providerProblem != "" && !keepsProvider:
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, providerProblem)
 		return
 	case draft.Mode == routingAll && !state.canUseVPN():
@@ -164,8 +164,8 @@ func (p pages) routingPost(w http.ResponseWriter, r *http.Request) {
 		p.renderRouting(w, r, http.StatusUnprocessableEntity, cfg, &draft, "")
 		return
 	}
-	selectsProvider := draft.Mode == routingProvider && (sourceChanged || active == nil || network.Default != model.DefaultProfile)
-	draft.apply(cfg, network, sourceSubmitted)
+	selectsProvider := draft.Mode == routingProvider && !keepsProvider
+	draft.apply(cfg, network, sourceChanged)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
@@ -267,12 +267,13 @@ func (s routingState) withholdsRules() bool {
 	return s.sub.RulesWithheld || s.sub.RulesState == "withheld" || s.rules.State == "withheld"
 }
 
-// Keeping the saved policy does not select a currently unavailable mode.
-func (s routingState) keepsWithheldProvider(network *model.Network, settings *model.ProviderRulesSettings) bool {
-	return s.withholdsRules() && settings != nil && settings.Source == s.source && network.Default == model.DefaultProfile
+// retainsProviderMode identifies an already applied provider mode from the
+// configuration alone because a refresh can change the rules independently.
+func retainsProviderMode(network *model.Network, active *model.ProviderRulesSettings, source string) bool {
+	return active != nil && active.Source == source && network.Default == model.DefaultProfile
 }
 
-func (d routingDraft) apply(cfg *model.Config, network *model.Network, sourceSubmitted bool) {
+func (d routingDraft) apply(cfg *model.Config, network *model.Network, sourceChanged bool) {
 	if d.Mode == routingProvider {
 		network.Default = model.DefaultProfile
 	} else {
@@ -281,7 +282,7 @@ func (d routingDraft) apply(cfg *model.Config, network *model.Network, sourceSub
 			network.Default = network.Target
 		}
 	}
-	if cfg.ProviderRules == nil && (d.Mode == routingProvider || sourceSubmitted) {
+	if cfg.ProviderRules == nil && (d.Mode == routingProvider || sourceChanged) {
 		cfg.ProviderRules = &model.ProviderRulesSettings{Source: d.Source}
 	}
 	if cfg.ProviderRules != nil {

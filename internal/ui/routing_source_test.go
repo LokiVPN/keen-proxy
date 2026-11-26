@@ -78,18 +78,55 @@ func TestRoutingReviewsWithholdingForTheSelectedSource(t *testing.T) {
 	assertContains(t, post.Body.String(), `value="sample" selected`, `id="routing-mode-provider" required>`, "still-staged.example")
 }
 
-func TestRoutingSavesADormantSourceFromTheSelector(t *testing.T) {
+func TestRoutingSavesListEditsAfterWithheldRulesReturn(t *testing.T) {
+	f := newRoutingFixture()
+	addSecondSubscription(f.overviewFixture)
+	f.cfg.ProviderRules.Disabled = []string{"block:geosite:ads"}
+	f.rules = RoutingRules{Source: "sample", State: "withheld"}
+	f.subs[0].RulesWithheld = true
+	h := New(f, setupTestOptions(RoleManage))
+	page := setupRequest(h, "/routing", nil)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET /routing returned HTTP %d", page.Code)
+	}
+	body := page.Body.String()
+	assertContains(t, body, `value="sample" selected`, `id="routing-mode-provider" required checked disabled`,
+		"The provider does not supply routing rules.")
+	// The disabled radio contributes no mode field to this form.
+	form := url.Values{
+		"rev": {formField(t, body, "rev")}, "source": {"sample"},
+		"own-vpn": {"vpn-edit.example"}, "own-direct": {"direct-edit.example"},
+	}
+	f.rules = RoutingRules{Source: "sample", State: "ready", HasProfile: true}
+	f.subs[0].RulesWithheld = false
+	want := f.Config()
+	want.Groups[0].Entries = []string{"vpn-edit.example"}
+	want.Groups[1].Entries = []string{"direct-edit.example"}
+	post := setupRequest(h, "/routing", form)
+	if post.Code != http.StatusSeeOther || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
+		t.Fatalf("list save after rules returned got HTTP %d and %d applies", post.Code, f.applies)
+	}
+
+	form.Set("rev", Revision(f.Config()))
+	form.Set("source", "sub2")
+	post = setupRequest(h, "/routing", form)
+	if post.Code != http.StatusBadRequest || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
+		t.Fatalf("changing source without an explicit mode returned HTTP %d with %d applies", post.Code, f.applies)
+	}
+}
+
+func TestRoutingSavesADifferentDormantSourceFromTheSelector(t *testing.T) {
 	f := newRoutingFixture()
 	addSecondSubscription(f.overviewFixture)
 	f.cfg.ProviderRules = nil
 	f.cfg.Networks[0].Default = model.TargetDirect
 	want := f.Config()
-	want.ProviderRules = &model.ProviderRulesSettings{Source: "sample", Off: true}
+	want.ProviderRules = &model.ProviderRulesSettings{Source: "sub2", Off: true}
 	h := New(f, setupTestOptions(RoleManage))
 	page := setupRequest(h, "/routing", nil)
 	assertContains(t, page.Body.String(), `value="sample" selected`)
 	post := setupRequest(h, "/routing", url.Values{
-		"rev": {formField(t, page.Body.String(), "rev")}, "mode": {"own"}, "source": {"sample"},
+		"rev": {formField(t, page.Body.String(), "rev")}, "mode": {"own"}, "source": {"sub2"},
 	})
 	if post.Code != http.StatusSeeOther || f.applies != 1 || !reflect.DeepEqual(f.Config(), want) {
 		t.Fatalf("dormant selection returned HTTP %d, %d applies, rules %+v", post.Code, f.applies, f.cfg.ProviderRules)
