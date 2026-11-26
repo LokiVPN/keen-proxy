@@ -36,7 +36,7 @@ For a manual setup, open [Connections](#connections). From the initial setup scr
 - **Enabled** pauses or resumes routing for the whole network. While paused, devices use their regular internet path. **Main connection** groups automatic selection, balancing modes, and pinned nodes under each subscription. The list shows measured node latency where available and includes your manual connections. Both controls apply immediately. With JavaScript disabled, use the accompanying **Save** button.
 - The status names the active connection or reserve, identifies its subscription if applicable, and shows when a path is unavailable. It also covers devices with saved routing when new devices connect directly by default. If those devices use different connections, Overview reports device-specific routing.
 - Each subscription has its own status, expiry, usage, and refresh information when available. The subscription used by **Main connection** appears first. **Update now** queues a refresh for that block's subscription and **Replace link** opens its replacement form.
-- **VPN traffic** covers the last 30 minutes. Raw groups that can use both direct and VPN members may include direct traffic in the chart. The device and routing summaries link to their tabs.
+- **VPN traffic** covers the last 30 minutes. The vertical axis scales its units to the highest rate in that window. The legend shows the latest incoming and outgoing rates. Raw groups that can use both direct and VPN members may include direct traffic in the chart. The device and routing summaries link to their tabs.
 
 <a name="routing"></a>
 
@@ -94,7 +94,7 @@ If a check fails while adding or replacing a subscription, paste the link again 
 2. Choose **Check** and review the type, server, and other details. Credentials stay masked in the review. If an export contains several supported profiles, choose one. For standalone sing-box JSON, omit routing references such as `detour` and `domain_resolver`.
 3. For a new connection, review the suggested name and identifier and choose **Save**. Use a unique identifier of up to 32 lowercase letters, digits, hyphens, or underscores, starting with a letter or digit. If the form has expired or the router settings changed, check the profile again before saving.
 
-Open a manual connection by name. Use **Enabled** and **Reserve**, then **Save**. **Check** tests the saved, enabled profile without applying unsaved settings. The page shows the reserve chain, speed, and traffic by site when available. Raw group profiles link to their traffic members.
+Open a manual connection by name. Use **Enabled** and **Reserve**, then **Save**. **Check** tests the saved, enabled profile without applying unsaved settings. The page shows the reserve chain, speed, and traffic by site when available. The speed chart scales its vertical axis to the highest rate in its 30-minute window. Raw group profiles link to their traffic members.
 
 Choose **Show parameters** only when you need to read credentials on screen, or **Replace parameters** to reopen the wizard for the same identifier. Replacing keeps existing references. **Delete** lists saved references that must be removed before deletion. Disabling a profile keeps its credentials and references while its configured reserves handle traffic. With no enabled reserve, traffic for the disabled profile is blocked. [Fallback chains](routing.md#fallback-chains)
 

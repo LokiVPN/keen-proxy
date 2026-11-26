@@ -458,7 +458,7 @@ func TestConnectionDetailProbeAndFragmentsWithLegacyIDs(t *testing.T) {
 			requireDetailStatus(t, w, http.StatusOK)
 			assertContains(t, w.Body.String(), `formaction="`+path+`/probe"`, `action="`+path+`/delete"`,
 				`href="`+path+`/replace"`, `data-fragment="`+fragment+`/health"`, `data-fragment="`+fragment+`/speed"`,
-				`data-fragment="`+fragment+`/hosts"`)
+				`data-fragment="`+fragment+`/hosts"`, `>last 30 minutes</span>`)
 			for _, part := range []string{"/health", "/speed", "/hosts"} {
 				w = setupRequest(New(f, setupTestOptions(RoleView)), fragment+part, nil)
 				requireDetailStatus(t, w, http.StatusOK)
@@ -468,7 +468,7 @@ func TestConnectionDetailProbeAndFragmentsWithLegacyIDs(t *testing.T) {
 				}
 				switch part {
 				case "/speed":
-					assertContains(t, w.Body.String(), "Incoming 4.2 Mbit/s", "Outgoing 0.6 Mbit/s", `<path class="rx-l"`)
+					assertContains(t, w.Body.String(), "Incoming 4.2 Mbit/s", "Outgoing 0.6 Mbit/s", `>2.5 Mbit/s</span>`, `<path class="rx-l"`)
 				case "/hosts":
 					assertContains(t, w.Body.String(), "&lt;example.test&gt;", "1 KB", "2 B", "Show all (9)")
 				}

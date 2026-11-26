@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ const (
 type chartData struct {
 	Label          string
 	Times          [4]string
-	Mid, Top       float64
+	Ticks          [3]string
 	RX, TX         string
 	RXArea, TXArea string
 	Sample         *chartPoint
@@ -29,21 +30,28 @@ type chartData struct {
 // chartPoint locates both traffic rates from a single sample in the SVG.
 type chartPoint struct{ X, RX, TX float64 }
 
-// Chart renders rates in Mbit/s over the 30 minutes ending at now, with labels
-// in now's timezone. Series comes in timestamp order from the traffic tracker.
-func Chart(series []stats.Point, now time.Time, label string) template.HTML {
+// Chart renders rates over the 30 minutes ending at now with a localized scale
+// and times in now's timezone. Series comes in timestamp order from the tracker.
+func Chart(series []stats.Point, now time.Time, lang, label string) template.HTML {
 	start := now.Add(-chartWindow)
 	first, end := start.UnixMilli(), now.UnixMilli()
 	peak := 0.0
 	var samples int
 	for _, point := range series {
 		if point.T >= first && point.T <= end {
-			peak = max(peak, megabits(point.Down), megabits(point.Up))
+			peak = max(peak, validTrafficRate(point.Down), validTrafficRate(point.Up))
 			samples++
 		}
 	}
-	tick := max(1, math.Ceil(peak/2))
-	data := chartData{Label: label, Mid: tick, Top: 2 * tick}
+	scale, unitKey := chartRateUnit(peak)
+	unit := translations[lang][unitKey]
+	// The plot has two equal intervals. Round up so the upper tick covers the peak.
+	tick := niceChartStep(max(1/scale, peak/scale/2))
+	top := 2 * tick
+	data := chartData{Label: label}
+	for i, value := range [...]float64{top, tick, 0} {
+		data.Ticks[i] = formatTrafficNumber(value, -1, lang) + " " + unit
+	}
 	for i := range data.Times {
 		data.Times[i] = start.Add(time.Duration(i) * chartWindow / 3).Format("15:04")
 	}
@@ -55,8 +63,8 @@ func Chart(series []stats.Point, now time.Time, label string) template.HTML {
 			continue
 		}
 		x := chartWidth * float64(point.T-first) / float64(end-first)
-		yRX := chartHeight * (1 - megabits(point.Down)/data.Top)
-		yTX := chartHeight * (1 - megabits(point.Up)/data.Top)
+		yRX := chartHeight * (1 - validTrafficRate(point.Down)/scale/top)
+		yTX := chartHeight * (1 - validTrafficRate(point.Up)/scale/top)
 		if samples == 1 {
 			data.Sample = &chartPoint{X: x, RX: yRX, TX: yTX}
 			break
@@ -82,9 +90,41 @@ func Chart(series []stats.Point, now time.Time, label string) template.HTML {
 	return template.HTML(buf.String()) // All values were escaped by the chart template.
 }
 
-func megabits(rate float64) float64 {
+func chartRateUnit(peak float64) (scale float64, key string) {
+	switch {
+	case peak >= 1e9:
+		return 1e9, "chart_unit_gbit"
+	case peak >= 1e6:
+		return 1e6, "chart_unit_mbit"
+	case peak >= 1e3:
+		return 1e3, "chart_unit_kbit"
+	default:
+		return 1, "chart_unit_bit"
+	}
+}
+
+// niceChartStep rounds a positive interval up to the next readable decimal step.
+func niceChartStep(minimum float64) float64 {
+	magnitude := math.Pow10(int(math.Floor(math.Log10(minimum))))
+	for _, multiplier := range [...]float64{1, 2, 2.5, 5} {
+		if step := multiplier * magnitude; step >= minimum {
+			return step
+		}
+	}
+	return 10 * magnitude
+}
+
+func formatTrafficNumber(value float64, decimals int, lang string) string {
+	number := strconv.FormatFloat(value, 'f', decimals, 64)
+	if lang == "ru" {
+		return strings.Replace(number, ".", ",", 1)
+	}
+	return number
+}
+
+func validTrafficRate(rate float64) float64 {
 	if rate > 0 && !math.IsInf(rate, 0) {
-		return rate / 1e6
+		return rate
 	}
 	return 0
 }

@@ -336,7 +336,7 @@ func overviewTraffic(series []stats.Point, now time.Time, lang string) trafficVi
 
 func trafficChart(series []stats.Point, now time.Time, lang, labelKey string) trafficView {
 	text := translations[lang]
-	traffic := trafficView{Chart: Chart(series, now, text[labelKey])}
+	traffic := trafficView{Chart: Chart(series, now, lang, text[labelKey])}
 	for i := len(series) - 1; i >= 0; i-- {
 		point := series[i]
 		if point.T < now.Add(-chartWindow).UnixMilli() {
@@ -352,9 +352,5 @@ func trafficChart(series []stats.Point, now time.Time, lang, labelKey string) tr
 }
 
 func trafficRate(rate float64, lang string) string {
-	value := fmt.Sprintf("%.1f", megabits(rate))
-	if lang == "ru" {
-		return strings.Replace(value, ".", ",", 1)
-	}
-	return value
+	return formatTrafficNumber(validTrafficRate(rate)/1e6, 1, lang)
 }

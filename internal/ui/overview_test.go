@@ -537,7 +537,7 @@ func TestOverviewTrafficFragmentAndEmptyStates(t *testing.T) {
 		t.Fatalf("manual-only overview returned HTTP %d", w.Code)
 	}
 	assertContains(t, w.Body.String(), "No subscription configured", "No home network configured", "No LAN devices detected",
-		`data-fragment="/fragments/traffic"`, "No traffic samples yet", `href="/routing"`, `href="/devices"`)
+		`data-fragment="/fragments/traffic"`, "No traffic samples yet", `>last 30 minutes</span>`, `href="/routing"`, `href="/devices"`)
 	for _, path := range []string{"/routing", "/devices"} {
 		page := setupRequest(h, path, nil)
 		if page.Code != http.StatusOK {
@@ -555,7 +555,7 @@ func TestOverviewTrafficFragmentAndEmptyStates(t *testing.T) {
 		t.Fatalf("traffic fragment returned HTTP %d", w.Code)
 	}
 	assertPageHeaders(t, w.Result(), "en")
-	assertContains(t, w.Body.String(), "Incoming 24.8 Mbit/s", "Outgoing 2.1 Mbit/s", `<path class="rx-l"`, `preserveAspectRatio="none"`)
+	assertContains(t, w.Body.String(), "Incoming 24.8 Mbit/s", "Outgoing 2.1 Mbit/s", `>40 Mbit/s</span>`, `<path class="rx-l"`, `preserveAspectRatio="none"`)
 	if strings.Contains(w.Body.String(), "<!doctype") || strings.Contains(w.Body.String(), `data-fragment=`) {
 		t.Error("fragment should contain only the traffic content")
 	}

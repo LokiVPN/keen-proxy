@@ -188,7 +188,7 @@
 .uname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kp-logout { gap: 6px; min-height: 40px; }
 .kp-main { padding: 32px 40px 64px; }
-.kp-page { max-width: 720px; }
+.kp-page { max-width: 1440px; margin-inline: auto; }
 
 .kp .lead { max-width: 66ch; margin-top: 8px; overflow-wrap: anywhere; }
 .muted { color: var(--gray); }
@@ -684,7 +684,7 @@
   line-height: 12px;
   font-variant-numeric: tabular-nums;
 }
-.chart-y { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; margin: -6px 0; }
+.chart-y { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; margin: -6px 0; white-space: nowrap; }
 .chart svg { display: block; width: 100%; height: 128px; overflow: visible; }
 .chart-x { grid-column: 2; display: flex; justify-content: space-between; margin-top: 8px; }
 .chart .grid { fill: none; stroke: var(--line); stroke-width: 1; }
@@ -695,6 +695,11 @@
 .chart .rx-l, .chart .tx-l { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
 .chart .rx-l { stroke: var(--rx-line); }
 .chart .tx-l { stroke: var(--tx-line); stroke-dasharray: 5 3; }
+
+@media (width > 640px) {
+  .note, .routing-modes { max-width: 70ch; }
+  .routing-lists > .fld { max-width: none; }
+}
 
 @media (max-width: 640px) {
   .kp-head { gap: 12px; padding: 0 16px; }

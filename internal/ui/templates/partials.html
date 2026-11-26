@@ -30,7 +30,7 @@
 
 {{define "chart"}}
 <div class="chart" role="img" aria-label="{{.Label}}">
-  <div class="chart-y" aria-hidden="true"><span>{{.Top}}</span><span>{{.Mid}}</span><span>0</span></div>
+  <div class="chart-y" aria-hidden="true">{{range .Ticks}}<span>{{.}}</span>{{end}}</div>
   <svg viewBox="0 0 668 122" preserveAspectRatio="none" aria-hidden="true">
     <path class="grid" d="M0 0 H668 M0 61 H668 M0 122 H668" vector-effect="non-scaling-stroke"/>
     {{if .Sample}}
