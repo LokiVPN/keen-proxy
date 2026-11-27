@@ -103,7 +103,7 @@ type Result struct {
 	HWIDFingerprint string `json:"-"`
 	// Transient tells the refresh scheduler to retry with bounded backoff.
 	Transient bool `json:"-"`
-	// ProbeReportURL is the resolved same-origin address a provider advertised
+	// ProbeReportURL is the resolved HTTPS report address a provider advertised
 	// with Probe-Report: 1; empty when reporting is not requested.
 	ProbeReportURL string `json:"-"`
 }

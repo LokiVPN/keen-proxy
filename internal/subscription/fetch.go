@@ -28,9 +28,11 @@ var errRedirect = errors.New("subscription redirect rejected")
 // Fetcher shares one download slot and one installation identity across sources.
 // Preview and periodic refresh should use the same instance.
 type Fetcher struct {
-	transport    http.RoundTripper
-	identityPath string
-	slot         chan struct{}
+	transport http.RoundTripper
+	// probeTransport carries probe reports, which may go to another origin.
+	probeTransport http.RoundTripper
+	identityPath   string
+	slot           chan struct{}
 }
 
 // NewFetcher uses direct, certificate-verified HTTPS unless a transport is supplied.
@@ -47,9 +49,10 @@ func NewFetcher(identityPath string, transport http.RoundTripper) *Fetcher {
 		}
 	}
 	return &Fetcher{
-		transport:    transport,
-		identityPath: identityPath,
-		slot:         make(chan struct{}, 1),
+		transport:      transport,
+		probeTransport: newProbeTransport(),
+		identityPath:   identityPath,
+		slot:           make(chan struct{}, 1),
 	}
 }
 

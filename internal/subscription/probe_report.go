@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -32,8 +35,10 @@ type ProbeReport struct {
 }
 
 // probeReportURL resolves the advertised report address against the final
-// HTTPS fetch URL. It accepts only the same HTTPS origin, so a provider cannot
-// direct reports, or the router's address, to a third party.
+// HTTPS fetch URL. Another origin is allowed because CDNs in front of
+// subscriptions often reject POST; the address must still be HTTPS without
+// userinfo or a fragment, and an IP literal must be public. Host names are
+// checked again on every dial by the report transport.
 func probeReportURL(resp *http.Response) string {
 	raw := strings.TrimSpace(resp.Header.Get("Probe-Report-Url"))
 	if strings.TrimSpace(resp.Header.Get("Probe-Report")) != "1" || raw == "" || resp.Request == nil {
@@ -44,20 +49,73 @@ func probeReportURL(resp *http.Response) string {
 		return ""
 	}
 	target := resp.Request.URL.ResolveReference(ref)
-	origin := httpsOrigin(target)
-	if origin == "" || origin != httpsOrigin(resp.Request.URL) || target.Fragment != "" {
+	if httpsOrigin(target) == "" || target.Fragment != "" {
+		return ""
+	}
+	if addr, err := netip.ParseAddr(target.Hostname()); err == nil && !publicProbeAddr(addr) {
 		return ""
 	}
 	return target.String()
 }
 
+// nonPublicPrefixes are ranges outside netip's predicates that must not
+// receive reports: CGNAT, "this network", benchmarking (sing-box fake IPs)
+// and reserved space including broadcast.
+var nonPublicPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
+// publicProbeAddr reports whether a report may be sent to addr.
+func publicProbeAddr(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !addr.IsValid() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		addr.IsMulticast() || addr.IsUnspecified() {
+		return false
+	}
+	for _, prefix := range nonPublicPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return true
+}
+
+var errProbeAddress = errors.New("probe report address is not public")
+
+// newProbeTransport dials only public addresses. The check runs on the
+// address actually dialed, after DNS resolution, so a rebinding name cannot
+// reach the router or LAN. It never uses a proxy, which would dial instead.
+func newProbeTransport() http.RoundTripper {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		addr, err := netip.ParseAddrPort(address)
+		if err != nil || !publicProbeAddr(addr.Addr()) {
+			return errProbeAddress
+		}
+		return nil
+	}}
+	return &http.Transport{
+		Proxy:                  nil,
+		DialContext:            dialer.DialContext,
+		ForceAttemptHTTP2:      true,
+		TLSHandshakeTimeout:    5 * time.Second,
+		ResponseHeaderTimeout:  10 * time.Second,
+		DisableKeepAlives:      true,
+		MaxResponseHeaderBytes: 64 << 10,
+	}
+}
+
 // SendProbeReport reads the delivery manifest and posts one explicit report
 // (the contract's "PasarGuard v1" format). It makes one attempt without
-// redirects or retries; the grant in the URL is the only credential sent.
+// redirects or retries through the public-only report transport, never the
+// subscription transport. The grant in the URL is the only credential sent:
+// no HWID, cookies or subscription headers reach the report origin.
 func (f *Fetcher) SendProbeReport(ctx context.Context, report ProbeReport) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeReportTimeout)
 	defer cancel()
-	client := &http.Client{Transport: f.transport, CheckRedirect: func(*http.Request, []*http.Request) error {
+	client := &http.Client{Transport: f.probeTransport, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 	var manifest struct {
