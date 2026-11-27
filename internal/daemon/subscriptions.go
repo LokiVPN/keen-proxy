@@ -117,6 +117,10 @@ type appliedSubscription struct {
 	// provider rules lack; rulesFailures counts the retries for backoff.
 	rulesRetry    time.Time
 	rulesFailures int
+	// probeReport waits for fresh probes of a delivery that asked for a
+	// report; probeReported rate-limits reports for this source.
+	probeReport   *pendingProbeReport
+	probeReported time.Time
 }
 
 type subscriptionAttempt struct {
@@ -615,7 +619,11 @@ func (d *Daemon) runSubscriptions(ctx context.Context) {
 		now := time.Now()
 		d.expireSubscriptionPreviewsLocked(now)
 		request := d.nextSubscriptionRefreshLocked(now)
+		reportID, report := d.dueProbeReportLocked(now)
 		d.mu.Unlock()
+		if reportID != "" {
+			d.sendProbeReport(ctx, reportID, report)
+		}
 		if request != nil {
 			d.runSubscriptionRequest(ctx, request)
 			continue
@@ -732,6 +740,7 @@ func (d *Daemon) finishSubscriptionRefreshLocked(request *subscriptionRefresh, a
 		wakeSubscriptionWorker(d.subscriptions.probeWake)
 	}
 	d.auditSubscriptionSelectionsLocked(before)
+	d.queueProbeReportLocked(id, attempt.result, attempt.at)
 	d.audit("system", "Subscription refreshed", id, "ok", fmt.Sprintf("%d usable nodes", len(state.snapshot.Nodes)))
 }
 

@@ -90,6 +90,8 @@ KeenProxy uses the provider title or **Subscription** if the title is missing. I
 
 If a check fails while adding or replacing a subscription, paste the link again to retry. Checking a subscription link sends the provider its stable device identifier (HWID) and may use a device slot before you save. Adding or replacing a link saves `send_hwid: true` for future refreshes, including when the old link had HWID disabled. To replace a link with HWID disabled, edit its `url` in YAML and keep `send_hwid: false`. [Edit and reload YAML](#edit-and-reload-yaml)
 
+When a provider's subscription response carries `Probe-Report: 1` and `Probe-Report-Url` (PasarGuard availability reports), KeenProxy sends one report after a scheduled or manual refresh. It waits up to 10 minutes for node checks made after that refresh, then posts only those results: the provider's opaque route ID, a verdict (`ok`, `timeout` or `network_error`) and, for working nodes, the delay. The report contains no links, credentials, HWID or device details. KeenProxy sends it only to the same HTTPS origin as the subscription, at most once per 10 minutes per subscription, and does not retry a failed attempt. The [local audit journal](troubleshooting.md#inspect-local-journals) records the result. Without these headers nothing is sent.
+
 ### Add or replace a manual connection { #manual-connections }
 
 1. Choose **Add connection**. Use **Paste** for a share link, standalone Amnezia `vpn://` client export, WireGuard or AmneziaWG `.conf` text, or one sing-box outbound or endpoint in JSON. **From file** accepts these formats up to 2 MiB. **Manual** offers WireGuard, VLESS, Shadowsocks, Trojan, Hysteria2, and SOCKS.

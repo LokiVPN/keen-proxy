@@ -159,6 +159,9 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source) Result {
 	defer resp.Body.Close()
 	result := readResponse(ctx, resp, sensitive)
 	result.HWIDFingerprint = hwidFingerprint(sensitive.hwid)
+	if result.State == StateReady {
+		result.ProbeReportURL = probeReportURL(resp)
+	}
 	return result
 }
 

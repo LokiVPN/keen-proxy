@@ -54,6 +54,9 @@ type Node struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Link string `json:"link"`
+	// Line is the zero-based position among nonblank, noncomment lines of the
+	// fetched body: the PasarGuard probe manifest locator. Not persisted.
+	Line int `json:"-"`
 }
 
 // MatchesLink checks the persisted ID against the link's normalized dial options.
@@ -100,6 +103,9 @@ type Result struct {
 	HWIDFingerprint string `json:"-"`
 	// Transient tells the refresh scheduler to retry with bounded backoff.
 	Transient bool `json:"-"`
+	// ProbeReportURL is the resolved same-origin address a provider advertised
+	// with Probe-Report: 1; empty when reporting is not requested.
+	ProbeReportURL string `json:"-"`
 }
 
 var sourceIDPattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
