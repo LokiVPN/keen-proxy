@@ -35,6 +35,7 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 	var result Result
 	var hasContent bool
 	var routingLine string
+	position := -1
 	for line := range strings.Lines(body) {
 		if ctx.Err() != nil {
 			return withHeaders(headers, sensitive, failure(StateNetworkError, canceledDownload))
@@ -47,6 +48,7 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 			collectMetadata(comments, comment)
 			continue
 		}
+		position++
 		if isRoutingLine(line) {
 			if routingLine == "" {
 				routingLine = line
@@ -62,6 +64,7 @@ func parseShareList(ctx context.Context, headers http.Header, data []byte, sensi
 			result.Skipped++
 			continue
 		}
+		node.Line = position
 		if seen[node.ID] {
 			continue
 		}
