@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.12.0
+
+- Send PasarGuard availability reports when a subscription response carries `Probe-Report: 1` and `Probe-Report-Url`. After a refresh, KeenProxy waits up to 10 minutes for node checks and posts only route IDs, verdicts and delays, without links, credentials, HWID or device details.
+- Allow the report address on a separate HTTPS host, because CDNs in front of subscriptions often reject POST requests. Reports never use a proxy, follow no redirects and refuse loopback, private, link-local, CGNAT, multicast and unspecified IP addresses, including names that resolve to them. One attempt is made at most once per 10 minutes per subscription, and the audit journal records the result.
+
 ## 0.11.0
 
 This release replaces the Vue panel. A 0.10.x configuration that no longer loads is reset at startup, keeping the LAN settings and the first valid subscription. The first save keeps the original as `config.v1.yaml`. Re-create other connections and rules afterwards. Presets, resource exchange, ad filter lists and YAML import/export are removed.
