@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -107,14 +108,8 @@ func New(cfg Config) *Server {
 // redirection can be installed safely afterward.
 func (s *Server) Start() error {
 	h := dns.HandlerFunc(s.serve)
-	udpConn, err := net.ListenPacket("udp", s.cfg.Listen)
+	udpConn, tcpLn, err := listenPair(s.cfg.Listen)
 	if err != nil {
-		return err
-	}
-	// Bind TCP to the actual UDP address, including an automatically assigned port.
-	tcpLn, err := net.Listen("tcp", udpConn.LocalAddr().String())
-	if err != nil {
-		udpConn.Close()
 		return err
 	}
 	s.udp = &dns.Server{PacketConn: udpConn, Handler: h}
@@ -122,6 +117,26 @@ func (s *Server) Start() error {
 	go s.udp.ActivateAndServe()
 	go s.tcp.ActivateAndServe()
 	return nil
+}
+
+// listenPair opens UDP and TCP listeners on one port. UDP picks an automatic
+// port (":0"), which another TCP socket may already hold, so that case retries
+// with a new port; a fixed port fails at once.
+func listenPair(addr string) (net.PacketConn, net.Listener, error) {
+	for attempt := 1; ; attempt++ {
+		udpConn, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return nil, nil, err
+		}
+		tcpLn, err := net.Listen("tcp", udpConn.LocalAddr().String())
+		if err == nil {
+			return udpConn, tcpLn, nil
+		}
+		udpConn.Close()
+		if _, port, _ := net.SplitHostPort(addr); port != "0" || attempt == 10 || !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, nil, err
+		}
+	}
 }
 
 // Addr returns the bound address, including an automatically assigned port.
